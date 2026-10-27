@@ -74,10 +74,12 @@ def register_builtin_providers(*, force: bool = False) -> None:
     if _BUILTINS_REGISTERED and not force:
         return
     from openlens.providers.external import BingSearchProvider
+    from openlens.providers.http import CustomApiSearchProvider
     from openlens.providers.opensearch import OpenSearchProvider
 
     register("opensearch", OpenSearchProvider)
     register("bing", BingSearchProvider)
+    register("http", CustomApiSearchProvider)
 
     # The custom-index backend is owned by another wave; register it when its
     # module exists so configs can reference it without a hard dependency.

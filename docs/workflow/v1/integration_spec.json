@@ -1,0 +1,48 @@
+{
+  "plan_path": "docs/workflow/tasks/integration_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "mapping",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave0-mapping",
+          "owns": "src/openlens/providers/http_mapping.py, tests/unit/test_http_mapping.py",
+          "task": "Build the mapping core (integration plan step 1): dotted-path extractor over dicts/lists (missing path skips the hit, never crashes) plus field mapper producing normalized SearchResults with original_score == final_score, provider set from the entry name, and metadata carrying engine name + request mode. Rank-decay 1/(rank+1) when no score field is configured. Pure functions, no network, no provider imports.",
+          "done": "tests/unit/test_http_mapping.py green: nested paths, list indices, missing fields skip hits, rank-decay vs numeric score field, empty payload yields []."
+        }
+      ]
+    },
+    {
+      "name": "provider",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave1-provider",
+          "owns": "src/openlens/providers/http.py, configs/providers.yaml (append commented http example only), tests/unit/test_http_provider.py",
+          "task": "Build CustomApiSearchProvider(ExternalSearchProvider) (step 2): config keys endpoint/method/api_key/auth_in/auth_name/params/body/results_path/fields/score, validated in configure with ConfigError on bad shapes (mirror external.py conventions; api_key required when enabled). GET sends params, POST sends fixed JSON body; api_key injected as auth_name header or query param per auth_in. Reuse headers/_fetch/health_check semantics from the base. Register type 'http' in register_builtin_providers via lazy import. Tests stub _fetch (offline-safe): GET/POST wiring, auth placement both modes, dotted-path extraction, bad-config rejection, inherited timeout/error mapping.",
+          "done": "tests/unit/test_http_provider.py green covering all of the above; provider importable via registry as type 'http'."
+        }
+      ]
+    },
+    {
+      "name": "contract",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave2-contract",
+          "owns": "tests/unit/test_provider_contract.py (extend), tests/integration/test_config_toggles.py (extend), tests/integration/test_secret_leak.py (extend)",
+          "task": "Extend the existing suites for the http type (step 4): provider-conformance coverage (normalization, pagination, timeout, failure mapping) using a stubbed transport, config-toggle test enabling/disabling the http entry via config dicts only, and secret-leak coverage proving the configured api_key never appears in responses, diagnostics, logs, or error messages. Do not weaken existing assertions.",
+          "done": "Extended suites green; http type passes the same conformance bar as bing/opensearch/custom_index."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "wave3-integrate",
+    "owns": "wiring and fixes anywhere (no new features)",
+    "task": "Run the FULL suite 'uv run pytest tests/unit tests/integration' until green, fixing fallout. Then verify manually: point the http provider at a local stub HTTP server returning a foreign payload shape, run one search through the engine, and confirm normalized results with attribution. Report the integration plan's validation checklist with pass/fail per item and the exact test command evidencing each pass.",
+    "done": "Full suite green, stub-server verification observed, validation checklist reported."
+  }
+}

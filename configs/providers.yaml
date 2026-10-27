@@ -44,3 +44,18 @@ providers:
     # api_key resolves at load time; required when enabled.
     api_key: ${BING_API_KEY:-}
     timeout_s: 5
+
+  # myengine:
+  #   enabled: false
+  #   type: http
+  #   timeout_s: 5
+  #   endpoint: ${MYENGINE_URL:-}
+  #   method: GET                      # GET (query params) or POST (JSON body)
+  #   api_key: ${MYENGINE_API_KEY:-}   # required when enabled, like bing
+  #   auth_in: header                  # header or query
+  #   auth_name: X-Api-Key             # header/query-param name
+  #   params: { query: q, limit: count, offset: offset }   # GET param names
+  #   body: { query: q, limit: count, offset: offset }     # POST JSON shape
+  #   results_path: results            # dotted path to the hit list
+  #   fields: { id: id, title: title, snippet: text, url: link }
+  #   score: rank_decay                # or { field: score } for a numeric field

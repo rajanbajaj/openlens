@@ -25,6 +25,7 @@ from openlens.providers import registry
 from openlens.providers.base import BaseSearchProvider
 from openlens.providers.custom_index import CustomIndexProvider
 from openlens.providers.external import BingSearchProvider
+from openlens.providers.http import CustomApiSearchProvider
 from openlens.providers.manager import ProviderManager
 from openlens.providers.opensearch import OpenSearchProvider
 from tests.fixtures.corpus import fixture_documents, seed_provider
@@ -386,3 +387,176 @@ def test_conformance_fixture_corpus_is_stable():
         "[fixtures/corpus] document ids must be unique"
     )
     assert all(d.url for d in docs), "[fixtures/corpus] every doc needs a URL"
+
+
+# ---------------------------------------------------------------------------
+# Generic HTTP adapter: offline conformance (providers/http.py)
+# ---------------------------------------------------------------------------
+
+
+_HTTP_FIELDS = {"id": "id", "title": "title", "snippet": "text", "url": "link"}
+
+
+def _http(**overrides: Any) -> CustomApiSearchProvider:
+    config: dict[str, Any] = {
+        "endpoint": "https://api.example.com/search",
+        "api_key": "test-key-not-a-secret",
+        "timeout_s": 1.0,
+        "fields": dict(_HTTP_FIELDS),
+    }
+    config.update(overrides)
+    provider = CustomApiSearchProvider()
+    provider.configure(config)
+    return provider
+
+
+_HTTP_PAYLOAD = {
+    "results": [
+        {"id": "h-1", "title": "First", "text": "first snippet", "link": "https://x/1"},
+        {"id": "h-2", "title": "Second", "text": "second snippet", "link": "https://x/2"},
+        {"title": "No id here", "text": "skipped hit"},
+    ]
+}
+
+
+def _stub_fetch(monkeypatch: pytest.MonkeyPatch, provider: CustomApiSearchProvider, payload: Any) -> None:
+    monkeypatch.setattr(provider, "_fetch", lambda request: payload)
+
+
+def _http_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    error: Exception | None = None,
+    payload: Any = None,
+    status_code: int = 200,
+) -> dict[str, Any]:
+    """Inject a fake ``httpx`` module so the real ``_fetch`` maps errors.
+
+    Stubbing ``_fetch`` itself would bypass the transport-error mapping
+    under test; the fake module keeps the production ``_fetch`` on the
+    path while staying offline.
+    """
+    import sys
+    import types
+
+    calls: dict[str, Any] = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> Any:
+            return payload
+
+    _FakeResponse.status_code = status_code
+
+    def _fake_verb(verb: str, url: str, **kwargs: Any) -> _FakeResponse:
+        calls[verb] = {"url": url, **kwargs}
+        if error is not None:
+            raise error
+        return _FakeResponse()
+
+    fake_module = types.ModuleType("httpx")
+    fake_module.get = lambda url, **kwargs: _fake_verb("get", url, **kwargs)  # type: ignore[attr-defined]
+    fake_module.post = lambda url, **kwargs: _fake_verb("post", url, **kwargs)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "httpx", fake_module)
+    return calls
+
+
+def test_conformance_http_normalization_shape(monkeypatch: pytest.MonkeyPatch):
+    provider = _http()
+    _stub_fetch(monkeypatch, provider, _HTTP_PAYLOAD)
+    results = provider.search(SearchRequest(query="q"))
+    assert len(results) == 2, "[http] hits missing required fields must be skipped"
+    assert_normalized_shape(results, "http", require_reasons=False)
+    assert [r.id for r in results] == ["h-1", "h-2"]
+    assert results[0].original_score > results[1].original_score, (
+        "[http] rank decay must order earlier hits higher"
+    )
+    assert results[0].metadata == {"engine": "http", "request_mode": "default"}, (
+        "[http] hits must carry engine attribution and request mode"
+    )
+
+
+def test_conformance_http_pagination_forwards_limit_offset(monkeypatch: pytest.MonkeyPatch):
+    provider = _http()
+    seen: list[SearchRequest] = []
+    page = {"results": [{"id": "h-1", "title": "T", "text": "S"}]}
+
+    def fake_fetch(request: SearchRequest) -> Any:
+        seen.append(request)
+        return page
+
+    monkeypatch.setattr(provider, "_fetch", fake_fetch)
+    provider.search(SearchRequest(query="q", limit=1, offset=0))
+    provider.search(SearchRequest(query="q", limit=1, offset=1))
+    assert [r.limit for r in seen] == [1, 1]
+    assert [r.offset for r in seen] == [0, 1]
+    first = provider.build_params(seen[0])
+    second = provider.build_params(seen[1])
+    assert first["offset"] != second["offset"], (
+        "[http] distinct offsets must map to distinct upstream params"
+    )
+    assert first["count"] == 1 and second["count"] == 1, (
+        "[http] limit must be forwarded as the upstream count param"
+    )
+
+
+def test_conformance_http_timeout_mapping(monkeypatch: pytest.MonkeyPatch):
+    provider = _http()
+    _http_transport(monkeypatch, error=TimeoutError("timed out"))
+    with pytest.raises(ProviderError) as excinfo:
+        provider.search(SearchRequest(query="q"))
+    assert excinfo.value.code == ProviderError.TIMEOUT, (
+        "[http] timeouts must map to code 'timeout'"
+    )
+    assert excinfo.value.provider_name == "http"
+    assert excinfo.value.retryable is True
+
+
+def test_conformance_http_failure_mapping():
+    provider = _http()
+    assert provider._map_transport_error(TimeoutError("timeout")).code == (
+        ProviderError.TIMEOUT
+    ), "[http] timeouts must map to code 'timeout'"
+    assert provider._map_transport_error(Exception("401 Unauthorized")).code == (
+        ProviderError.AUTH
+    ), "[http] 401/403 must map to code 'auth'"
+    assert provider._map_transport_error(Exception("429 rate limit")).code == (
+        ProviderError.RATE_LIMIT
+    ), "[http] 429 must map to code 'rate_limit'"
+    assert provider._map_transport_error(Exception("conn refused")).code == (
+        ProviderError.UNAVAILABLE
+    ), "[http] unknown failures must map to code 'unavailable'"
+
+
+def test_conformance_http_requires_key_and_offline_safe(monkeypatch: pytest.MonkeyPatch):
+    with pytest.raises(ConfigError):
+        CustomApiSearchProvider().configure(
+            {"endpoint": "https://api.example.com/search"}
+        )
+    assert CustomApiSearchProvider().health_check() is False, (
+        "[http] unconfigured provider must report unhealthy, never raise"
+    )
+    provider = _http()
+    _http_transport(monkeypatch, error=RuntimeError("no network in tests"))
+    with pytest.raises(ProviderError):
+        provider.search(SearchRequest(query="q"))  # never a raw client error
+    assert provider.health_check() is False, (
+        "[http] unreachable backend must report unhealthy, never raise"
+    )
+
+
+def test_conformance_http_bad_config_rejected():
+    for overrides in (
+        {"method": "PUT"},
+        {"auth_in": "cookie"},
+        {"auth_name": ""},
+        {"results_path": ""},
+        {"fields": {"title": "t", "snippet": "s"}},
+        {"score": "bm25"},
+    ):
+        with pytest.raises(ConfigError):
+            _http(**overrides)

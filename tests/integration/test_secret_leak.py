@@ -138,6 +138,103 @@ def test_api_error_envelope_carries_no_secrets(api_engine, monkeypatch):
         assert secret not in http.text
 
 
+HTTP_SENTINEL_KEY = "sk-http-SENTINEL-9f3c77"
+
+
+def _http_provider_with_secret():
+    from openlens.providers.http import CustomApiSearchProvider
+
+    provider = CustomApiSearchProvider()
+    provider.configure(
+        {
+            "endpoint": "https://api.example.com/search",
+            "api_key": HTTP_SENTINEL_KEY,
+            "timeout_s": 1.0,
+            "fields": {"id": "id", "title": "title", "snippet": "text"},
+        }
+    )
+    return provider
+
+
+_HTTP_SECRET_PAYLOAD = {
+    "results": [{"id": "h1", "title": "Hello", "text": "world"}]
+}
+
+
+def _assert_http_secret_absent(payload: object, where: str) -> None:
+    text = json.dumps(payload, default=str)
+    assert HTTP_SENTINEL_KEY not in text, (
+        f"[providers/http.py] http api_key leaked in {where}"
+    )
+
+
+def test_http_response_and_diagnostics_carry_no_api_key(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = _http_provider_with_secret()
+    monkeypatch.setattr(provider, "_fetch", lambda request: _HTTP_SECRET_PAYLOAD)
+    with caplog.at_level(logging.DEBUG):
+        engine = SearchEngine(providers=[provider], plugins=[])
+        engine.configure({"plugins": [], "ranking": {}})
+        response = engine.search(SearchRequest(query="shoes", limit=5))
+    _assert_http_secret_absent(
+        {
+            "results": [r.__dict__ for r in response.results],
+            "diagnostics": response.diagnostics,
+            "applied_filters": response.applied_filters,
+        },
+        "SearchResponse",
+    )
+    for record in caplog.records:
+        assert HTTP_SENTINEL_KEY not in record.getMessage(), (
+            "[providers/http.py] http api_key leaked in log records"
+        )
+
+
+def _http_failing_transport(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """Inject a fake ``httpx`` module that always raises ``error``.
+
+    The production ``_fetch`` stays on the path (so its error mapping is
+    what the test observes) while the suite stays offline.
+    """
+    import sys
+    import types
+
+    def _boom(url: str, **kwargs: object) -> object:
+        raise error
+
+    fake_module = types.ModuleType("httpx")
+    fake_module.get = _boom  # type: ignore[attr-defined]
+    fake_module.post = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "httpx", fake_module)
+
+
+def test_http_provider_errors_carry_no_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openlens.core.interfaces import ProviderError
+
+    provider = _http_provider_with_secret()
+    _http_failing_transport(monkeypatch, TimeoutError("timed out"))
+    with pytest.raises(ProviderError) as excinfo:
+        provider.search(SearchRequest(query="shoes"))
+    assert excinfo.value.code == ProviderError.TIMEOUT
+    assert HTTP_SENTINEL_KEY not in str(excinfo.value), (
+        "[providers/http.py] ProviderError must not echo the api_key"
+    )
+
+    provider = _http_provider_with_secret()
+    _http_failing_transport(monkeypatch, RuntimeError("connection reset"))
+    with pytest.raises(ProviderError) as excinfo:
+        provider.search(SearchRequest(query="shoes"))
+    assert HTTP_SENTINEL_KEY not in str(excinfo.value), (
+        "[providers/http.py] ProviderError must not echo the api_key"
+    )
+    assert provider.health_check() is False, (
+        "[providers/http.py] failed health check must return False, never raise"
+    )
+
+
 def test_provider_errors_carry_no_secrets():
     from openlens.core.interfaces import ProviderError
     from openlens.providers.opensearch import OpenSearchProvider

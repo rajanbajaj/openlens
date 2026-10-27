@@ -175,3 +175,82 @@ def test_engine_rejects_unknown_ranking_profile():
     engine = _engine_with_plugins([])
     with pytest.raises(ConfigError):
         engine.configure({"plugins": [], "ranking": {"default_profile": "nope"}})
+
+
+# ---------------------------------------------------------------------------
+# Generic HTTP provider: enable/disable via config dicts only
+# ---------------------------------------------------------------------------
+
+
+def _http_entry(*, enabled: bool, **overrides: object) -> dict:
+    entry: dict = {
+        "type": "http",
+        "enabled": enabled,
+        "endpoint": "https://api.example.com/search",
+        "api_key": "toggle-key-not-a-secret",
+        "timeout_s": 5,
+    }
+    entry.update(overrides)
+    return entry
+
+
+_HTTP_TOGGLE_PAYLOAD = {
+    "results": [{"id": "h1", "title": "Toggle hit", "snippet": "served via http"}]
+}
+
+
+def test_provider_toggle_http_enable_disable_via_config_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openlens.providers.http import CustomApiSearchProvider
+
+    monkeypatch.setattr(
+        CustomApiSearchProvider, "_fetch", lambda self, request: _HTTP_TOGGLE_PAYLOAD
+    )
+    manager = _manager({"primary": "ext", "ext": _http_entry(enabled=True)})
+    assert manager.provider_names == ["ext"], (
+        "[providers/manager.py] enabled http entry must be constructed from config"
+    )
+    results = manager.search(SearchRequest(query="shoes"))
+    assert [r.id for r in results] == ["h1"], (
+        "[providers/http.py] enabled http entry must serve searches with no code changes"
+    )
+    mixed = _manager(
+        {
+            "primary": "main",
+            "main": {"type": "toggle_fake", "enabled": True},
+            "ext": _http_entry(enabled=False),
+        }
+    )
+    assert mixed.provider_names == ["main"], (
+        "[providers/manager.py] disabled http entry must be skipped without code changes"
+    )
+    with pytest.raises(ConfigError):
+        mixed.get("ext")
+
+
+def test_provider_toggle_http_disabled_needs_no_key() -> None:
+    manager = _manager(
+        {
+            "primary": "main",
+            "main": {"type": "toggle_fake", "enabled": True},
+            "ext": {"type": "http", "enabled": False},
+        }
+    )
+    assert manager.provider_names == ["main"], (
+        "[providers/manager.py] disabled http entry must not fail startup validation"
+    )
+
+
+def test_provider_toggle_http_enabled_requires_key() -> None:
+    with pytest.raises(ConfigError):
+        _manager(
+            {
+                "primary": "ext",
+                "ext": {
+                    "type": "http",
+                    "enabled": True,
+                    "endpoint": "https://api.example.com/search",
+                },
+            }
+        )
