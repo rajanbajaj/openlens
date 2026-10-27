@@ -4,7 +4,7 @@ Every agent in this workflow inherits these conventions. They are binding.
 
 ## Sources of Truth
 
-- `docs/workflow/tasks/skeleton_plan.md` — what to build and why.
+- `docs/workflow/tasks/2026-10-28-0249_skeleton_plan.md` — what to build and why.
 - `src/openlens/core/interfaces.py` + `core/context.py` (after Wave 0) —
   the only type shapes you may use. Do not invent parallel models.
 - `pyproject.toml` — hatchling, `src` layout, `testpaths=["tests"]`.

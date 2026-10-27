@@ -19,10 +19,12 @@ skeleton run is:
 
 ## Reuse for a Future Plan
 
-1. Copy `skeleton_spec.json` to `<plan>_spec.json`.
-2. Point `plan_path` at the new plan; rewrite `waves`/`integrate` briefs
+1. Write the plan as `docs/workflow/tasks/<YYYY-MM-DD-HHMM>_<slug>_plan.md`
+   (date = day it was written).
+2. Copy `skeleton_spec.json` to `<plan>_spec.json`.
+3. Point `plan_path` at the new plan; rewrite `waves`/`integrate` briefs
    (inline `owns`/`task`/`done`, or `brief_path` files for long briefs).
-3. Run `workflow.js` unchanged with the new spec as input.
+4. Run `workflow.js` unchanged with the new spec as input.
 
 Existing specs: `skeleton_spec.json` (backend, with `context.md`),
 `frontend_spec.json` (frontend in `frontend/`, with `frontend_context.md`).
