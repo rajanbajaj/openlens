@@ -1,0 +1,72 @@
+{
+  "plan_path": "docs/skeleton_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "contracts",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave0-contracts",
+          "owns": "src/openlens/core/interfaces.py, src/openlens/core/context.py, src/openlens/config.py, pyproject.toml dependencies, src/openlens/**/__init__.py (all packages)",
+          "task": "Recreate .venv with 'uv venv' + 'uv sync' (the checked-in .venv is broken; do not repair it). Declare all runtime dependencies upfront in pyproject.toml: fastapi, uvicorn, pyyaml, httpx, opensearch-py. Then implement core contracts from skeleton plan step 2: Document, SearchRequest, SearchResult, SearchResponse, SearchContext dataclasses; abstract SearchProvider (search, health_check, configure) and SearchPlugin (name, type, stage, config schema, dependencies, mandatory/optional failure); the 10-stage pipeline enum; ProviderError/PluginError taxonomy; Engine public method signatures the API will code against; and the shared config loader in src/openlens/config.py (load_config with ${ENV_VAR} resolution, startup validation error).",
+          "done": "'uv run python -c \"import openlens.core.interfaces, openlens.core.context, openlens.config\"' clean; tests/unit/test_contracts.py proves interfaces are abstract and errors carry metadata."
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "wave1a-retrieval",
+          "owns": "src/openlens/storage/, src/openlens/indexing/, src/openlens/providers/custom_index.py, src/openlens/retrieval/, tests/unit/test_custom_index.py",
+          "task": "Build the working search core (skeleton plan step 3): SQLite FTS5 document repository, minimal indexer over local seed documents, CustomIndexProvider implementing the SearchProvider interface, query parser, result normalizer, deduplicator. Seed with a small fixture corpus.",
+          "done": "tests/unit/test_custom_index.py green: index docs, search returns normalized results with original_score, pagination works."
+        },
+        {
+          "label": "wave1b-providers",
+          "owns": "src/openlens/providers/base.py, manager.py, registry.py, capabilities.py, opensearch.py, external.py (+ one concrete adapter), configs/providers.yaml, tests/unit/test_providers.py",
+          "task": "Build the provider system (step 4) on the Wave-0 config loader (import it, do not reimplement or edit it): startup validation (only enabled providers instantiate), manager with single-provider strategy, bounded timeouts, health checks. OpenSearch adapter + generic ExternalSearchProvider base + one concrete external adapter, both disabled by default, offline-safe.",
+          "done": "tests/unit/test_providers.py green using fakes: config toggles, validation rejects bad config, timeouts bounded, disabled providers absent."
+        },
+        {
+          "label": "wave1c-pipeline",
+          "owns": "src/openlens/core/pipeline.py, core/engine.py, core/registry.py, src/openlens/plugins/ (base, safety filter, trust enricher), src/openlens/ranking/, configs/ranking.yaml, tests/unit/test_pipeline.py",
+          "task": "Build plugin pipeline + ranking (steps 5-6): deterministic stage runner with dependency/ordering validation, fail-closed mandatory filters vs isolated optional-plugin failures, plugin registry, baseline relevance scorer, one exclusion filter, one trust-warning enricher, explanation assembly (original_score vs final_score, reasons/warnings), per-mode ranking profiles (default, child-safe, news, shopping, travel).",
+          "done": "tests/unit/test_pipeline.py green: filter excludes, scorer reorders, mandatory-filter outage fails closed, optional-plugin failure isolated."
+        },
+        {
+          "label": "wave1d-api",
+          "owns": "src/openlens/api/, src/openlens/main.py, configs/default.yaml, tests/unit/test_api.py",
+          "task": "Build the API surface (step 7 minus observability wiring): FastAPI schemas and POST /api/v1/search with validation, pagination, applied-filter reporting, consistent errors. Code against Wave-0 Engine signatures using a fake engine; integration performs real wiring.",
+          "done": "tests/unit/test_api.py green against the fake engine: validation, pagination, error shape, applied-filter reporting."
+        }
+      ]
+    },
+    {
+      "name": "seams-and-tests",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "wave2e-ai",
+          "owns": "src/openlens/models/, configs/models.yaml, one AI plugin stub under src/openlens/plugins/, tests/unit/test_ai_seams.py",
+          "task": "Build AI seams (step 8): AIModelProvider interface (complete, embed, classify, configure, health_check) + registry mirroring the search-provider pattern, FakeModelProvider, models.yaml with all backends disabled by default, one AI plugin stub wired through the interface. No live model calls.",
+          "done": "tests/unit/test_ai_seams.py green: fake backend swaps via config, disabled backends never instantiate, plugin stub runs offline."
+        },
+        {
+          "label": "wave2f-tests",
+          "owns": "tests/unit/test_provider_contract.py, tests/unit/test_plugin_contract.py, tests/integration/, tests/fixtures/",
+          "task": "Build contract + quality tests (step 9): provider-conformance suite every provider must pass (normalization, pagination, timeout, failure mapping), plugin-conformance suite (stage declaration, fail-closed, isolation), cross-provider dedup test, config-toggle tests, secret-leak test (no keys in responses/logs), repeatable fixture corpus.",
+          "done": "New suites green against Wave-1 code; failures name the owning agent's files and are reported, not fixed here."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "wave3-integrate",
+    "owns": "wiring and fixes anywhere (no new features)",
+    "task": "Wire the real Engine into main.py and the API, add the fallback strategy (primary + bounded fallback, failure distinguished from empty), provider/plugin latency and execution diagnostics in responses, then run the FULL suite 'uv run pytest tests/unit tests/integration' until green, fixing fallout. Smoke-test: start uvicorn, POST one shopping-mode query, confirm results carry reasons, applied_filters, diagnostics; toggle one provider and one plugin via YAML only and re-run to prove no core edits.",
+    "done": "Full suite green, smoke test observed, summary carries the 11-item Definition-of-Done checklist with pass/fail per item and the exact test command evidencing each pass."
+  }
+}

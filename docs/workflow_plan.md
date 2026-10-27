@@ -1,0 +1,107 @@
+# OpenLens — Multi-Agent Build Workflow Plan
+
+## Goal
+
+Implement [skeleton_plan.md](../skeleton_plan.md) with a multi-agent workflow:
+parallel subagents build disjoint parts of the skeleton concurrently, coordinated
+through shared contracts and verification gates. The executable workflow lives in
+[`docs/workflow/v1/`](./v1/).
+
+## Why This Decomposition
+
+- **Contract-first, then fan out.** Every provider, plugin, and API route codes
+  against `core/interfaces.py` + `core/context.py`. Landing contracts in a solo
+  wave avoids N agents inventing N type shapes.
+- **Disjoint file ownership.** Parallel writers to one checkout corrupt each
+  other's work. Each agent owns an exclusive file list; shared files are
+  read-only for everyone except their owner.
+- **Test-last would serialize everything.** Instead each wave ships its own
+  tests; a final integration agent runs the full suite and fixes fallout.
+
+## Waves and Agents
+
+| Wave | Agents | Work | Owns (writes) |
+|---|---|---|---|
+| 0. Contracts | 1 (solo) | `.venv` recreate, `__init__.py` files, all `pyproject.toml` deps upfront (sole editor), `core/interfaces.py`, `core/context.py` incl. `Engine` signatures, shared `config.py` loader | `core/interfaces.py`, `core/context.py`, `config.py`, `pyproject.toml`, `__init__.py` files |
+| 1A. Retrieval | 1 | SQLite FTS5 repo, indexer, `CustomIndexProvider`, query parser, normalizer, deduplicator, seed docs | `storage/`, `indexing/`, `providers/custom_index.py`, `retrieval/` |
+| 1B. Providers | 1 | Provider base/manager/registry/capabilities on the Wave-0 loader, timeouts, single-provider strategy, health checks, OpenSearch adapter + generic external base + one concrete adapter (disabled by default) | `providers/` except `custom_index.py`, `configs/providers.yaml` |
+| 1C. Pipeline+Rank | 1 | Stage runner, engine, plugin registry, plugin base, one exclusion filter, one trust enricher, baseline scorer, per-mode ranking profiles | `core/pipeline.py`, `core/engine.py`, `core/registry.py`, `plugins/`, `ranking/`, `configs/ranking.yaml` |
+| 1D. API | 1 | Pydantic/fastapi schemas, `POST /api/v1/search`, `main.py`, default config; codes against Wave-0 `Engine` signatures with a fake until Wave 3 | `api/`, `main.py`, `configs/default.yaml` |
+| 2E. AI seams | 1 | `AIModelProvider` interface + registry + `FakeModelProvider`, `models.yaml`, one disabled-by-default AI plugin stub | `models/`, AI plugin under `plugins/` |
+| 2F. Tests | 1 | Provider/plugin conformance suites, fixture corpus, config-toggle tests, secret-leak test | `tests/` |
+| 3. Integrate | 1 (solo) | Wire engine + API + configs, full pytest, fix fallout, API smoke test, Definition-of-Done report | Fixes anywhere; no new features |
+
+Waves 1A–1D run in parallel (4 agents). Waves 2E–2F run in parallel (2 agents).
+Waves 0 and 3 are solo. Total: 8 child agents.
+
+## Dependency DAG
+
+```
+Wave 0 (contracts)
+ ├── 1A retrieval ──────┐
+ ├── 1B providers ──────┤
+ ├── 1C pipeline+rank ──┼──> Wave 3 integrate
+ └── 1D api ────────────┘         ^
+      2E ai-seams ────────────────┘
+      2F tests ───────────────────┘
+```
+
+Wave 1 agents depend only on Wave 0 output. Wave 2E depends on the plugin base
+from 1C (interface, not implementation: it codes against the Wave-0 plugin
+contract, so it can start with Wave 1). Wave 2F needs all of Wave 1 done.
+Wave 3 needs everything.
+
+## Shared Conventions (Enforced on Every Agent)
+
+From [`v1/context.md`](./v1/context.md), baked into every agent prompt:
+absolute imports (`from openlens.core...`), dataclasses for models, a fixed
+error taxonomy (provider errors wrapped, never raw), no new third-party
+dependency without noting it, pytest style with `testpaths=["tests"]`.
+
+## Verification Gates
+
+- **After Wave 0:** `python -c "import openlens.core.interfaces"` clean; types
+  reviewed once by the parent before fan-out.
+- **After each Wave 1/2 agent:** its owned pytest subset green
+  (e.g. `pytest tests/unit/test_custom_index.py`).
+- **Wave 3:** full `uv run pytest tests/unit tests/integration` green, plus a
+  live smoke test (`uvicorn openlens.main:app` + one shopping-mode query) and
+  a config-toggle proof (disable a provider/plugin via YAML only, re-run).
+- **Highest-risk gate:** mandatory-filter fail-closed test under simulated
+  filter outage — leaks fail the whole workflow.
+
+## Failure and Resume Policy
+
+A nonterminal or red agent is retried once with its own error output; a second
+failure is recorded as an evidence gap and its files fall to the Wave-3 agent.
+Relaunch targets failed waves via `only_waves` plus `prior_refs` from the
+prior report; skipped waves stay visible in the report. Malformed wave entries
+and unknown modes fail fast as misconfigured instead of running half a wave.
+
+## What v1 Contains (Plan-Agnostic by Design)
+
+`workflow.js` contains zero plan-specific content — no file paths, no wave
+topology, no prompts. Everything plan-specific arrives via the workflow input:
+
+- [`v1/workflow.js`](./v1/workflow.js) — generic executor. Input
+  `{ plan_path, context_path, waves[{name, mode, agents[{label, owns, task,
+  done | brief_path}]}], integrate{...} }`. Runs waves in order (solo or
+  parallel), carries result refs forward, then runs integration and synthesis
+  agents. Every child launches with the structured evidence schema; the parent
+  returns a full `{status, unresolved, synthesis, evidence, notes}` report.
+  Future plans reuse this file unchanged — only the input changes.
+- [`v1/skeleton_spec.json`](./v1/skeleton_spec.json) — the skeleton's input:
+  3 waves, 8 agents. Template for future plans: copy it, point `plan_path` at
+  the new plan, rewrite the briefs.
+- [`v1/context.md`](./v1/context.md) — shared conventions every agent inherits.
+- [`v1/README.md`](./v1/README.md) — how to run, resume, and interpret results.
+
+## Risks
+
+- Parallel agents drifting from contracts: mitigated by the Wave-0 review gate
+  and read-only sharing of contract files.
+- Token cost: ~8 child agents; if the budget bites, collapse 1A+1B and 1D+2E
+  into two agents (6 total) — the file-ownership map still applies.
+- The broken checked-in `.venv` is Wave 0's first job; no agent runs tests
+  before it is recreated.
+- Open questions: none.
