@@ -22,7 +22,7 @@ through shared contracts and verification gates. The executable workflow lives i
 
 | Wave | Agents | Work | Owns (writes) |
 |---|---|---|---|
-| 0. Contracts | 1 (solo) | `.venv` recreate, `__init__.py` files, all `pyproject.toml` deps upfront (sole editor), `core/interfaces.py`, `core/context.py` incl. `Engine` signatures, shared `config.py` loader | `core/interfaces.py`, `core/context.py`, `config.py`, `pyproject.toml`, `__init__.py` files |
+| 0. Contracts | 1 (solo) | `.venv` recreate, `__init__.py` files, all `pyproject.toml` deps upfront plus `README.md` and `.gitignore` (sole editor of repo-root files), `core/interfaces.py`, `core/context.py` incl. `Engine` signatures, shared `config.py` loader | `core/interfaces.py`, `core/context.py`, `config.py`, `pyproject.toml`, `README.md`, `.gitignore`, `__init__.py` files |
 | 1A. Retrieval | 1 | SQLite FTS5 repo, indexer, `CustomIndexProvider`, query parser, normalizer, deduplicator, seed docs | `storage/`, `indexing/`, `providers/custom_index.py`, `retrieval/` |
 | 1B. Providers | 1 | Provider base/manager/registry/capabilities on the Wave-0 loader, timeouts, single-provider strategy, health checks, OpenSearch adapter + generic external base + one concrete adapter (disabled by default) | `providers/` except `custom_index.py`, `configs/providers.yaml` |
 | 1C. Pipeline+Rank | 1 | Stage runner, engine, plugin registry, plugin base, one exclusion filter, one trust enricher, baseline scorer, per-mode ranking profiles | `core/pipeline.py`, `core/engine.py`, `core/registry.py`, `plugins/`, `ranking/`, `configs/ranking.yaml` |

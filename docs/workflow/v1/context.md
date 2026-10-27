@@ -27,8 +27,9 @@ Every agent in this workflow inherits these conventions. They are binding.
 ## File Ownership
 
 - Write ONLY files listed in your brief. All other files are read-only.
-- Only the contracts agent edits `pyproject.toml` dependencies. Every other
-  agent requests additions in its result summary instead.
+- Only the contracts agent edits repo-root files (`pyproject.toml`,
+  `README.md`, `.gitignore`). Every other agent requests changes in its
+  result summary instead.
 - If you need a change outside your list, report it in your result summary
   instead of making it — the Wave-3 agent resolves cross-cutting fixes.
 
