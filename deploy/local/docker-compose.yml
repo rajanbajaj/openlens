@@ -1,0 +1,57 @@
+# OpenLens local stack: backend API, frontend app, OpenSearch tool.
+name: openlens-local
+
+services:
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      OPENSEARCH_HOST: http://opensearch:9200
+      BING_API_KEY: ${BING_API_KEY:-}
+    volumes:
+      - openlens-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - openlens
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.frontend
+      args:
+        VITE_OPENLENS_API_URL: ${VITE_OPENLENS_API_URL:-}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - openlens
+
+  opensearch:
+    image: opensearchproject/opensearch:2
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-Openlens!2026Local}
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - openlens
+
+volumes:
+  openlens-data:
+  opensearch-data:
+
+networks:
+  openlens:

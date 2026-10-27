@@ -257,3 +257,28 @@ def test_healthz() -> None:
     resp = make_client().get("/healthz")
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"status": "ok"}
+
+
+def test_cors_preflight_allows_localhost() -> None:
+    # Browser dev servers (vite :5173) call the API cross-origin; the
+    # preflight must succeed instead of surfacing as a 405 http_error.
+    resp = make_client().options(
+        "/api/v1/search",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_cors_preflight_rejects_non_localhost() -> None:
+    resp = make_client().options(
+        "/api/v1/search",
+        headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert "access-control-allow-origin" not in resp.headers

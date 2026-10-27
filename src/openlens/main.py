@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from openlens.api.errors import register_exception_handlers
 from openlens.api.routes import router as search_router
@@ -28,12 +29,32 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" 
 _PROVIDER_RESERVED = ("strategy", "primary", "fallback", "enabled")
 
 
-def load_app_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+def _candidate_config_paths(path: str | Path | None) -> list[Path]:
+    """Ordered config locations: explicit path, $OPENLENS_CONFIG, source tree, CWD.
+
+    The installed package (site-packages) has no sibling configs/, so after
+    the source-tree default also try ./configs/default.yaml — the docker
+    WORKDIR layout.
+    """
+    if path is not None:
+        return [Path(path)]
+    candidates = [DEFAULT_CONFIG_PATH, Path.cwd() / "configs" / "default.yaml"]
+    env = os.environ.get("OPENLENS_CONFIG")
+    if env:
+        candidates.insert(0, Path(env))
+    return candidates
+
+
+def load_app_config(path: str | Path | None = None) -> dict[str, Any]:
     """Best-effort load of the app config; missing file yields {}."""
-    try:
-        return load_config(path)
-    except (ConfigError, OSError):
-        return {}
+    for candidate in _candidate_config_paths(path):
+        try:
+            config = load_config(candidate)
+        except (ConfigError, OSError):
+            continue
+        if isinstance(config, dict) and config:
+            return config
+    return {}
 
 
 def _manager_section(config: dict[str, Any]) -> dict[str, Any]:
@@ -159,6 +180,14 @@ def build_engine(config: dict[str, Any]) -> SearchEngine:
 
 def create_app(engine: Optional[Engine] = None) -> FastAPI:
     app = FastAPI(title="OpenLens", version="0.1.0")
+    # Browser frontends call the API cross-origin in dev (vite :5173 ->
+    # backend :8000); answer preflights for local origins only.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
     app.state.engine = engine
     app.state.config = load_app_config()
     register_exception_handlers(app)

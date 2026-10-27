@@ -9,15 +9,22 @@
 import { isErrorEnvelope, isSearchResponse } from './guard.ts';
 import type { SearchRequest, SearchResponse } from './types.ts';
 
-/** Dev fallback when `VITE_OPENLENS_API_URL` is unset. */
+/**
+ * Dev fallback when `VITE_OPENLENS_API_URL` is unset and the app runs
+ * under `vite dev` (cross-origin by design). In a built bundle an unset
+ * URL means same-origin (`''`), so requests go through the nginx `/api/`
+ * proxy and never trigger a CORS preflight.
+ */
 export const DEFAULT_API_BASE_URL = 'http://localhost:8000';
 
 /** Resolved API base URL (trailing slashes stripped). */
-export const API_BASE_URL: string = (
-  import.meta.env.VITE_OPENLENS_API_URL as string | undefined
-)?.trim()
-  ? ((import.meta.env.VITE_OPENLENS_API_URL as string).trim().replace(/\/+$/, ''))
-  : DEFAULT_API_BASE_URL;
+export const API_BASE_URL: string =
+  (
+    (import.meta.env.VITE_OPENLENS_API_URL as string | undefined)
+      ?.trim()
+      .replace(/\/+$/, '')
+  ) ||
+  (import.meta.env.DEV ? DEFAULT_API_BASE_URL : '');
 
 /** Backend default page size (`DEFAULT_LIMIT` in `schemas.py`). */
 export const DEFAULT_LIMIT = 10;
