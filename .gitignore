@@ -11,10 +11,12 @@ build/
 venv/
 .env/
 
-# Pytest / coverage
+# Pytest / coverage / caches
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 
 # Local data and indexes (spec: ./data/index)
 data/

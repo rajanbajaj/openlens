@@ -24,6 +24,9 @@ skeleton run is:
    (inline `owns`/`task`/`done`, or `brief_path` files for long briefs).
 3. Run `workflow.js` unchanged with the new spec as input.
 
+Existing specs: `skeleton_spec.json` (backend, with `context.md`),
+`frontend_spec.json` (frontend in `frontend/`, with `frontend_context.md`).
+
 ## Resume
 
 If a wave fails, relaunch the script with the same spec plus

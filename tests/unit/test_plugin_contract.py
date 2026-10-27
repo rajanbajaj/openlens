@@ -1,0 +1,268 @@
+"""Plugin-conformance suite: every search plugin must pass this.
+
+Covers stage declaration, mandatory fail-closed behavior, optional-plugin
+isolation, and registry validation. Failures name the owning plugin or
+core module (see message prefixes).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from openlens.core.context import SearchContext
+from openlens.core.interfaces import (
+    ConfigError,
+    PipelineStage,
+    PluginError,
+    PluginType,
+    SearchPlugin,
+    SearchRequest,
+    SearchResult,
+)
+from openlens.core.pipeline import Pipeline, assemble_explanations, validate_and_order
+from openlens.core.registry import PluginRegistry
+from openlens.plugins.relevance_scorer import BaselineRelevanceScorer
+from openlens.plugins.safety_filter import SafetyFilter
+from openlens.plugins.trust_enricher import TrustEnricher
+
+
+def _hit(hit_id: str = "h1", title: str = "clean title",
+         url: str = "https://example.com/a") -> SearchResult:
+    return SearchResult(
+        id=hit_id, title=title, snippet="a snippet",
+        original_score=1.0, final_score=1.0, url=url, provider="test",
+    )
+
+
+def _context(n: int = 2) -> SearchContext:
+    ctx = SearchContext(request=SearchRequest(query="q"))
+    ctx.results = [_hit(f"h{i}") for i in range(n)]
+    return ctx
+
+
+def _builtin_plugins() -> list[SearchPlugin]:
+    return [SafetyFilter(), BaselineRelevanceScorer(), TrustEnricher()]
+
+
+# ---------------------------------------------------------------------------
+# Stage declaration: every builtin plugin declares a valid stage + type
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_all_plugins_declare_valid_stage_and_type():
+    for plugin in _builtin_plugins():
+        assert plugin.name, f"[{type(plugin).__name__}] plugin must have a name"
+        assert isinstance(plugin.stage, PipelineStage), (
+            f"[{plugin.name}] stage must be a PipelineStage, "
+            f"got {plugin.stage!r} (core/interfaces.py contract)"
+        )
+        assert isinstance(plugin.plugin_type, PluginType), (
+            f"[{plugin.name}] plugin_type must be a PluginType, "
+            f"got {plugin.plugin_type!r}"
+        )
+
+
+def test_conformance_stage_order_matches_pipeline():
+    stages = [p.stage for p in Pipeline(_builtin_plugins()).plugins]
+    order = PipelineStage.ordered()
+    assert [order.index(s) for s in stages] == sorted(
+        order.index(s) for s in stages
+    ), "[core/pipeline.py] plugins must execute in PipelineStage order"
+
+
+def test_conformance_invalid_stage_rejected_at_startup():
+    class BadStagePlugin(BaselineRelevanceScorer):
+        @property
+        def stage(self):  # type: ignore[override]
+            return "not-a-stage"
+
+    with pytest.raises(ConfigError):
+        validate_and_order([BadStagePlugin()])
+
+
+def test_conformance_bad_config_rejected():
+    with pytest.raises(ConfigError):
+        SafetyFilter().configure("not-a-mapping")  # type: ignore[arg-type]
+    with pytest.raises(ConfigError):
+        TrustEnricher({"trusted_domains": "example.com"})  # type: ignore[dict-item]
+
+
+# ---------------------------------------------------------------------------
+# Mandatory fail-closed (plugins/safety_filter.py + core/pipeline.py)
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_mandatory_filter_excludes():
+    plugin = SafetyFilter()
+    ctx = _context()
+    ctx.results.append(_hit("bad", title="free malware download"))
+    out = plugin.run(ctx)
+    assert [r.id for r in out.results] == ["h0", "h1"], (
+        "[plugins/safety_filter.py] mandatory filter must exclude blocked hits"
+    )
+    assert "safety-filter" in out.applied_filters
+
+
+def test_conformance_mandatory_outage_fails_closed():
+    plugin = SafetyFilter({"simulate_outage": True})
+    ctx = _context()
+    before = list(ctx.results)
+    with pytest.raises(PluginError) as excinfo:
+        Pipeline([plugin]).run(ctx)
+    assert excinfo.value.mandatory, (
+        "[plugins/safety_filter.py] outage must raise PluginError(mandatory=True)"
+    )
+    # Fail-closed: the exception propagates, so the caller can never mistake
+    # the unfiltered `before` list for a filtered result.
+    assert len(before) == 2
+
+
+def test_conformance_mandatory_raw_exception_converted():
+    class RawBoomFilter(SafetyFilter):
+        def run(self, context: SearchContext) -> SearchContext:
+            raise RuntimeError("backend exploded")
+
+    with pytest.raises(PluginError):
+        Pipeline([RawBoomFilter()]).run(_context())
+
+
+# ---------------------------------------------------------------------------
+# Optional isolation (plugins/trust_enricher.py + core/pipeline.py)
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_optional_failure_isolated():
+    plugin = TrustEnricher({"simulate_failure": True})
+    ctx = _context()
+    out = Pipeline([plugin]).run(ctx)  # must NOT raise
+    assert len(out.results) == 2, (
+        "[core/pipeline.py] optional failure must preserve all results"
+    )
+    failures = [e for e in out.plugin_executions if e.status == "failed"]
+    assert failures and failures[0].plugin_name == "trust-enricher", (
+        "[core/pipeline.py] optional failure must be recorded in diagnostics"
+    )
+    assert out.errors, "[core/pipeline.py] optional failure must add an error entry"
+
+
+def test_conformance_optional_raw_exception_isolated():
+    class RawBoomEnricher(TrustEnricher):
+        def run(self, context: SearchContext) -> SearchContext:
+            raise RuntimeError("trust backend exploded")
+
+    out = Pipeline([RawBoomEnricher()]).run(_context())
+    assert len(out.results) == 2
+
+
+def test_conformance_optional_enricher_never_filters():
+    plugin = TrustEnricher()
+    ctx = _context()
+    out = plugin.run(ctx)
+    assert len(out.results) == 2, (
+        "[plugins/trust_enricher.py] enricher must annotate, never remove"
+    )
+    assert any(r.warnings for r in out.results), (
+        "[plugins/trust_enricher.py] untrusted domains must gain warnings"
+    )
+
+
+def test_conformance_pipeline_continues_after_optional_failure():
+    order: list[str] = []
+
+    class Recorder(BaselineRelevanceScorer):
+        @property
+        def name(self) -> str:
+            return "recorder"
+
+        def run(self, context: SearchContext) -> SearchContext:
+            order.append("recorder")
+            return context
+
+    failing = TrustEnricher({"simulate_failure": True})
+    out = Pipeline([failing, Recorder()]).run(_context())
+    assert order == ["recorder"], (
+        "[core/pipeline.py] later plugins must still run after an optional failure"
+    )
+    assert len(out.results) == 2
+
+
+# ---------------------------------------------------------------------------
+# Registry validation (core/registry.py)
+# ---------------------------------------------------------------------------
+
+
+def test_conformance_registry_builds_and_skips_disabled():
+    built = PluginRegistry().build(
+        [
+            {"name": "safety-filter", "enabled": True, "config": {}},
+            {"name": "trust-enricher", "enabled": False},
+        ]
+    )
+    assert [p.name for p in built] == ["safety-filter"], (
+        "[core/registry.py] disabled plugins must be skipped without construction"
+    )
+
+
+def test_conformance_registry_rejects_unknown_and_bad_entries():
+    with pytest.raises(ConfigError):
+        PluginRegistry().build([{"name": "no-such-plugin"}])
+    with pytest.raises(ConfigError):
+        PluginRegistry().build([{"class": "x:Y"}])  # missing name
+    with pytest.raises(ConfigError):
+        PluginRegistry().build(
+            [{"name": "safety-filter", "config": "not-a-mapping"}]
+        )
+
+
+def test_conformance_duplicate_plugin_names_rejected():
+    with pytest.raises(ConfigError):
+        validate_and_order([SafetyFilter(), SafetyFilter()])
+
+
+def test_conformance_unknown_dependency_rejected():
+    class Lonely(BaselineRelevanceScorer):
+        @property
+        def name(self) -> str:
+            return "lonely"
+
+        @property
+        def dependencies(self) -> tuple[str, ...]:
+            return ("ghost",)
+
+    with pytest.raises(ConfigError):
+        validate_and_order([Lonely()])
+
+
+def test_conformance_explanation_stage_guarantees_reasons():
+    # Adapter-mapped providers (opensearch, bing) emit empty reasons; the
+    # EXPLANATION stage must fill them so API responses always explain.
+    # See require_reasons=False in tests/unit/test_provider_contract.py.
+    ctx = _context()
+    for hit in ctx.results:
+        hit.reasons = []
+    assemble_explanations(ctx)
+    for hit in ctx.results:
+        assert hit.reasons, (
+            "[core/pipeline.py] EXPLANATION stage must guarantee per-result reasons"
+        )
+        assert hit.original_score == 1.0 and hit.final_score == 1.0, (
+            "[core/pipeline.py] EXPLANATION must never touch scores"
+        )
+
+
+def test_conformance_plugin_type_matches_stage():
+    expectations: dict[str, Any] = {
+        "safety-filter": (PluginType.FILTER, PipelineStage.FILTERING),
+        "trust-enricher": (PluginType.ENRICHER, PipelineStage.ENRICHMENT),
+    }
+    instances = {"safety-filter": SafetyFilter(), "trust-enricher": TrustEnricher()}
+    for name, (ptype, stage) in expectations.items():
+        plugin = instances[name]
+        assert plugin.plugin_type is ptype, (
+            f"[plugins] {name} must be {ptype}, got {plugin.plugin_type}"
+        )
+        assert plugin.stage is stage, (
+            f"[plugins] {name} must run at {stage}, got {plugin.stage}"
+        )

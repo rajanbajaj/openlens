@@ -1,0 +1,118 @@
+"""Per-mode ranking profiles: named signal-weight bundles.
+
+Modes come from ``SearchRequest.mode``. Unknown modes raise ``ConfigError``
+loudly at request time so a typo never silently serves misranked results.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from openlens.config import load_config
+from openlens.core.interfaces import ConfigError
+
+
+@dataclass(frozen=True)
+class RankingProfile:
+    """How to combine ranking signals for one search mode."""
+
+    name: str
+    description: str = ""
+    relevance_weight: float = 1.0
+    warning_penalty: float = 0.5
+    trust_boost: float = 0.25
+    recency_boost: float = 0.0
+    keyword_boost: float = 0.0
+    keywords: tuple[str, ...] = field(default_factory=tuple)
+
+
+BUILTIN_PROFILES: dict[str, RankingProfile] = {
+    "default": RankingProfile(
+        name="default",
+        description="Baseline: provider-informed relevance, mild warning penalty.",
+    ),
+    "child-safe": RankingProfile(
+        name="child-safe",
+        description="Warnings demote heavily; trusted sources boosted.",
+        warning_penalty=10.0,
+        trust_boost=0.5,
+    ),
+    "news": RankingProfile(
+        name="news",
+        description="Boosts recent hits via metadata recency_score (0..1).",
+        recency_boost=2.0,
+    ),
+    "shopping": RankingProfile(
+        name="shopping",
+        description="Boosts hits mentioning purchase-oriented keywords.",
+        keyword_boost=0.5,
+        keywords=("buy", "price", "deal", "review", "shop"),
+    ),
+    "travel": RankingProfile(
+        name="travel",
+        description="Boosts hits mentioning travel-oriented keywords.",
+        keyword_boost=0.5,
+        keywords=("flight", "hotel", "guide", "itinerary", "trip"),
+    ),
+}
+
+
+def list_profiles() -> list[str]:
+    """Names of all built-in ranking profiles."""
+    return sorted(BUILTIN_PROFILES)
+
+
+def get_profile(name: str) -> RankingProfile:
+    """Return the profile for ``name``. Raises ConfigError when unknown."""
+    try:
+        return BUILTIN_PROFILES[name]
+    except KeyError:
+        raise ConfigError(
+            f"Unknown ranking profile '{name}'. Known: {', '.join(list_profiles())}."
+        ) from None
+
+
+def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
+    """Build a profile from a config mapping. Raises ConfigError if invalid."""
+    if not isinstance(data, dict):
+        raise ConfigError(f"Ranking profile '{name}' must be a mapping.")
+    known = {
+        "description",
+        "relevance_weight",
+        "warning_penalty",
+        "trust_boost",
+        "recency_boost",
+        "keyword_boost",
+        "keywords",
+    }
+    unknown = set(data) - known
+    if unknown:
+        raise ConfigError(
+            f"Ranking profile '{name}' has unknown keys: {sorted(unknown)}."
+        )
+    try:
+        return RankingProfile(
+            name=name,
+            description=str(data.get("description", "")),
+            relevance_weight=float(data.get("relevance_weight", 1.0)),
+            warning_penalty=float(data.get("warning_penalty", 0.5)),
+            trust_boost=float(data.get("trust_boost", 0.25)),
+            recency_boost=float(data.get("recency_boost", 0.0)),
+            keyword_boost=float(data.get("keyword_boost", 0.0)),
+            keywords=tuple(data.get("keywords", ())),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"Ranking profile '{name}' has invalid values: {exc}"
+        ) from exc
+
+
+def load_profiles(path: str | Path) -> dict[str, RankingProfile]:
+    """Load named profiles from a YAML file (``profiles: {name: {...}}``)."""
+    data = load_config(path)
+    raw = data.get("profiles", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("Ranking config 'profiles' must be a mapping.")
+    return {name: profile_from_dict(name, entry or {}) for name, entry in raw.items()}

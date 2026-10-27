@@ -1,0 +1,46 @@
+# Provider configuration for OpenLens (skeleton).
+#
+# Only entries with `enabled: true` are instantiated at startup; everything
+# else is skipped entirely (never constructed, never contacted over the
+# network). Both network-backed providers below ship disabled so the default
+# setup is fully offline-safe with no API keys required.
+#
+# Per-entry keys:
+#   type:      provider-type name resolved via the provider registry
+#              (defaults to the entry name).
+#   enabled:   instantiate this provider at startup (default false).
+#   timeout_s: bounded per-request timeout in seconds (default 5).
+#
+# The `custom_index` entry refers to the SQLite FTS5 backend owned by the
+# retrieval wave; it is the enabled default so search works with no infra.
+
+providers:
+  strategy: single
+  primary: custom_index
+  # fallback: <other-enabled-provider>  # optional 2nd provider (!= primary):
+  # primary *failure* retries once against it under its own timeout bound;
+  # an empty hit list never triggers it. `strategy: fallback` requires it.
+
+  custom_index:
+    enabled: true
+    type: custom_index
+    timeout_s: 5
+
+  opensearch:
+    enabled: false
+    type: opensearch
+    hosts:
+      - http://localhost:9200
+    index: openlens
+    timeout_s: 5
+    # username: ${OPENSEARCH_USER:-}
+    # password: ${OPENSEARCH_PASSWORD:-}
+    verify_certs: true
+
+  bing:
+    enabled: false
+    type: bing
+    # endpoint defaults to https://api.bing.microsoft.com/v7.0/search
+    # api_key resolves at load time; required when enabled.
+    api_key: ${BING_API_KEY:-}
+    timeout_s: 5

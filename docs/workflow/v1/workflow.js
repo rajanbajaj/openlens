@@ -68,14 +68,25 @@ function agentPrompt(spec, agent, priorRefs) {
 // only_waves reruns selected waves only (targeted relaunch); prior_refs seeds
 // context from a prior run. Skipped waves are reported, not silently dropped.
 export default async function workflow(host) {
-  const spec = host.args ?? {};
   const spills = [];
   const noteLog = [];
   const waveReports = [];
-  if (!Array.isArray(spec.waves) || spec.waves.length === 0 || !spec.integrate) {
+  let spec = host.args ?? {};
+  if (typeof spec === "string") {
+    try { spec = JSON.parse(spec); }
+    catch { spec = { __parseError: spec.slice(0, 200) }; }
+  }
+  if (!spec || !Array.isArray(spec.waves) || spec.waves.length === 0 || !spec.integrate) {
+    const probe = await host.agent({
+      label: "args-diagnostic",
+      input: `The workflow received unusable input args. Inspect and report: typeof host.args, its first 500 characters, and what the caller should pass instead (an object with plan_path, context_path, waves[], integrate — see skeleton_spec.json). Return ONLY complete (boolean, always false here), evidence (strings describing what arrived), unresolved (strings: what is needed).`,
+      schema: evidenceSchema,
+    });
     const report = { status: "misconfigured",
       unresolved: ["args must carry { plan_path, context_path, waves[], integrate } — see skeleton_spec.json"],
-      synthesis: null, evidence: [], spilledResults: [], notes: [], waves: [] };
+      synthesis: null, evidence: [], spilledResults: [], notes: notesFor(probe, "args-diagnostic"),
+      waves: [],
+      argsSeen: probe?.data ?? null };
     return { ...report, summary: JSON.stringify(report) };
   }
 

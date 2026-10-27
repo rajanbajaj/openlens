@@ -1,0 +1,47 @@
+# AI model configuration for OpenLens (skeleton).
+#
+# Only entries with `enabled: true` are instantiated at startup; everything
+# else is skipped entirely (never constructed, never contacted over the
+# network). Every backend below ships disabled so the default setup is fully
+# offline-safe with no API keys required and no live model calls.
+#
+# Per-entry keys:
+#   type:      model-type name resolved via the model registry
+#              (defaults to the entry name): fake | claude | muse | local.
+#   enabled:   instantiate this backend at startup (default false).
+#   timeout_s: bounded per-call timeout in seconds (default 10).
+#
+# The `fake` backend is the deterministic offline stand-in used by tests and
+# the AI plugin stub. Real backends (claude/muse/local) validate their own
+# credentials at startup when enabled, but perform no live calls yet.
+
+models:
+  primary: fake
+
+  fake:
+    enabled: false
+    type: fake
+    timeout_s: 10
+
+  claude:
+    enabled: false
+    type: claude
+    # api_key resolves at load time; required when enabled.
+    api_key: ${ANTHROPIC_API_KEY:-}
+    model: claude-3-5-sonnet-latest
+    timeout_s: 10
+
+  muse:
+    enabled: false
+    type: muse
+    # api_key resolves at load time; required when enabled.
+    api_key: ${MUSE_API_KEY:-}
+    model: muse-3.5
+    timeout_s: 10
+
+  local:
+    enabled: false
+    type: local
+    endpoint: ${LOCAL_MODEL_ENDPOINT:-http://localhost:11434}
+    model: default
+    timeout_s: 10

@@ -1,0 +1,51 @@
+# OpenLens default application configuration (skeleton).
+#
+# Loaded via `openlens.config.load_config`, so `${ENV_VAR}` and
+# `${VAR:-default}` references resolve at load time and unresolved
+# secrets fail startup validation loudly. `openlens.main.build_engine`
+# wires this file into a live Engine: providers first (primary, then the
+# optional `fallback:`), then plugins, then ranking.
+#
+# Only providers with `enabled: true` are instantiated at startup; the rest
+# stay inert so tests and local runs need no network or keys.
+
+app:
+  name: "openlens"
+  api_prefix: "/api/v1"
+
+api:
+  default_limit: 10
+  max_limit: 100
+
+# Search backends. `primary` serves every request; when `fallback` names a
+# second enabled provider, a primary *failure* (never an empty hit list)
+# retries once against the fallback under its own timeout bound.
+providers:
+  strategy: "single"
+  primary: custom_index
+  # fallback: custom_index_copy  # optional: must be enabled and != primary
+  custom_index:
+    enabled: true
+    type: custom_index
+    timeout_s: 5
+    db_path: "data/openlens.db"
+  opensearch:
+    enabled: false
+    type: opensearch
+    hosts: ["${OPENSEARCH_HOST:-http://localhost:9200}"]
+    index: openlens
+    timeout_s: 5
+    verify_certs: true
+
+# Pipeline plugins, toggled without core edits. Entries are
+# `{name, enabled, config?}` resolved via the plugin registry.
+plugins:
+  - name: safety-filter
+    enabled: true
+    config: {}
+  - name: baseline-scorer
+    enabled: true
+    config: {}
+
+ranking:
+  default_profile: "default"
