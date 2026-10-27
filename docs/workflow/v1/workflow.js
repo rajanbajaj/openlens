@@ -1,6 +1,6 @@
 // OpenLens skeleton build — workflow v1 root script.
 // Launch via the workflow tool with this file as the script source.
-// Ground truth: docs/skeleton_plan.md, docs/workflow/v1/context.md.
+// Ground truth: docs/workflow/tasks/skeleton_plan.md, docs/workflow/v1/context.md.
 
 const evidenceSchema = {
   type: "object",

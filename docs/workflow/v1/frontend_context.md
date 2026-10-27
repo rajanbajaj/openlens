@@ -4,7 +4,7 @@ Every agent in this workflow inherits these conventions. They are binding.
 
 ## Sources of Truth
 
-- `docs/frontend_plan.md` — what to build and why.
+- `docs/workflow/tasks/frontend_plan.md` — what to build and why.
 - `src/openlens/api/schemas.py` — the HTTP contract. Mirror it, never import
   it: no backend code, types, or tooling in `frontend/`.
 

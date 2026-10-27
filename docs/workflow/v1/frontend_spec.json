@@ -1,5 +1,5 @@
 {
-  "plan_path": "docs/frontend_plan.md",
+  "plan_path": "docs/workflow/tasks/frontend_plan.md",
   "context_path": "docs/workflow/v1/frontend_context.md",
   "waves": [
     {
@@ -9,7 +9,7 @@
         {
           "label": "wave0-scaffold",
           "owns": "frontend/ scaffold, frontend/package.json, frontend/.env.example, frontend/src/api/types.ts, frontend/src/api/guard.ts",
-          "task": "Scaffold the Vite React-TS app in frontend/ (npm toolchain). Configure VITE_OPENLENS_API_URL (dev default http://localhost:8000). Write TypeScript interfaces mirroring the contract in docs/frontend_plan.md (do not import backend code) plus a runtime guard validating the response/error envelope shape. No backend edits.",
+          "task": "Scaffold the Vite React-TS app in frontend/ (npm toolchain). Configure VITE_OPENLENS_API_URL (dev default http://localhost:8000). Write TypeScript interfaces mirroring the contract in docs/workflow/tasks/frontend_plan.md (do not import backend code) plus a runtime guard validating the response/error envelope shape. No backend edits.",
           "done": "npm run build clean; types.ts covers the full request, result, response, diagnostics, and error-envelope shapes."
         }
       ]

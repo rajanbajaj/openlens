@@ -2,10 +2,10 @@
 
 ## Goal
 
-Implement [skeleton_plan.md](../skeleton_plan.md) with a multi-agent workflow:
+Implement [skeleton_plan.md](./skeleton_plan.md) with a multi-agent workflow:
 parallel subagents build disjoint parts of the skeleton concurrently, coordinated
 through shared contracts and verification gates. The executable workflow lives in
-[`docs/workflow/v1/`](./v1/).
+[`v1/`](../v1/).
 
 ## Why This Decomposition
 
@@ -53,7 +53,7 @@ Wave 3 needs everything.
 
 ## Shared Conventions (Enforced on Every Agent)
 
-From [`v1/context.md`](./v1/context.md), baked into every agent prompt:
+From [`v1/context.md`](../v1/context.md), baked into every agent prompt:
 absolute imports (`from openlens.core...`), dataclasses for models, a fixed
 error taxonomy (provider errors wrapped, never raw), no new third-party
 dependency without noting it, pytest style with `testpaths=["tests"]`.
@@ -83,18 +83,18 @@ and unknown modes fail fast as misconfigured instead of running half a wave.
 `workflow.js` contains zero plan-specific content — no file paths, no wave
 topology, no prompts. Everything plan-specific arrives via the workflow input:
 
-- [`v1/workflow.js`](./v1/workflow.js) — generic executor. Input
+- [`v1/workflow.js`](../v1/workflow.js) — generic executor. Input
   `{ plan_path, context_path, waves[{name, mode, agents[{label, owns, task,
   done | brief_path}]}], integrate{...} }`. Runs waves in order (solo or
   parallel), carries result refs forward, then runs integration and synthesis
   agents. Every child launches with the structured evidence schema; the parent
   returns a full `{status, unresolved, synthesis, evidence, notes}` report.
   Future plans reuse this file unchanged — only the input changes.
-- [`v1/skeleton_spec.json`](./v1/skeleton_spec.json) — the skeleton's input:
+- [`v1/skeleton_spec.json`](../v1/skeleton_spec.json) — the skeleton's input:
   3 waves, 8 agents. Template for future plans: copy it, point `plan_path` at
   the new plan, rewrite the briefs.
-- [`v1/context.md`](./v1/context.md) — shared conventions every agent inherits.
-- [`v1/README.md`](./v1/README.md) — how to run, resume, and interpret results.
+- [`v1/context.md`](../v1/context.md) — shared conventions every agent inherits.
+- [`v1/README.md`](../v1/README.md) — how to run, resume, and interpret results.
 
 ## Risks
 
