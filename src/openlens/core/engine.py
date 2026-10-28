@@ -17,7 +17,11 @@ from openlens.core.interfaces import (
 )
 from openlens.core.pipeline import Pipeline, assemble_explanations
 from openlens.core.registry import PluginRegistry
-from openlens.ranking.profiles import get_profile
+from openlens.ranking.profiles import (
+    BUILTIN_PROFILES,
+    RankingProfile,
+    profile_from_dict,
+)
 from openlens.ranking.ranker import Ranker
 from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 
@@ -43,6 +47,29 @@ def _query_entry(processed: ProcessedQuery) -> dict[str, Any]:
         },
         "reasons": list(processed.reasons[:QUERY_ENTRY_CAP]),
     }
+
+
+def _coerce_profiles(raw: Any) -> dict[str, RankingProfile] | None:
+    """Normalize an optional ``ranking.profiles`` mapping for the Ranker.
+
+    Accepts ``None`` (Ranker falls back to builtins), a mapping of names to
+    raw profile dicts (parsed via ``profile_from_dict``), or a mapping of
+    names to already-built ``RankingProfile`` objects. Anything else is a
+    ``ConfigError`` at startup.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("Engine config 'ranking.profiles' must be a mapping.")
+    profiles: dict[str, RankingProfile] = {}
+    for profile_name, entry in raw.items():
+        if isinstance(entry, RankingProfile):
+            profiles[profile_name] = entry
+        elif isinstance(entry, dict):
+            profiles[profile_name] = profile_from_dict(profile_name, entry)
+        else:
+            raise ConfigError(f"Ranking profile '{profile_name}' must be a mapping.")
+    return profiles
 
 
 class SearchEngine(Engine):
@@ -73,7 +100,7 @@ class SearchEngine(Engine):
         return self._query_processor
 
     def configure(self, config: dict[str, Any]) -> None:
-        """Apply ``{plugins: [...], ranking: {default_profile}}`` config.
+        """Apply ``{plugins: [...], ranking: {default_profile, profiles?}}`` config.
 
         Also consumes the optional ``query:`` section into the standalone
         query processor (normalize -> intent -> expand); suggested modes
@@ -93,10 +120,16 @@ class SearchEngine(Engine):
         if not isinstance(ranking_cfg, dict):
             raise ConfigError("Engine config 'ranking' must be a mapping.")
         default_profile = ranking_cfg.get("default_profile", "default")
-        get_profile(default_profile)  # validates the name loudly
+        profiles = _coerce_profiles(ranking_cfg.get("profiles", None))
+        effective = BUILTIN_PROFILES if profiles is None else profiles
+        if default_profile not in effective:
+            raise ConfigError(
+                f"Unknown ranking profile '{default_profile}'. "
+                f"Known: {', '.join(sorted(effective))}."
+            )
         plugins = PluginRegistry().build(plugin_entries)
         self._pipeline = Pipeline(plugins)
-        self._ranker = Ranker({"profile": default_profile})
+        self._ranker = Ranker({"profile": default_profile}, profiles=profiles)
         # Standalone pre-retrieval stage: absent ``query:`` section means
         # code defaults. Raises ConfigError on a malformed section.
         self._query_processor = QueryProcessor.from_config(config)

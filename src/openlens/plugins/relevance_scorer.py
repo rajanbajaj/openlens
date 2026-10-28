@@ -1,12 +1,16 @@
 """Baseline relevance scorer: query-term overlap over title + snippet.
 
-Optional plugin: rescores ``final_score`` while preserving ``original_score``
-and records a human-readable reason per hit. Deterministic and dependency-free.
+Optional plugin: records the term-overlap bonus in ``final_score`` (preserving
+``original_score``) and mirrors it as the ``relevance`` signal in
+``result.metadata["signals"]`` for downstream consumers of the shared signal
+namespace. Records a human-readable reason per hit. Deterministic and
+dependency-free.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 
 from openlens.core.context import SearchContext
@@ -15,9 +19,13 @@ from openlens.core.interfaces import (
     PipelineStage,
     PluginType,
 )
+from openlens.plugins._signals import set_signal
 from openlens.plugins.base import BasePlugin
 
 _TOKEN = re.compile(r"[a-z0-9]+")
+
+#: Signal key written into ``result.metadata["signals"]``.
+SIGNAL_NAME = "relevance"
 
 
 def tokenize(text: str) -> list[str]:
@@ -58,13 +66,13 @@ class BaselineRelevanceScorer(BasePlugin):
         self, query_terms: list[str], title: str, snippet: str
     ) -> tuple[float, int]:
         """Return (bonus, matched_term_count) for one hit."""
-        title_tokens = tokenize(title)
-        snippet_tokens = tokenize(snippet)
+        title_counts = Counter(tokenize(title))
+        snippet_counts = Counter(tokenize(snippet))
         matched = 0
         bonus = 0.0
         for term in query_terms:
-            title_hits = title_tokens.count(term)
-            snippet_hits = snippet_tokens.count(term)
+            title_hits = title_counts.get(term, 0)
+            snippet_hits = snippet_counts.get(term, 0)
             if title_hits or snippet_hits:
                 matched += 1
                 bonus += (
@@ -78,6 +86,7 @@ class BaselineRelevanceScorer(BasePlugin):
         for result in context.results:
             bonus, matched = self.score_hit(query_terms, result.title, result.snippet)
             result.final_score = result.original_score + bonus
+            set_signal(result, SIGNAL_NAME, bonus)
             result.reasons.append(
                 f"matched {matched}/{len(query_terms)} query terms (+{bonus:.2f})"
             )

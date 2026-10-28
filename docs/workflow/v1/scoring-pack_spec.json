@@ -1,0 +1,48 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_scoring-pack_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t11-scorers",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t11-signals",
+          "owns": "src/openlens/plugins/_signals.py, tests/unit/test_signals.py",
+          "task": "Implement scoring-pack plan Step 1 only: NEW src/openlens/plugins/_signals.py shared pure helpers (no I/O, dataclasses only, no Pydantic): get_signal/set_signal over result.metadata['signals'] with neutral 0.5 defaults and 0..1 clamping, domain extraction (urlparse hostname, lowercased, IDN/case handling), date parsing for the pinned keys (published_at/published/date; ISO-8601 incl. Z, or epoch int/float). Tests in NEW tests/unit/test_signals.py: defaults, malformed dates, IDN/case-normalized domains, out-of-range clamping. No other files.",
+          "done": "_signals.py + tests green; helpers pure with no I/O."
+        },
+        {
+          "label": "t11-trust",
+          "owns": "src/openlens/plugins/trust_scorer.py, src/openlens/plugins/trust_enricher.py, tests/unit/test_trust_scoring.py",
+          "task": "Implement scoring-pack plan Step 2 only, reading the landed src/openlens/plugins/_signals.py API first (reuse its domain/signal helpers; do not re-implement). (a) NEW src/openlens/plugins/trust_scorer.py: trust signal 0..1 (SCORING, optional) from config reputation tiers (reputation: {trusted: [...], distrusted: [...]}) via dict lookup built once in configure(); HTTPS scheme bonus; domain_age_days bonus only from metadata int >= 0 (absent/other types -> no bonus); domain in both tiers -> ConfigError at configure; missing metadata -> neutral 0.5 with reason; all writes clamped. (b) Extend src/openlens/plugins/trust_enricher.py: tier-aware warnings/reasons (distrusted domain, no HTTPS) reusing the same reputation config shape; legacy trusted_domains list config keeps working and maps to the trusted tier; lookups become frozenset/dict (O(1)); enricher stays the only warner (no duplicate warnings with the scorer). Tests in NEW tests/unit/test_trust_scoring.py: each tier, HTTPS bonus, domain_age present/absent, missing metadata neutral, both-tiers ConfigError, no duplicate warnings, legacy config compat, startup asserts O(1) structure types. No registry/config/ranker changes.",
+          "done": "trust scorer + enricher extension + tests green; legacy config works."
+        },
+        {
+          "label": "t11-fresh-pref",
+          "owns": "src/openlens/plugins/freshness_scorer.py, src/openlens/plugins/preference_scorer.py, tests/unit/test_freshness_preference.py",
+          "task": "Implement scoring-pack plan Steps 3-4 only, reading the landed src/openlens/plugins/_signals.py API first (reuse its date/signal helpers). (a) NEW src/openlens/plugins/freshness_scorer.py (SCORING, optional): first present of metadata published_at/published/date (ISO incl. Z or epoch int/float; unparseable/absent -> neutral 0.5 with reason), exponential decay with configurable half_life_days (default 30, must be > 0); writes freshness signal AND backfills recency_score with the identical value. (b) NEW src/openlens/plugins/preference_scorer.py (SCORING, optional): reads prefer_domains/prefer_topics request filters only (passed through by filter-pack); domain match exact-or-subdomain on normalized domain; topic match case-insensitive token over title+snippet; bounded boosts 0..1; malformed filter values (non-list, non-string entries) ignored and recorded once per request in context.metadata['preference_warnings'] (in-process only); no cross-query state (plugin instances are long-lived). Tests in NEW tests/unit/test_freshness_preference.py: decay exact values at half-life multiples, dateless neutral + reason, each date key + epoch form, recency_score backfill equality; boosts scoped per request (no leak across two requests), malformed filters noted. No registry/config/ranker changes.",
+          "done": "freshness + preference scorers + tests green incl. decay math and no-leak."
+        }
+      ]
+    },
+    {
+      "name": "t11-rank",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t11-rank",
+          "owns": "src/openlens/ranking/ranker.py, src/openlens/ranking/profiles.py, src/openlens/plugins/relevance_scorer.py, src/openlens/core/registry.py, src/openlens/core/engine.py, src/openlens/main.py, configs/ranking.yaml, tests/unit/test_ranking_weights.py",
+          "task": "Implement scoring-pack plan Step 5 only, reading the landed scorer modules first (do not change their signal keys). (a) Migrate plugins/relevance_scorer.py to emit a relevance signal with identical bonus math (duplicate query terms count multiplicities; build one Counter per hit instead of list.count, O(1) per distinct term). (b) Ranker composite: add trust_weight*signals[trust] + freshness_weight*signals[freshness] + preference_weight*signals[preference] (missing keys -> neutral 0.5, never KeyError); per-mode weights in RankingProfile/profile_from_dict/builtins/configs/ranking.yaml with pinned defaults (default 0.5/0.25/1.0, news 0.5/2.0/0.0, child-safe 1.0/0.0/0.0, shopping|travel 0.25/0.0/1.0); old trust_boost/recency_boost terms stay, nothing removed; neutral-0.5-when-no-scorer is a constant offset that cannot reorder. (c) Validate keywords element/length (string/non-string/over-cap -> ConfigError, cap 50, store pre-lowered). (d) Ranker accepts injected profiles dict (default builtins); SearchEngine.configure accepts optional profiles; main.py build_engine loads configs/ranking.yaml via load_profiles when present, falling back to builtins. (e) Registry: add trust-scorer/freshness-scorer/preference-scorer to BUILTIN_PLUGINS. (f) Counter-based relevance + pre-lowered keyword cap are the folded scalability fixes; scorers append at most one concise reason per result. Tests in NEW tests/unit/test_ranking_weights.py: all pre-existing ranking behavior unchanged, per-mode weight tests, unknown key ConfigError, keyword validation, tmp-path ranking.yaml weight change alters live ordering (proves wiring), YAML<->builtins parity test. Do not touch filter plugins, diagnostics, or default.yaml plugin entries.",
+          "done": "migration + composite + weights + wiring + parity tests green; existing ranking tests unchanged."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t11-integrate",
+    "owns": "configs/default.yaml, tests/unit/test_scoring_pack.py",
+    "task": "Finish scoring-pack plan Step 6 + ship disabled-by-default config. Add opt-in (enabled: false) entries for trust-scorer, freshness-scorer, preference-scorer to configs/default.yaml (baseline scorer stays enabled as today; no default-behavior change). Write tests/unit/test_scoring_pack.py with the Goal's falsifiable check on hand-built hits (or in-test Documents in an in-memory CustomIndexProvider) with spread published_at values across half-lives plus one trusted-tier and one distrusted-tier domain: same query under default vs news returns different top-3 orderings and the moved hits' reasons cite freshness/trust; step 6 fails if either signal is neutral-uniform, weights do not differ per mode, or reasons are absent. Also assert the shipped tests/fixtures/corpus.py as neutral-signal smoke (all signals 0.5, ordering unchanged). Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "default.yaml opt-in entries present; ordering test proves default-vs-news difference with cited signals; full suite + ruff + mypy clean."
+  }
+}

@@ -10,6 +10,9 @@ profiles:
     recency_boost: 0.0
     keyword_boost: 0.0
     keywords: []
+    trust_weight: 0.5
+    freshness_weight: 0.25
+    preference_weight: 1.0
   child-safe:
     description: "Warnings demote heavily; trusted sources boosted."
     relevance_weight: 1.0
@@ -18,6 +21,9 @@ profiles:
     recency_boost: 0.0
     keyword_boost: 0.0
     keywords: []
+    trust_weight: 1.0
+    freshness_weight: 0.0
+    preference_weight: 0.0
   news:
     description: "Boosts recent hits via metadata recency_score (0..1)."
     relevance_weight: 1.0
@@ -26,6 +32,9 @@ profiles:
     recency_boost: 2.0
     keyword_boost: 0.0
     keywords: []
+    trust_weight: 0.5
+    freshness_weight: 2.0
+    preference_weight: 0.0
   shopping:
     description: "Boosts hits mentioning purchase-oriented keywords."
     relevance_weight: 1.0
@@ -34,6 +43,9 @@ profiles:
     recency_boost: 0.0
     keyword_boost: 0.5
     keywords: ["buy", "price", "deal", "review", "shop"]
+    trust_weight: 0.25
+    freshness_weight: 0.0
+    preference_weight: 1.0
   travel:
     description: "Boosts hits mentioning travel-oriented keywords."
     relevance_weight: 1.0
@@ -42,3 +54,6 @@ profiles:
     recency_boost: 0.0
     keyword_boost: 0.5
     keywords: ["flight", "hotel", "guide", "itinerary", "trip"]
+    trust_weight: 0.25
+    freshness_weight: 0.0
+    preference_weight: 1.0

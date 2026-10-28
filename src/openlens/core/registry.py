@@ -19,6 +19,9 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "user-restrictions": "openlens.plugins.user_restrictions:UserRestrictionsFilter",
     "trust-enricher": "openlens.plugins.trust_enricher:TrustEnricher",
     "baseline-scorer": "openlens.plugins.relevance_scorer:BaselineRelevanceScorer",
+    "trust-scorer": "openlens.plugins.trust_scorer:TrustScorer",
+    "freshness-scorer": "openlens.plugins.freshness_scorer:FreshnessScorer",
+    "preference-scorer": "openlens.plugins.preference_scorer:PreferenceScorer",
     "ranker": "openlens.ranking.ranker:Ranker",
 }
 

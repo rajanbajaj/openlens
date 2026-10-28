@@ -27,6 +27,11 @@ class SearchRequestSchema(BaseModel):
     mode: str = Field(default="default", min_length=1, max_length=64)
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
+    # Free-form filters passed through to the engine. The `prefer_` prefix
+    # is reserved for advisory scoring boosts (never exclusion):
+    # `prefer_domains: list[str]` (exact-or-subdomain match) and
+    # `prefer_topics: list[str]` (case-insensitive token match) feed the
+    # preference scorer; exclusion syntax belongs to filter-pack.
     filters: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("query")

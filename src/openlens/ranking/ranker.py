@@ -7,11 +7,19 @@ Composite signal per hit::
             + recency_boost * recency_score(0..1)
             + keyword_boost * keyword_hits
             - warning_penalty * len(warnings)
+            + trust_weight * signals["trust"]
+            + freshness_weight * signals["freshness"]
+            + preference_weight * signals["preference"]
+
+Missing signal keys degrade to the neutral 0.5 default (never ``KeyError``),
+so with no scorer enabled every hit carries the same constant offset and
+ordering is unchanged. The legacy ``trust_boost``/``recency_boost`` terms
+stay alongside the new signal terms; no term is removed.
 
 The profile is selected from ``SearchRequest.mode``; the configured
 ``profile`` is the fallback when the request mode is unknown to the caller.
 In practice ``Engine`` passes modes through and unknown modes fail loudly via
-``get_profile`` so typos never silently misrank.
+``ConfigError`` so typos never silently misrank.
 """
 
 from __future__ import annotations
@@ -19,13 +27,29 @@ from __future__ import annotations
 from typing import Any
 
 from openlens.core.context import SearchContext
-from openlens.core.interfaces import PipelineStage, PluginType, SearchResult
+from openlens.core.interfaces import (
+    ConfigError,
+    PipelineStage,
+    PluginType,
+    SearchResult,
+)
+from openlens.plugins._signals import get_signal
 from openlens.plugins.base import BasePlugin
-from openlens.ranking.profiles import RankingProfile, get_profile
+from openlens.ranking.profiles import BUILTIN_PROFILES, RankingProfile
 
 
 class Ranker(BasePlugin):
     """Sorts results by the active mode profile's composite signal."""
+
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        profiles: dict[str, RankingProfile] | None = None,
+    ) -> None:
+        self._profiles: dict[str, RankingProfile] = (
+            dict(profiles) if profiles is not None else dict(BUILTIN_PROFILES)
+        )
+        super().__init__(config)
 
     @property
     def name(self) -> str:
@@ -43,14 +67,22 @@ class Ranker(BasePlugin):
     def mandatory(self) -> bool:
         return False
 
+    def _lookup(self, name: str) -> RankingProfile:
+        """Return the profile for ``name`` or fail loudly on unknown names."""
+        try:
+            return self._profiles[name]
+        except KeyError:
+            raise ConfigError(
+                f"Unknown ranking profile '{name}'. "
+                f"Known: {', '.join(sorted(self._profiles))}."
+            ) from None
+
     def configure(self, config: dict[str, Any]) -> None:
         super().configure(config)
         fallback = self._config.get("profile", "default")
         if not isinstance(fallback, str):
-            from openlens.core.interfaces import ConfigError
-
             raise ConfigError("Ranker 'profile' must be a string.")
-        get_profile(fallback)  # validate loudly at startup
+        self._lookup(fallback)  # validate loudly at startup
         self._fallback_profile = fallback
 
     def composite(self, profile: RankingProfile, result: SearchResult) -> float:
@@ -71,11 +103,14 @@ class Ranker(BasePlugin):
             + profile.recency_boost * recency
             + profile.keyword_boost * keyword_hits
             - profile.warning_penalty * len(result.warnings)
+            + profile.trust_weight * get_signal(result, "trust")
+            + profile.freshness_weight * get_signal(result, "freshness")
+            + profile.preference_weight * get_signal(result, "preference")
         )
 
     def run(self, context: SearchContext) -> SearchContext:
         mode = context.request.mode or self._fallback_profile
-        profile = get_profile(mode)
+        profile = self._lookup(mode)
         for result in context.results:
             result.final_score = self.composite(profile, result)
             result.reasons.append(f"ranked with profile '{profile.name}'")

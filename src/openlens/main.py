@@ -23,6 +23,7 @@ from openlens.config import load_config
 from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import ConfigError, Engine
 from openlens.providers.manager import ProviderManager
+from openlens.ranking.profiles import RankingProfile, load_profiles
 from openlens.retrieval.query_processor import extract_query_section
 
 DEFAULT_CONFIG_PATH = (
@@ -134,6 +135,29 @@ def _plugin_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def ranking_config_candidates() -> list[Path]:
+    """Where to look for the ranking profiles file (source tree, then CWD)."""
+    return [
+        DEFAULT_CONFIG_PATH.parent / "ranking.yaml",
+        Path.cwd() / "configs" / "ranking.yaml",
+    ]
+
+
+def load_ranking_profiles(
+    candidates: list[Path] | None = None,
+) -> dict[str, RankingProfile] | None:
+    """Load ``ranking.yaml`` profiles from the first existing candidate.
+
+    Returns ``None`` when no candidate exists so the engine falls back to
+    builtins. A present-but-invalid file still fails loudly via ConfigError.
+    """
+    resolved = candidates if candidates is not None else ranking_config_candidates()
+    for candidate in resolved:
+        if candidate.is_file():
+            return load_profiles(candidate)
+    return None
+
+
 def _ranking_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize the app `ranking:` section to `Engine.configure` shape."""
     section = config.get("ranking", {})
@@ -142,7 +166,17 @@ def _ranking_config(config: dict[str, Any]) -> dict[str, Any]:
     profile = section.get("default_profile", section.get("default_mode", "default"))
     if not isinstance(profile, str) or not profile:
         raise ConfigError("Ranking 'default_profile' must be a non-empty string.")
-    return {"default_profile": profile}
+    normalized: dict[str, Any] = {"default_profile": profile}
+    file_profiles = load_ranking_profiles()
+    inline = section.get("profiles")
+    if inline is not None and not isinstance(inline, dict):
+        raise ConfigError("Config section 'ranking.profiles' must be a mapping.")
+    if file_profiles is not None or isinstance(inline, dict):
+        merged: dict[str, Any] = dict(file_profiles) if file_profiles else {}
+        if isinstance(inline, dict):
+            merged.update(inline)
+        normalized["profiles"] = merged
+    return normalized
 
 
 def build_engine(config: dict[str, Any]) -> SearchEngine:

@@ -63,6 +63,21 @@ plugins:
   - name: baseline-scorer
     enabled: true
     config: {}
+  # Scoring-pack signals (scoring-pack plan, step 6). Opt-in: disabled by
+  # default so shipped behavior is unchanged. Tests enable these explicitly.
+  - name: trust-scorer
+    enabled: false
+    config:
+      reputation:
+        trusted: []
+        distrusted: []
+  - name: freshness-scorer
+    enabled: false
+    config:
+      half_life_days: 30
+  - name: preference-scorer
+    enabled: false
+    config: {}
 
 ranking:
   default_profile: "default"
