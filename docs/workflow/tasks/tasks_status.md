@@ -8,6 +8,7 @@
 | 4 | Local Docker deploy (backend, frontend, OpenSearch) | — | Done | `deploy/local/docker-compose.yml` verified live: search 200 with envelope, frontend 200 via `/api/` proxy, OpenSearch seeded with 8-doc corpus. Fixed along the way: installed-package config resolution (+4 tests), CORS preflights, nginx DNS caching. |
 | 5 | Review workflow to update `docs/workflow/tasks/` on each run | — | Todo | Proposed by user; not started. |
 | 6 | Config-driven custom-engine HTTP integration (no per-engine adapter) | [integration_plan.md](./2026-10-28-0450_integration_plan.md) | Done | `http` provider type shipped (`http.py` + `http_mapping.py`, registered, YAML-only config); full suite 216 passed, stub-server verification OK, no core-interface changes. |
+| 7 | Code quality gates (ruff, mypy, pip-audit, eslint, prettier, npm audit, gitleaks) + skeleton audit | [quality-gates_plan.md](./2026-10-28-1135_quality-gates_plan.md) | In Progress | Gates green: ruff/mypy/pytest/pip-audit, eslint/prettier/build/vitest, gitleaks detect + hook handshake, CI YAML parses, contexts updated. Hook staged-path ruff/eslint extension done + verified. Left: a real CI-on-push run (YAML parses; all gates verified locally). Vitest@5 major approved + applied: `npm audit` 0 vulnerabilities, eslint/prettier/test/build all green. |
 
 Conventions: each task gets its plan in this directory, named
 `<YYYY-MM-DD-HHMM>_<slug>_plan.md` (datetime = day and time the plan was written); this file is

@@ -10,6 +10,7 @@ the whole repo. Writing it is part of ending a session, not optional.
 Each summary has exactly these sections, in order. Keep every section
 tight — facts and file paths, no deliberation logs.
 
+0. **Session** — session id and log path, so a later session can resume it (`muse resume <id>` or read the log).
 1. **Outcome** — what this session produced, in 3–8 bullets.
 2. **Decisions** — choices made and why (naming, paths, scope cuts). One
    line each, with the reason attached.

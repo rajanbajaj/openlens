@@ -1,5 +1,11 @@
 # Session Summary — bootstrap, builds, deploy, integrations
 
+## Session
+
+- id: `01a17f1b-512d-7232-92a1-62add42c6029` (name: `desert-orbit`)
+- log: `~/.local/share/muse/sessions/2026/10/28/01a17f1b-512d-7232-92a1-62add42c6029/session.jsonl`
+- Resume with `muse resume 01a17f1b-512d-7232-92a1-62add42c6029` (or `--last` for the most recent session).
+
 ## Outcome
 
 - Initialized `pyproject.toml` (hatchling, `src` layout, pytest) and the empty `src/openlens` scaffold into a working tree.
