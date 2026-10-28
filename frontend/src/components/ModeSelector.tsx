@@ -1,13 +1,7 @@
 import type { SearchMode } from '../api/types.ts';
 
 /** Modes offered by the selector, in display order. `default` first. */
-export const SEARCH_MODES: SearchMode[] = [
-  'default',
-  'child-safe',
-  'news',
-  'shopping',
-  'travel',
-];
+export const SEARCH_MODES: SearchMode[] = ['default', 'child-safe', 'news', 'shopping', 'travel'];
 
 export interface ModeSelectorProps {
   /** Currently selected mode. Defaults to `"default"`. */

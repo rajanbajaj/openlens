@@ -16,14 +16,16 @@ def fixture_documents() -> list[Document]:
         Document(
             id="doc-shopping-1",
             title="Best running shoes for flat feet",
-            content="A shopping guide comparing cushioned running shoes with arch support.",
+            content="A shopping guide comparing cushioned running shoes "
+            + "with arch support.",
             url="https://shop.example.com/running-shoes",
             metadata={"category": "shopping"},
         ),
         Document(
             id="doc-shopping-2",
             title="Affordable trail shoes review",
-            content="Trail running shoes tested for grip and durability on rough terrain.",
+            content="Trail running shoes tested for grip and durability "
+            + "on rough terrain.",
             url="https://shop.example.com/trail-shoes",
             metadata={"category": "shopping"},
         ),
@@ -44,14 +46,16 @@ def fixture_documents() -> list[Document]:
         Document(
             id="doc-tech-2",
             title="Python dataclasses field guide",
-            content="Dataclasses reduce boilerplate for plain data containers in Python.",
+            content="Dataclasses reduce boilerplate for plain data "
+            + "containers in Python.",
             url="https://dev.example.com/python-dataclasses",
             metadata={"category": "tech"},
         ),
         Document(
             id="doc-travel-1",
             title="Weekend trip to the coast",
-            content="A short travel itinerary with beaches, seafood, and lighthouse views.",
+            content="A short travel itinerary with beaches, seafood, "
+            + "and lighthouse views.",
             url="https://travel.example.com/coast-trip",
             metadata={"category": "travel"},
         ),

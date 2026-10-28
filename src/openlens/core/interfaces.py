@@ -147,16 +147,26 @@ class ProviderError(OpenLensError):
         self.code = code
 
     @classmethod
-    def timeout(cls, provider_name: str, message: str = "provider timed out") -> "ProviderError":
-        return cls(message, provider_name=provider_name, retryable=True, code=cls.TIMEOUT)
+    def timeout(
+        cls, provider_name: str, message: str = "provider timed out"
+    ) -> "ProviderError":
+        return cls(
+            message, provider_name=provider_name, retryable=True, code=cls.TIMEOUT
+        )
 
     @classmethod
-    def auth(cls, provider_name: str, message: str = "provider authentication failed") -> "ProviderError":
+    def auth(
+        cls, provider_name: str, message: str = "provider authentication failed"
+    ) -> "ProviderError":
         return cls(message, provider_name=provider_name, retryable=False, code=cls.AUTH)
 
     @classmethod
-    def rate_limit(cls, provider_name: str, message: str = "provider rate limit exceeded") -> "ProviderError":
-        return cls(message, provider_name=provider_name, retryable=True, code=cls.RATE_LIMIT)
+    def rate_limit(
+        cls, provider_name: str, message: str = "provider rate limit exceeded"
+    ) -> "ProviderError":
+        return cls(
+            message, provider_name=provider_name, retryable=True, code=cls.RATE_LIMIT
+        )
 
 
 class PluginError(OpenLensError):
@@ -285,7 +295,10 @@ class Engine(ABC):
 
     @abstractmethod
     def configure(self, config: dict[str, Any]) -> None:
-        """Apply engine config (providers, plugins, ranking). Raise ConfigError if invalid."""
+        """Apply engine config (providers, plugins, ranking).
+
+        Raise ConfigError if invalid.
+        """
         raise NotImplementedError
 
     @abstractmethod

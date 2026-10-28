@@ -1,0 +1,17 @@
+title = "OpenLens gitleaks config"
+
+# Keep the full embedded default rule set; the [allowlist] below only
+# carves out the justified sentinel fixtures. Without this, a repo-level
+# config REPLACES (not merges) the defaults and every scan is trivially clean.
+[extend]
+useDefault = true
+
+# Baseline exceptions (secrets gate, workflow step 6). Each entry below is
+# an intentional non-secret fixture, not a credential. Rule: every entry
+# needs a written justification; anything not listed here fails the scan.
+[allowlist]
+description = "Sentinel fixtures in tests/integration/test_secret_leak.py. That suite seeds configs with fake secrets and asserts they never appear in responses, diagnostics, or logs. (1) sk-test-SENTINEL-7f3a9c: fake Stripe-like test key, matches no live key format, asserted absent from all outputs. (2) pw-test-SENTINEL-4b2e81: fake password fixture (also carries a `# noqa: S105` justification in source), asserted absent from all outputs. A planted real-pattern secret is still flagged; the hook handshake verifies this."
+regexes = [
+  '''sk-test-SENTINEL-7f3a9c''',
+  '''pw-test-SENTINEL-4b2e81''',
+]

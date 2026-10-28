@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/v1", tags=["search"])
 def get_engine(request: Request) -> Engine:
     """Resolve the engine attached to the app (overridable in tests)."""
     engine = getattr(request.app.state, "engine", None)
-    if engine is None:
+    if not isinstance(engine, Engine):
         raise EngineUnavailableError("search engine is not configured")
     return engine
 

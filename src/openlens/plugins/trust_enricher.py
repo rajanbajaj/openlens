@@ -48,8 +48,12 @@ class TrustEnricher(BasePlugin):
     def configure(self, config: dict[str, Any]) -> None:
         super().configure(config)
         trusted = self._config.get("trusted_domains", [])
-        if not isinstance(trusted, list) or not all(isinstance(d, str) for d in trusted):
-            raise ConfigError("TrustEnricher 'trusted_domains' must be a list of strings.")
+        if not isinstance(trusted, list) or not all(
+            isinstance(d, str) for d in trusted
+        ):
+            raise ConfigError(
+                "TrustEnricher 'trusted_domains' must be a list of strings."
+            )
         self._trusted_domains = [d.lower() for d in trusted]
         self._simulate_failure = bool(self._config.get("simulate_failure", False))
 

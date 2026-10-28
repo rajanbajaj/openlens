@@ -63,9 +63,7 @@ def test_pagination_pages_without_overlap():
     assert len(page1) <= 2 and len(page2) <= 2
     assert {h.id for h in page1}.isdisjoint({h.id for h in page2})
     all_hits = provider.search(SearchRequest(query="search", limit=10, offset=0))
-    assert {h.id for h in page1} | {h.id for h in page2} <= {
-        h.id for h in all_hits
-    }
+    assert {h.id for h in page1} | {h.id for h in page2} <= {h.id for h in all_hits}
 
 
 def test_empty_query_raises_provider_error():

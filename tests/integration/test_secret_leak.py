@@ -21,7 +21,7 @@ from openlens.providers.custom_index import CustomIndexProvider
 from tests.fixtures.corpus import fixture_documents, seed_provider
 
 SENTINEL_KEY = "sk-test-SENTINEL-7f3a9c"
-SENTINEL_PASSWORD = "pw-test-SENTINEL-4b2e81"
+SENTINEL_PASSWORD = "pw-test-SENTINEL-4b2e81"  # noqa: S105 - intentional non-secret fixture value
 SECRETS = (SENTINEL_KEY, SENTINEL_PASSWORD)
 
 
@@ -45,10 +45,14 @@ class _SecretFakeProvider(BaseSearchProvider):
             if any(t in (doc.title + " " + doc.content).lower() for t in query.split()):
                 hits.append(
                     SearchResult(
-                        id=doc.id, title=doc.title, snippet=doc.content[:200],
+                        id=doc.id,
+                        title=doc.title,
+                        snippet=doc.content[:200],
                         original_score=1.0 / (rank + 1),
                         final_score=1.0 / (rank + 1),
-                        url=doc.url, provider=self.name, reasons=["corpus match"],
+                        url=doc.url,
+                        provider=self.name,
+                        reasons=["corpus match"],
                     )
                 )
         return hits
@@ -89,9 +93,7 @@ def api_engine() -> SearchEngine:
 def _assert_no_secrets(payload: object, where: str) -> None:
     text = json.dumps(payload, default=str)
     for secret in SECRETS:
-        assert secret not in text, (
-            f"[api/secrets] sentinel secret leaked in {where}"
-        )
+        assert secret not in text, f"[api/secrets] sentinel secret leaked in {where}"
 
 
 def test_engine_response_and_diagnostics_carry_no_secrets(engine, caplog):
@@ -156,9 +158,7 @@ def _http_provider_with_secret():
     return provider
 
 
-_HTTP_SECRET_PAYLOAD = {
-    "results": [{"id": "h1", "title": "Hello", "text": "world"}]
-}
+_HTTP_SECRET_PAYLOAD = {"results": [{"id": "h1", "title": "Hello", "text": "world"}]}
 
 
 def _assert_http_secret_absent(payload: object, where: str) -> None:

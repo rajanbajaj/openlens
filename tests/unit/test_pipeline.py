@@ -139,9 +139,7 @@ def test_optional_plugin_failure_isolated():
     resp = engine.search(SearchRequest(query="kittens"))
     # Results still served despite the optional outage.
     assert [r.id for r in resp.results] == ["ok"]
-    statuses = {
-        e["plugin"]: e["status"] for e in resp.diagnostics["plugin_executions"]
-    }
+    statuses = {e["plugin"]: e["status"] for e in resp.diagnostics["plugin_executions"]}
     assert statuses["boom-optional"] == "failed"
     assert statuses["ranker"] == "ok"
     assert resp.diagnostics["errors"] == ["boom-optional: boom"]
@@ -155,8 +153,11 @@ def test_registry_builds_from_config_and_rejects_unknown():
     plugins = registry.build(
         [
             {"name": "safety-filter", "config": {"blocked_terms": ["spam"]}},
-            {"name": "off", "class": "openlens.plugins.safety_filter:SafetyFilter",
-             "enabled": False},
+            {
+                "name": "off",
+                "class": "openlens.plugins.safety_filter:SafetyFilter",
+                "enabled": False,
+            },
         ]
     )
     assert [p.name for p in plugins] == ["safety-filter"]

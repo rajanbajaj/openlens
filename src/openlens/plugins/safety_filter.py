@@ -51,8 +51,12 @@ class SafetyFilter(BasePlugin):
         domains = self._config.get("blocked_domains", [])
         if not isinstance(terms, list) or not all(isinstance(t, str) for t in terms):
             raise ConfigError("SafetyFilter 'blocked_terms' must be a list of strings.")
-        if not isinstance(domains, list) or not all(isinstance(d, str) for d in domains):
-            raise ConfigError("SafetyFilter 'blocked_domains' must be a list of strings.")
+        if not isinstance(domains, list) or not all(
+            isinstance(d, str) for d in domains
+        ):
+            raise ConfigError(
+                "SafetyFilter 'blocked_domains' must be a list of strings."
+            )
         self._blocked_terms = [t.lower() for t in terms]
         self._blocked_domains = [d.lower() for d in domains]
         self._simulate_outage = bool(self._config.get("simulate_outage", False))

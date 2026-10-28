@@ -28,11 +28,17 @@ from openlens.plugins.safety_filter import SafetyFilter
 from openlens.plugins.trust_enricher import TrustEnricher
 
 
-def _hit(hit_id: str = "h1", title: str = "clean title",
-         url: str = "https://example.com/a") -> SearchResult:
+def _hit(
+    hit_id: str = "h1", title: str = "clean title", url: str = "https://example.com/a"
+) -> SearchResult:
     return SearchResult(
-        id=hit_id, title=title, snippet="a snippet",
-        original_score=1.0, final_score=1.0, url=url, provider="test",
+        id=hit_id,
+        title=title,
+        snippet="a snippet",
+        original_score=1.0,
+        final_score=1.0,
+        url=url,
+        provider="test",
     )
 
 
@@ -67,9 +73,9 @@ def test_conformance_all_plugins_declare_valid_stage_and_type():
 def test_conformance_stage_order_matches_pipeline():
     stages = [p.stage for p in Pipeline(_builtin_plugins()).plugins]
     order = PipelineStage.ordered()
-    assert [order.index(s) for s in stages] == sorted(
-        order.index(s) for s in stages
-    ), "[core/pipeline.py] plugins must execute in PipelineStage order"
+    assert [order.index(s) for s in stages] == sorted(order.index(s) for s in stages), (
+        "[core/pipeline.py] plugins must execute in PipelineStage order"
+    )
 
 
 def test_conformance_invalid_stage_rejected_at_startup():
@@ -211,9 +217,7 @@ def test_conformance_registry_rejects_unknown_and_bad_entries():
     with pytest.raises(ConfigError):
         PluginRegistry().build([{"class": "x:Y"}])  # missing name
     with pytest.raises(ConfigError):
-        PluginRegistry().build(
-            [{"name": "safety-filter", "config": "not-a-mapping"}]
-        )
+        PluginRegistry().build([{"name": "safety-filter", "config": "not-a-mapping"}])
 
 
 def test_conformance_duplicate_plugin_names_rejected():

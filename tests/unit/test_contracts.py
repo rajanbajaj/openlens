@@ -44,7 +44,9 @@ def test_provider_error_carries_metadata():
 
 
 def test_plugin_error_carries_metadata():
-    err = PluginError("boom", plugin_name="safe", stage=PipelineStage.FILTERING, mandatory=True)
+    err = PluginError(
+        "boom", plugin_name="safe", stage=PipelineStage.FILTERING, mandatory=True
+    )
     assert err.plugin_name == "safe"
     assert err.stage is PipelineStage.FILTERING
     assert err.mandatory is True
@@ -61,7 +63,9 @@ def test_search_context_diagnostics_roundtrip():
 
 
 def test_result_keeps_original_and_final_scores():
-    res = SearchResult(id="1", title="t", snippet="s", original_score=0.8, final_score=0.9)
+    res = SearchResult(
+        id="1", title="t", snippet="s", original_score=0.8, final_score=0.9
+    )
     assert res.original_score != res.final_score
     assert res.reasons == [] and res.warnings == []
 

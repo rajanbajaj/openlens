@@ -54,7 +54,9 @@ class BaselineRelevanceScorer(BasePlugin):
                 f"BaselineRelevanceScorer weights must be numbers: {exc}"
             ) from exc
 
-    def score_hit(self, query_terms: list[str], title: str, snippet: str) -> tuple[float, int]:
+    def score_hit(
+        self, query_terms: list[str], title: str, snippet: str
+    ) -> tuple[float, int]:
         """Return (bonus, matched_term_count) for one hit."""
         title_tokens = tokenize(title)
         snippet_tokens = tokenize(snippet)
@@ -65,7 +67,10 @@ class BaselineRelevanceScorer(BasePlugin):
             snippet_hits = snippet_tokens.count(term)
             if title_hits or snippet_hits:
                 matched += 1
-                bonus += self._title_weight * title_hits + self._snippet_weight * snippet_hits
+                bonus += (
+                    self._title_weight * title_hits
+                    + self._snippet_weight * snippet_hits
+                )
         return bonus, matched
 
     def run(self, context: SearchContext) -> SearchContext:

@@ -11,12 +11,11 @@ exceptions.
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from openlens.core.interfaces import (
     ConfigError,
     ProviderError,
-    SearchRequest,
     SearchResult,
     SearchProvider,
 )
@@ -119,4 +118,6 @@ class BaseSearchProvider(SearchProvider, ABC):
                     err.provider_name = self.name
                 raise err
             raise self.wrap_error(err)
-        return box.get("result", [])
+        # `box` is local to this call; only `target` writes "result",
+        # and it always stores the func() return value (a list).
+        return cast("list[SearchResult]", box.get("result", []))

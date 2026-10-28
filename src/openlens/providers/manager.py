@@ -201,7 +201,10 @@ class ProviderManager:
             if self._fallback is None:
                 raise
             if context is not None:
-                context.add_error(f"fallback: primary '{self._primary}' failed; trying '{self._fallback}'")
+                context.add_error(
+                    f"fallback: primary '{self._primary}' failed; "
+                    + f"trying '{self._fallback}'"
+                )
                 context.fallback_used = True
             try:
                 return self._search_one(self._fallback, request, context)

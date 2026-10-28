@@ -16,6 +16,21 @@ Every agent in this workflow inherits these conventions. They are binding.
   (dev default `http://localhost:8000`). Never hardcode hosts, never embed
   secrets or API keys anywhere in `frontend/`.
 - Fetch lives in `src/api/client.ts` only; components take typed props.
+- Quality gates (CI runs all of these; keep them green):
+  - `npm run lint` (ESLint flat config `eslint.config.mjs`,
+    typescript-eslint recommended set) clean, zero warnings.
+  - `npm run format:check` (Prettier, pinned `--save-exact`, `.prettierrc`
+    + `.prettierignore`) clean. Run `npx prettier --write` on files you
+    touch before committing.
+  - `npm test` (vitest, `fetch` mocked, offline) green; `npm run build`
+    (`tsc && vite build`) clean.
+  - `npm audit --omit=dev` (production deps) with zero findings. Dev-only
+    findings are triaged, never blind-fixed on majors: patch/minor bumps
+    allowed, majors need explicit approval; record residuals as
+    acknowledged risk.
+  - No secrets in `frontend/`: never hardcode hosts or embed API keys;
+    `gitleaks protect --staged` in the commit hook and full `gitleaks
+    detect` in CI are the backstop.
 - Backend contract changes are out of scope: if `schemas.py` disagrees with
   the plan, report it instead of editing `src/`.
 

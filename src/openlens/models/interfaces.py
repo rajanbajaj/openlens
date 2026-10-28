@@ -32,7 +32,10 @@ class AIModelProvider(ABC):
 
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed ``texts`` (one vector per input, same order). May raise ProviderError."""
+        """Embed ``texts`` (one vector per input, same order).
+
+        May raise ProviderError.
+        """
         raise NotImplementedError
 
     @abstractmethod

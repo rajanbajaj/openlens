@@ -55,7 +55,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     """
     config_path = Path(path)
     if not config_path.is_file():
-        raise ConfigError(f"Config file not found: '{config_path}'. Startup validation failed.")
+        raise ConfigError(
+            f"Config file not found: '{config_path}'. Startup validation failed."
+        )
     try:
         raw = config_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -71,10 +73,18 @@ def load_config(path: str | Path) -> dict[str, Any]:
             f"Config '{config_path}' must be a top-level mapping, "
             f"got {type(data).__name__}. Startup validation failed."
         )
-    return _resolve_node(data, str(config_path))
+    resolved = _resolve_node(data, str(config_path))
+    if not isinstance(resolved, dict):
+        raise ConfigError(
+            f"Config '{config_path}' resolved to a non-mapping. "
+            "Startup validation failed."
+        )
+    return resolved
 
 
-def validate_config(config: dict[str, Any], required_sections: list[str] | tuple[str, ...] = ()) -> None:
+def validate_config(
+    config: dict[str, Any], required_sections: list[str] | tuple[str, ...] = ()
+) -> None:
     """Ensure required top-level sections exist. Raises ConfigError if not."""
     missing = [key for key in required_sections if key not in config]
     if missing:

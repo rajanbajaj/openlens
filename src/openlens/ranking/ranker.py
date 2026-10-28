@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from openlens.core.context import SearchContext
-from openlens.core.interfaces import PipelineStage, PluginType
+from openlens.core.interfaces import PipelineStage, PluginType, SearchResult
 from openlens.plugins.base import BasePlugin
 from openlens.ranking.profiles import RankingProfile, get_profile
 
@@ -53,7 +53,7 @@ class Ranker(BasePlugin):
         get_profile(fallback)  # validate loudly at startup
         self._fallback_profile = fallback
 
-    def composite(self, profile: RankingProfile, result: Any) -> float:
+    def composite(self, profile: RankingProfile, result: SearchResult) -> float:
         """Compute the composite score for one result under ``profile``."""
         trusted = 1.0 if result.metadata.get("trusted") is True else 0.0
         try:

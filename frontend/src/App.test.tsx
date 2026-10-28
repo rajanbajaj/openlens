@@ -62,7 +62,9 @@ describe('App wiring', () => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
     expect(screen.getByText(/showing 1 of 1 result/i)).toBeInTheDocument();
-    expect(screen.getByTestId('applied-filters')).toHaveTextContent('Applied filters: exclude_sponsored');
+    expect(screen.getByTestId('applied-filters')).toHaveTextContent(
+      'Applied filters: exclude_sponsored',
+    );
 
     // Request shaping: shopping mode + exclude_sponsored filter + page 1 offset.
     const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];

@@ -96,10 +96,17 @@ class OpenSearchProvider(BaseSearchProvider):
         text = f"{type(exc).__name__}: {exc}".lower()
         if "timeout" in text or "timed out" in text:
             return ProviderError.timeout(self.name, f"opensearch timed out: {exc}")
-        if "unauthorized" in text or "forbidden" in text or " 401" in text or " 403" in text:
+        if (
+            "unauthorized" in text
+            or "forbidden" in text
+            or " 401" in text
+            or " 403" in text
+        ):
             return ProviderError.auth(self.name, f"opensearch auth failed: {exc}")
         if "429" in text or "rate" in text and "limit" in text:
-            return ProviderError.rate_limit(self.name, f"opensearch rate limited: {exc}")
+            return ProviderError.rate_limit(
+                self.name, f"opensearch rate limited: {exc}"
+            )
         if isinstance(exc, ProviderError):
             return exc
         return ProviderError(
@@ -129,7 +136,11 @@ class OpenSearchProvider(BaseSearchProvider):
         return self._normalize(response, request)
 
     def _normalize(self, response: Any, request: SearchRequest) -> list[SearchResult]:
-        hits = response.get("hits", {}).get("hits", []) if isinstance(response, dict) else []
+        hits = (
+            response.get("hits", {}).get("hits", [])
+            if isinstance(response, dict)
+            else []
+        )
         results: list[SearchResult] = []
         for hit in hits:
             source = hit.get("_source", {}) if isinstance(hit, dict) else {}
@@ -138,7 +149,11 @@ class OpenSearchProvider(BaseSearchProvider):
                 score_f = float(score if score is not None else 0.0)
             except (TypeError, ValueError):
                 score_f = 0.0
-            doc_id = str(hit.get("_id", source.get("id", ""))) if isinstance(hit, dict) else ""
+            doc_id = (
+                str(hit.get("_id", source.get("id", "")))
+                if isinstance(hit, dict)
+                else ""
+            )
             title = str(source.get("title", doc_id or "untitled"))
             content = str(source.get("content", source.get("text", "")))
             results.append(

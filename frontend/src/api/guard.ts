@@ -4,12 +4,7 @@
  * every unknown is narrowed before use).
  */
 
-import type {
-  Diagnostics,
-  ErrorEnvelope,
-  SearchResponse,
-  SearchResult,
-} from './types.ts';
+import type { Diagnostics, ErrorEnvelope, SearchResponse, SearchResult } from './types.ts';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -20,10 +15,7 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isNumberRecord(value: unknown): value is Record<string, number> {
-  return (
-    isRecord(value) &&
-    Object.values(value).every((item) => typeof item === 'number')
-  );
+  return isRecord(value) && Object.values(value).every((item) => typeof item === 'number');
 }
 
 export function isSearchResult(value: unknown): value is SearchResult {
@@ -69,8 +61,5 @@ export function isSearchResponse(value: unknown): value is SearchResponse {
 export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isRecord(value)) return false;
   if (!isRecord(value.error)) return false;
-  return (
-    typeof value.error.code === 'string' &&
-    typeof value.error.message === 'string'
-  );
+  return typeof value.error.code === 'string' && typeof value.error.message === 'string';
 }

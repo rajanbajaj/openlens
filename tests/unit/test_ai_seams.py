@@ -11,7 +11,12 @@ import pytest
 
 from openlens.config import load_config
 from openlens.core.context import SearchContext
-from openlens.core.interfaces import ConfigError, ProviderError, SearchRequest, SearchResult
+from openlens.core.interfaces import (
+    ConfigError,
+    ProviderError,
+    SearchRequest,
+    SearchResult,
+)
 from openlens.models.backends import (
     ClaudeModelProvider,
     LocalModelProvider,
@@ -33,7 +38,9 @@ from openlens.plugins.ai_summary import AISummaryPlugin
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _result(id: str = "1", title: str = "Cats", snippet: str = "Cats nap.") -> SearchResult:
+def _result(
+    id: str = "1", title: str = "Cats", snippet: str = "Cats nap."
+) -> SearchResult:
     return SearchResult(
         id=id, title=title, snippet=snippet, original_score=1.0, final_score=1.0
     )
@@ -146,12 +153,20 @@ def test_registry_custom_backend_round_trip() -> None:
 
 def test_manager_fake_backend_swaps_via_config() -> None:
     manager_a = ModelManager.from_config(
-        {"models": {"primary": "fake", "fake": {"enabled": True, "type": "fake",
-                                                "response_prefix": "alpha"}}}
+        {
+            "models": {
+                "primary": "fake",
+                "fake": {"enabled": True, "type": "fake", "response_prefix": "alpha"},
+            }
+        }
     )
     manager_b = ModelManager.from_config(
-        {"models": {"primary": "fake", "fake": {"enabled": True, "type": "fake",
-                                                "response_prefix": "beta"}}}
+        {
+            "models": {
+                "primary": "fake",
+                "fake": {"enabled": True, "type": "fake", "response_prefix": "beta"},
+            }
+        }
     )
     assert "alpha" in manager_a.complete("hello")
     assert "beta" in manager_b.complete("hello")
@@ -194,8 +209,7 @@ def test_manager_rejects_empty_and_bad_primary() -> None:
         ModelManager.from_config({"models": {"primary": "fake"}})
     with pytest.raises(ConfigError):
         ModelManager.from_config(
-            {"models": {"primary": "ghost",
-                        "fake": {"enabled": True, "type": "fake"}}}
+            {"models": {"primary": "ghost", "fake": {"enabled": True, "type": "fake"}}}
         )
 
 
@@ -237,8 +251,7 @@ def test_ai_plugin_stub_wires_backend_through_config() -> None:
     assert isinstance(plugin.model, FakeModelProvider)
     context = plugin.run(_context())
     assert all(
-        r.metadata["ai_summary"].startswith("cfg completion:")
-        for r in context.results
+        r.metadata["ai_summary"].startswith("cfg completion:") for r in context.results
     )
 
 

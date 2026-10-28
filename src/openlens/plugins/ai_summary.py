@@ -69,7 +69,9 @@ class AISummaryPlugin(BasePlugin):
             raise ConfigError("AISummaryPlugin 'model' must be a backend mapping.")
         model_type = model_config.get("type", "fake")
         if not isinstance(model_type, str) or not model_type:
-            raise ConfigError("AISummaryPlugin 'model.type' must be a non-empty string.")
+            raise ConfigError(
+                "AISummaryPlugin 'model.type' must be a non-empty string."
+            )
         options = {k: v for k, v in model_config.items() if k != "type"}
         register_builtin_models()
         self._model = create_model(model_type, options)

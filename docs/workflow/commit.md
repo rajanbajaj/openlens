@@ -15,14 +15,23 @@ is on the committer.
      falling back to `uv run pytest tests -q` when no `.venv` exists).
    - `frontend/` staged → `npm --prefix frontend test` and
      `npm --prefix frontend run build`.
+   - Staged `*.py` files → `ruff check` + `ruff format --check` on those files.
+   - Staged frontend sources → `eslint` on those files.
    - Docs/config-only commits → no suite runs.
 3. **Cross-cutting changes get the full gate.** If the commit touches both
    backend and frontend, or core interfaces, run both suites by hand before
    committing even if the hook would split them.
-4. **No secrets in the diff.** `git diff --cached` must show no API keys,
-   tokens, or credentials. Test sentinels (e.g. `secret-token-abc123`) are
-   fine; real values fail the secret-leak suite — treat any failure as a
-   stop-ship.
+4. **No secrets in the diff.** The hook runs
+   `gitleaks protect --staged` on every commit (gitleaks must be on PATH;
+   install from [gitleaks releases](https://github.com/gitleaks/gitleaks)).
+   It fails the commit when staged content matches a secret rule.
+   Baseline exceptions live in `.gitleaks.toml`, each with a written
+   justification — currently only the intentional sentinel fixtures in
+   `tests/integration/test_secret_leak.py`. `git diff --cached` must show no
+   other API keys, tokens, or credentials. Test sentinels are allowlisted;
+   real values fail both the hook scan and the secret-leak suite — treat any
+   failure as a stop-ship. CI runs the full-tree `gitleaks detect --source .`
+   backstop, which must also be clean.
 5. **One concern per commit.** Message in imperative mood, naming what and
    why (`Fix UI 405: ...`, not `fixes` or `wip`).
 

@@ -34,9 +34,14 @@ def provider_b() -> CustomIndexProvider:
 def _retag(results: list[SearchResult], provider: str) -> list[SearchResult]:
     return [
         SearchResult(
-            id=r.id, title=r.title, snippet=r.snippet,
-            original_score=r.original_score, final_score=r.final_score,
-            url=r.url, provider=provider, reasons=list(r.reasons),
+            id=r.id,
+            title=r.title,
+            snippet=r.snippet,
+            original_score=r.original_score,
+            final_score=r.final_score,
+            url=r.url,
+            provider=provider,
+            reasons=list(r.reasons),
         )
         for r in results
     ]
@@ -60,12 +65,22 @@ def test_cross_provider_dedup_removes_shared_urls(provider_a, provider_b):
 
 def test_cross_provider_dedup_keeps_first_hit():
     first = SearchResult(
-        id="a", title="A", snippet="s", original_score=0.9, final_score=0.9,
-        url="https://example.com/Page", provider="provider-a",
+        id="a",
+        title="A",
+        snippet="s",
+        original_score=0.9,
+        final_score=0.9,
+        url="https://example.com/Page",
+        provider="provider-a",
     )
     second = SearchResult(
-        id="b", title="B", snippet="s", original_score=0.1, final_score=0.1,
-        url="https://EXAMPLE.com/page/", provider="provider-b",
+        id="b",
+        title="B",
+        snippet="s",
+        original_score=0.1,
+        final_score=0.1,
+        url="https://EXAMPLE.com/page/",
+        provider="provider-b",
     )
     unique = deduplicate([first, second])
     assert len(unique) == 1, (
@@ -79,12 +94,20 @@ def test_cross_provider_dedup_keeps_first_hit():
 
 def test_cross_provider_dedup_falls_back_to_id_without_url():
     first = SearchResult(
-        id="same", title="A", snippet="s",
-        original_score=0.5, final_score=0.5, provider="provider-a",
+        id="same",
+        title="A",
+        snippet="s",
+        original_score=0.5,
+        final_score=0.5,
+        provider="provider-a",
     )
     second = SearchResult(
-        id="same", title="B", snippet="s",
-        original_score=0.4, final_score=0.4, provider="provider-b",
+        id="same",
+        title="B",
+        snippet="s",
+        original_score=0.4,
+        final_score=0.4,
+        provider="provider-b",
     )
     assert len(deduplicate([first, second])) == 1, (
         "[retrieval/deduplicator.py] url-less hits must dedupe by id"

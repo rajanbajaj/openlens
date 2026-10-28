@@ -19,11 +19,7 @@ export const DEFAULT_API_BASE_URL = 'http://localhost:8000';
 
 /** Resolved API base URL (trailing slashes stripped). */
 export const API_BASE_URL: string =
-  (
-    (import.meta.env.VITE_OPENLENS_API_URL as string | undefined)
-      ?.trim()
-      .replace(/\/+$/, '')
-  ) ||
+  (import.meta.env.VITE_OPENLENS_API_URL as string | undefined)?.trim().replace(/\/+$/, '') ||
   (import.meta.env.DEV ? DEFAULT_API_BASE_URL : '');
 
 /** Backend default page size (`DEFAULT_LIMIT` in `schemas.py`). */

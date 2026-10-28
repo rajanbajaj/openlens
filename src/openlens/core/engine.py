@@ -79,11 +79,13 @@ class SearchEngine(Engine):
         if not self._providers:
             raise ConfigError("No search providers configured.")
         last_error: ProviderError | None = None
+        last_provider = ""
         for index, provider in enumerate(self._providers):
             started = time.perf_counter()
             try:
                 hits = provider.search(request)
             except ProviderError as exc:
+                last_provider = provider.name
                 context.record_provider_latency(
                     provider.name, (time.perf_counter() - started) * 1000.0
                 )
@@ -93,7 +95,8 @@ class SearchEngine(Engine):
                     context.fallback_used = True
                 elif len(self._providers) > 1:
                     context.add_error(
-                        f"fallback: primary '{provider.name}' failed; trying next provider"
+                        f"fallback: primary '{provider.name}' failed; "
+                        + "trying next provider"
                     )
                     context.fallback_used = True
                 continue
@@ -103,7 +106,11 @@ class SearchEngine(Engine):
             if index > 0:
                 context.fallback_used = True
             return list(hits)
-        assert last_error is not None  # guarded by the empty-providers check
+        if last_error is None:  # guarded by the empty-providers check
+            raise ProviderError(
+                "search failed with no recorded error",
+                provider_name=last_provider or "engine",
+            )
         raise last_error
 
     def search(self, request: SearchRequest) -> SearchResponse:

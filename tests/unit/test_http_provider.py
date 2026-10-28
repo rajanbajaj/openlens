@@ -139,9 +139,7 @@ def test_post_sends_fixed_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_auth_in_query_get(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = make_provider(
-        fields=FIELDS, auth_in="query", auth_name="api_key"
-    )
+    provider = make_provider(fields=FIELDS, auth_in="query", auth_name="api_key")
     calls = install_fake_httpx(monkeypatch, get_response=FakeResponse(PAYLOAD))
     provider.search(SearchRequest(query="cats"))
     assert calls["get"]["params"]["api_key"] == "secret-key"

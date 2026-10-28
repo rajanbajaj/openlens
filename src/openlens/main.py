@@ -24,7 +24,9 @@ from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import ConfigError, Engine
 from openlens.providers.manager import ProviderManager
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" / "default.yaml"
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "configs" / "default.yaml"
+)
 
 _PROVIDER_RESERVED = ("strategy", "primary", "fallback", "enabled")
 

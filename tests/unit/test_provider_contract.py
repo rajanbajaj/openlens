@@ -17,7 +17,6 @@ import pytest
 from openlens.core.interfaces import (
     ConfigError,
     ProviderError,
-    SearchProvider,
     SearchRequest,
     SearchResult,
 )
@@ -130,12 +129,8 @@ def test_conformance_normalization_shape(seeded_custom_index):
 
 
 def test_conformance_pagination_no_overlap(seeded_custom_index):
-    page1 = seeded_custom_index.search(
-        SearchRequest(query="shoes", limit=1, offset=0)
-    )
-    page2 = seeded_custom_index.search(
-        SearchRequest(query="shoes", limit=1, offset=1)
-    )
+    page1 = seeded_custom_index.search(SearchRequest(query="shoes", limit=1, offset=0))
+    page2 = seeded_custom_index.search(SearchRequest(query="shoes", limit=1, offset=1))
     assert len(page1) == 1, "[custom_index] first page must hold exactly 1 hit"
     assert len(page2) <= 1, "[custom_index] second page must hold at most 1 hit"
     if page2:
@@ -413,13 +408,20 @@ def _http(**overrides: Any) -> CustomApiSearchProvider:
 _HTTP_PAYLOAD = {
     "results": [
         {"id": "h-1", "title": "First", "text": "first snippet", "link": "https://x/1"},
-        {"id": "h-2", "title": "Second", "text": "second snippet", "link": "https://x/2"},
+        {
+            "id": "h-2",
+            "title": "Second",
+            "text": "second snippet",
+            "link": "https://x/2",
+        },
         {"title": "No id here", "text": "skipped hit"},
     ]
 }
 
 
-def _stub_fetch(monkeypatch: pytest.MonkeyPatch, provider: CustomApiSearchProvider, payload: Any) -> None:
+def _stub_fetch(
+    monkeypatch: pytest.MonkeyPatch, provider: CustomApiSearchProvider, payload: Any
+) -> None:
     monkeypatch.setattr(provider, "_fetch", lambda request: payload)
 
 
@@ -480,7 +482,9 @@ def test_conformance_http_normalization_shape(monkeypatch: pytest.MonkeyPatch):
     )
 
 
-def test_conformance_http_pagination_forwards_limit_offset(monkeypatch: pytest.MonkeyPatch):
+def test_conformance_http_pagination_forwards_limit_offset(
+    monkeypatch: pytest.MonkeyPatch,
+):
     provider = _http()
     seen: list[SearchRequest] = []
     page = {"results": [{"id": "h-1", "title": "T", "text": "S"}]}
@@ -532,7 +536,9 @@ def test_conformance_http_failure_mapping():
     ), "[http] unknown failures must map to code 'unavailable'"
 
 
-def test_conformance_http_requires_key_and_offline_safe(monkeypatch: pytest.MonkeyPatch):
+def test_conformance_http_requires_key_and_offline_safe(
+    monkeypatch: pytest.MonkeyPatch,
+):
     with pytest.raises(ConfigError):
         CustomApiSearchProvider().configure(
             {"endpoint": "https://api.example.com/search"}

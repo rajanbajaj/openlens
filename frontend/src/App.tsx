@@ -35,7 +35,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
-  async function runSearch(nextPage: number, searchQuery: string, searchMode: SearchMode, sponsored: boolean) {
+  async function runSearch(
+    nextPage: number,
+    searchQuery: string,
+    searchMode: SearchMode,
+    sponsored: boolean,
+  ) {
     const message = validateQuery(searchQuery);
     if (message !== null) return;
     setLoading(true);
@@ -105,9 +110,7 @@ export default function App() {
           <DiagnosticsDrawer diagnostics={response.diagnostics} />
         </section>
       ) : null}
-      {!loading && !error && !hasSearched ? (
-        <p>Enter a query to search.</p>
-      ) : null}
+      {!loading && !error && !hasSearched ? <p>Enter a query to search.</p> : null}
     </main>
   );
 }

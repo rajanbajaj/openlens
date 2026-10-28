@@ -101,7 +101,9 @@ class ExternalSearchProvider(BaseSearchProvider, ABC):
                 self.name, f"provider '{self.name}' timed out after {self.timeout_s}s"
             )
         if status in (401, 403) or "unauthorized" in text or "forbidden" in text:
-            return ProviderError.auth(self.name, f"provider '{self.name}' auth failed: {exc}")
+            return ProviderError.auth(
+                self.name, f"provider '{self.name}' auth failed: {exc}"
+            )
         if status == 429 or "rate" in text and "limit" in text:
             return ProviderError.rate_limit(
                 self.name, f"provider '{self.name}' rate limited: {exc}"
@@ -181,9 +183,11 @@ class BingSearchProvider(ExternalSearchProvider):
                 retryable=True,
                 code=ProviderError.UNAVAILABLE,
             )
-        items = payload.get("webPages", {}).get("value", []) if isinstance(
-            payload.get("webPages", {}), dict
-        ) else []
+        items = (
+            payload.get("webPages", {}).get("value", [])
+            if isinstance(payload.get("webPages", {}), dict)
+            else []
+        )
         results: list[SearchResult] = []
         for rank, item in enumerate(items):
             if not isinstance(item, dict):

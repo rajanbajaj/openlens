@@ -62,8 +62,11 @@ class DocumentRepository:
             with self._lock, self._conn:
                 for doc in docs:
                     metadata = json.dumps(doc.metadata or {})
+                    # S608 is a false positive here: every value below is a
+                    # bound ? parameter; no user input is interpolated.
                     self._conn.execute(
-                        "INSERT OR REPLACE INTO documents (id, title, content, url, metadata)"
+                        "INSERT OR REPLACE INTO documents "  # noqa: S608
+                        + "(id, title, content, url, metadata)"
                         " VALUES (?, ?, ?, ?, ?)",
                         (doc.id, doc.title, doc.content, doc.url, metadata),
                     )
@@ -87,7 +90,8 @@ class DocumentRepository:
         try:
             with self._lock:
                 row = self._conn.execute(
-                    "SELECT id, title, content, url, metadata FROM documents WHERE id = ?",
+                    "SELECT id, title, content, url, metadata "
+                    + "FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
         except sqlite3.Error as exc:
@@ -114,8 +118,10 @@ class DocumentRepository:
             return [], 0
         try:
             with self._lock:
+                # S608 false positive: fts_query is a bound ? parameter.
                 total_row = self._conn.execute(
-                    "SELECT COUNT(*) AS n FROM documents_fts WHERE documents_fts MATCH ?",
+                    "SELECT COUNT(*) AS n FROM documents_fts "  # noqa: S608
+                    + "WHERE documents_fts MATCH ?",
                     (fts_query,),
                 ).fetchone()
                 total = int(total_row["n"])

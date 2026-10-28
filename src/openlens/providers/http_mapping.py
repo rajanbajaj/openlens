@@ -120,7 +120,9 @@ def map_payload_to_results(
                 snippet=str(raw_snippet),
                 original_score=value,
                 final_score=value,
-                url=str(raw_url) if raw_url is not MISSING and raw_url is not None else None,
+                url=str(raw_url)
+                if raw_url is not MISSING and raw_url is not None
+                else None,
                 provider=provider_name,
                 reasons=[reason],
                 metadata={"engine": engine_name, "request_mode": request_mode},

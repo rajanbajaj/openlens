@@ -40,7 +40,9 @@ class FakeEngine(Engine):
         if self._fail == "provider":
             raise ProviderError.timeout("fake-provider")
         if self._fail == "plugin":
-            raise PluginError("filter exploded", plugin_name="fake-filter", mandatory=True)
+            raise PluginError(
+                "filter exploded", plugin_name="fake-filter", mandatory=True
+            )
         if self._fail == "config":
             raise ConfigError("bad config")
         if self._fail == "boom":
@@ -149,7 +151,9 @@ def test_pagination_slices_and_keeps_total() -> None:
 
 
 def test_pagination_tail_page() -> None:
-    resp = make_client().post("/api/v1/search", json={"query": "q", "limit": 10, "offset": 22})
+    resp = make_client().post(
+        "/api/v1/search", json={"query": "q", "limit": 10, "offset": 22}
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert [r["id"] for r in body["results"]] == ["doc-22", "doc-23", "doc-24"]
@@ -230,7 +234,9 @@ def test_config_error_maps_to_500_envelope() -> None:
 
 
 def test_unexpected_error_is_generic_500() -> None:
-    client = TestClient(create_app(engine=FakeEngine(fail="boom")), raise_server_exceptions=False)
+    client = TestClient(
+        create_app(engine=FakeEngine(fail="boom")), raise_server_exceptions=False
+    )
     resp = client.post("/api/v1/search", json={"query": "q"})
     assert resp.status_code == 500, resp.text
     body = resp.json()

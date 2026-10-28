@@ -49,7 +49,11 @@ class CustomApiSearchProvider(ExternalSearchProvider):
         self.params: dict[str, str] = dict(_DEFAULT_PARAMS)
         self.body: dict[str, str] = dict(_DEFAULT_PARAMS)
         self.results_path: str = "results"
-        self.fields: dict[str, str] = {"id": "id", "title": "title", "snippet": "snippet"}
+        self.fields: dict[str, str] = {
+            "id": "id",
+            "title": "title",
+            "snippet": "snippet",
+        }
         self.score: ScoreConfig = "rank_decay"
 
     def configure(self, config: dict[str, Any]) -> None:
@@ -59,7 +63,9 @@ class CustomApiSearchProvider(ExternalSearchProvider):
         self.auth_name = self._validate_auth_name(config.get("auth_name", "X-Api-Key"))
         self.params = self._validate_name_map(config.get("params", None), "params")
         self.body = self._validate_name_map(config.get("body", None), "body")
-        self.results_path = self._validate_results_path(config.get("results_path", "results"))
+        self.results_path = self._validate_results_path(
+            config.get("results_path", "results")
+        )
         self.fields = self._validate_fields(config.get("fields", None))
         self.score = self._validate_score(config.get("score", "rank_decay"))
 
@@ -136,7 +142,9 @@ class CustomApiSearchProvider(ExternalSearchProvider):
                     "Startup validation failed."
                 )
         url_path = value.get("url", None)
-        if url_path is not None and (not isinstance(url_path, str) or not url_path.strip()):
+        if url_path is not None and (
+            not isinstance(url_path, str) or not url_path.strip()
+        ):
             raise ConfigError(
                 f"Provider '{self.name}': 'fields['url']' must be a non-empty "
                 f"dotted-path string, got {url_path!r}. Startup validation failed."
@@ -192,7 +200,9 @@ class CustomApiSearchProvider(ExternalSearchProvider):
             return {self.auth_name: self.api_key}
         return {}
 
-    def _mapped_values(self, request: SearchRequest, mapping: dict[str, str]) -> dict[str, Any]:
+    def _mapped_values(
+        self, request: SearchRequest, mapping: dict[str, str]
+    ) -> dict[str, Any]:
         raw: dict[str, Any] = {
             "query": request.query,
             "limit": max(1, request.limit),
@@ -202,7 +212,10 @@ class CustomApiSearchProvider(ExternalSearchProvider):
 
     def build_params(self, request: SearchRequest) -> dict[str, Any]:
         """Map a SearchRequest onto upstream query params (GET)."""
-        return {**self._mapped_values(request, self.params), **self._auth_query_params()}
+        return {
+            **self._mapped_values(request, self.params),
+            **self._auth_query_params(),
+        }
 
     def build_body(self, request: SearchRequest) -> dict[str, Any]:
         """Map a SearchRequest onto the fixed upstream JSON body (POST)."""

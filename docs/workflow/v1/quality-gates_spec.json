@@ -1,0 +1,42 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1135_quality-gates_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "backend-audit",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave0-backendaudit",
+          "owns": "pyproject.toml, uv.lock (pins from audit fixes only), tests/ (only if an audit fix breaks a test)",
+          "task": "Backend audit (quality-gates plan step 3). ruff and mypy are already clean — verify with 'ruff check src tests', 'ruff format --check src tests', 'mypy src' and fix any drift. Then run pip-audit, triage each finding, apply fixes (reviewed, never blind --fix on majors), record any residual accepted risk in your summary. Sandbox note: uv needs UV_CACHE_DIR=/tmp/uv-cache (default ~/.cache/uv is not writable).",
+          "done": "ruff check, ruff format --check, mypy src all clean; pip-audit reports no unacknowledged vulnerabilities (or residuals listed with justification)."
+        }
+      ]
+    },
+    {
+      "name": "gates",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "wave1a-frontend",
+          "owns": "frontend/package.json, frontend/package-lock.json, frontend/eslint.config.mjs, frontend/.prettierrc, frontend/.prettierignore, frontend/src/** (fixes only), frontend/**/*.test.* (fixes only)",
+          "task": "Frontend gates (steps 4-5). Install the typescript-eslint quickstart set (eslint, @eslint/js, typescript, typescript-eslint) plus exact-pinned prettier; add eslint.config.mjs (recommended sets), .prettierrc, .prettierignore, and lint/format:check scripts; run eslint --fix and prettier --write and triage the rest. Then run npm audit, triage, and fix (patch/minor allowed, majors need explicit approval noted in summary). Sandbox note: npm cache at ~/.npm is root-owned; use --cache /tmp/npm-cache. Do not weaken tests to obtain green.",
+          "done": "eslint clean, 'prettier --check .' clean, 'npm run build' clean, frontend tests green, npm audit shows no unacknowledged high/critical findings."
+        },
+        {
+          "label": "wave1b-secrets",
+          "owns": "docs/workflow/commit-hook.sh, docs/workflow/commit.md, .gitleaks.toml (only if the scan needs baseline exceptions)",
+          "task": "Secrets gate (step 6). Install the gitleaks binary (GitHub releases; sandbox note: binaries and caches go under /tmp, project tree stays clean). Run a full-tree scan, remediate or allowlist findings with written justification per item, then wire 'gitleaks protect --staged' into the tracked commit-hook.sh template plus installed .git/hooks/pre-commit. Update docs/workflow/commit.md with the new gate. Verify the hook blocks a planted test secret, then remove the secret.",
+          "done": "'gitleaks detect --source .' clean (or justified allowlist); hook demonstrably blocks a planted secret; commit.md documents the gate."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "wave2-integrate",
+    "owns": ".github/workflows/ci.yml (new), docs/workflow/v1/context.md, docs/workflow/v1/frontend_context.md, wiring and fixes anywhere except docs/workflow/commit-hook.sh (owned by wave1b)",
+    "task": "Skeleton audit pass + workflow wiring (steps 7-8). Re-run every gate on the current tree until all green (backend: ruff check, ruff format --check, mypy, pytest, pip-audit; frontend: eslint, prettier --check, test, build, npm audit; secrets: gitleaks detect): fix or justify every finding, never weaken a test, record before/after finding counts as the baseline. Add .github/workflows/ci.yml (backend job: ruff, mypy, pytest, pip-audit; frontend job: eslint, prettier check, test, build, npm audit). Add quality rules to both workflow context files so future waves emit conforming code (ruff+format, mypy, eslint+prettier, no secrets). Report the plan validation checklist with pass/fail per item and the exact command evidencing each pass.",
+    "done": "All gates green with zero grandfathered violations (every noqa/ignore/allowlist justified); CI file added; contexts updated; validation checklist reported."
+  }
+}

@@ -21,6 +21,18 @@ Every agent in this workflow inherits these conventions. They are binding.
   failures are caught, logged, and recorded in `SearchContext` diagnostics.
 - Never log or return secrets. Config resolves `${ENV_VAR}` at load time;
   unresolved secrets fail startup validation loudly.
+- Quality gates (CI runs all of these; keep them green, never weaken a test
+  to obtain green):
+  - `uv run ruff check src tests` and `uv run ruff format --check src tests`
+    clean. Ruff config lives in `pyproject.toml` (`target-version py310`,
+    `E` + `F` + `S`).
+  - `uv run mypy src` clean (`python_version = "3.10"` in `pyproject.toml`).
+    Blanket-error suppressions (`BLE`-style `noqa`, bare `type: ignore`)
+    are forbidden; every `noqa`/`type: ignore` needs an inline comment
+    stating why the flagged construct is safe.
+  - `uv run pytest tests -q` green, offline only (no network, keys, cluster).
+  - `uv run pip-audit` with no unacknowledged findings; never blind `--fix`
+    a major version — triage first, record residuals as accepted risk.
 - Keep `original_score` (provider signal) separate from `final_score`
   (OpenLens ranking) on every result, with human-readable `reasons`.
 

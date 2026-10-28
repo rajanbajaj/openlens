@@ -19,7 +19,7 @@ from openlens.providers import registry
 from openlens.providers.base import BaseSearchProvider
 from openlens.providers.custom_index import CustomIndexProvider
 from openlens.providers.manager import ProviderManager
-from tests.fixtures.corpus import fixture_documents, seed_provider
+from tests.fixtures.corpus import seed_provider
 
 
 class _ToggleFakeProvider(BaseSearchProvider):
@@ -38,8 +38,12 @@ class _ToggleFakeProvider(BaseSearchProvider):
     def search(self, request: SearchRequest) -> list[SearchResult]:
         return [
             SearchResult(
-                id="t1", title="toggle hit", snippet="s",
-                original_score=1.0, final_score=1.0, provider="toggle_fake",
+                id="t1",
+                title="toggle hit",
+                snippet="s",
+                original_score=1.0,
+                final_score=1.0,
+                provider="toggle_fake",
                 reasons=["toggle"],
             )
         ]
@@ -213,7 +217,8 @@ def test_provider_toggle_http_enable_disable_via_config_only(
     )
     results = manager.search(SearchRequest(query="shoes"))
     assert [r.id for r in results] == ["h1"], (
-        "[providers/http.py] enabled http entry must serve searches with no code changes"
+        "[providers/http.py] enabled http entry must serve searches "
+        "with no code changes"
     )
     mixed = _manager(
         {
@@ -223,7 +228,8 @@ def test_provider_toggle_http_enable_disable_via_config_only(
         }
     )
     assert mixed.provider_names == ["main"], (
-        "[providers/manager.py] disabled http entry must be skipped without code changes"
+        "[providers/manager.py] disabled http entry must be skipped "
+        "without code changes"
     )
     with pytest.raises(ConfigError):
         mixed.get("ext")

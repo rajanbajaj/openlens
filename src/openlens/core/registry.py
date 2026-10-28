@@ -21,6 +21,12 @@ BUILTIN_PLUGINS: dict[str, str] = {
 }
 
 
+def _class_plugin_name(plugin_cls: type[SearchPlugin]) -> str | None:
+    """Read ``name`` off the class itself. None when absent or non-string."""
+    raw = getattr(plugin_cls, "name", None)
+    return raw if isinstance(raw, str) else None
+
+
 class PluginRegistry:
     """Resolves plugin names/paths to configured plugin instances."""
 
@@ -38,15 +44,19 @@ class PluginRegistry:
         # resolve via a lightweight probe: classes must expose `name` either
         # way, but most define it as a property. Construct with no args when
         # possible, else fall back to the class attribute.
+        plugin_name: str | None = None
         try:
             probe = plugin_cls()  # type: ignore[call-arg]
-            plugin_name = probe.name
+            if isinstance(probe.name, str):
+                plugin_name = probe.name
+            else:
+                plugin_name = _class_plugin_name(plugin_cls)
         except Exception:
-            plugin_name = getattr(plugin_cls, "name", None)
-            if not isinstance(plugin_name, str):
-                raise ConfigError(
-                    f"Cannot register {plugin_cls!r}: could not determine plugin name."
-                )
+            plugin_name = _class_plugin_name(plugin_cls)
+        if plugin_name is None:
+            raise ConfigError(
+                f"Cannot register {plugin_cls!r}: could not determine plugin name."
+            )
         if plugin_name in self._classes or plugin_name in BUILTIN_PLUGINS:
             raise ConfigError(
                 f"Duplicate plugin name '{plugin_name}'. Startup validation failed."
@@ -127,7 +137,8 @@ class PluginRegistry:
                 continue
             if "config" in entry and not isinstance(entry["config"], dict):
                 raise ConfigError(
-                    f"Invalid config for plugin '{entry['name']}': 'config' must be a mapping."
+                    f"Invalid config for plugin '{entry['name']}': "
+                    + "'config' must be a mapping."
                 )
             plugins.append(
                 self.create(
