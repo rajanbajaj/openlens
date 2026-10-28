@@ -20,7 +20,7 @@ skeleton run is:
 ## Reuse for a Future Plan
 
 1. Write the plan as `docs/workflow/tasks/<YYYY-MM-DD-HHMM>_<slug>_plan.md`
-   (date = day it was written).
+   (datetime = date and time it was written).
 2. Copy `skeleton_spec.json` to `<plan>_spec.json`.
 3. Point `plan_path` at the new plan; rewrite `waves`/`integrate` briefs
    (inline `owns`/`task`/`done`, or `brief_path` files for long briefs).
@@ -41,6 +41,12 @@ recorded results directly.)
 ## Interpret Results
 
 The workflow returns a JSON summary: per-agent status (ok / failed / gap),
-the Wave-3 integration verdict, and the Definition-of-Done checklist with
+the integration verdict, and the Definition-of-Done checklist with
 pass/fail per item. Any item not marked pass with a cited test command is
-unfinished — do not treat the skeleton as done.
+unfinished — do not treat the plan as done.
+
+A large structured submission is retained by result ref (`spilled: true`)
+instead of inlined. That is a successful handoff, not a failed agent: the
+synthesis agent receives the refs and inspects them before judging. Only a
+missing ref, an error result, or gaps the synthesis itself reports count as
+unfinished for that agent.

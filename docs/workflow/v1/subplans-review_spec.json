@@ -1,0 +1,48 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1241_subplans-review_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "review",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "wave0a-plans-early",
+          "owns": "docs/workflow/tasks/2026-10-28-1237_crawler-index_plan.md, docs/workflow/tasks/2026-10-28-1237_query-intelligence_plan.md, docs/workflow/tasks/2026-10-28-1237_filter-pack_plan.md",
+          "task": "Review 3 sub-plans (crawler-index, query-intelligence, filter-pack) per the review plan: (a) reality-check every claim about existing code by READING the relevant src/tests/configs bodies (indexing/, storage/, retrieval/, plugins/safety_filter.py); correct stale premises; (b) quality pass — falsifiable goal, executable steps, exact validation, scope-closing non-goals, rewriting weak sections in place; (c) scalability findings per plan (what breaks first at 10x/100x users/docs/queries: unbounded state, corpus-sized per-request work, lock contention, unindexed lookups, N+1 calls, unbounded caches) with bottleneck + at-what-scale + fix shape, folding cheap structural fixes into the plan. Doc edits only — no code changes, no tests, no new files.",
+          "done": "All 3 plan files refined in place; summary lists per-plan findings fixed, scalability notes added, and anything that needs cross-plan coordination (left for synthesis)."
+        },
+        {
+          "label": "wave0b-plans-mid",
+          "owns": "docs/workflow/tasks/2026-10-28-1237_scoring-pack_plan.md, docs/workflow/tasks/2026-10-28-1237_rerank-pack_plan.md, docs/workflow/tasks/2026-10-28-1237_federated-search_plan.md",
+          "task": "Review 3 sub-plans (scoring-pack, rerank-pack, federated-search) per the review plan: (a) reality-check every claim about existing code by READING the relevant src/tests/configs bodies (ranking/, plugins/, providers/manager.py, retrieval/); correct stale premises; (b) quality pass — falsifiable goal, executable steps, exact validation, scope-closing non-goals, rewriting weak sections in place; (c) scalability findings per plan (what breaks first at 10x/100x: unbounded state, corpus-sized per-request work, lock contention, unindexed lookups, N+1 provider calls, unbounded caches) with bottleneck + at-what-scale + fix shape, folding cheap structural fixes into the plan. Doc edits only — no code changes, no tests, no new files.",
+          "done": "All 3 plan files refined in place; summary lists per-plan findings fixed, scalability notes added, and anything that needs cross-plan coordination (left for synthesis)."
+        },
+        {
+          "label": "wave0c-plans-late",
+          "owns": "docs/workflow/tasks/2026-10-28-1237_ai-capabilities_plan.md, docs/workflow/tasks/2026-10-28-1237_observability-cli_plan.md, docs/workflow/tasks/2026-10-28-1243_db-connectors_plan.md",
+          "task": "Review 3 sub-plans (ai-capabilities, observability-cli, db-connectors) per the review plan: (a) reality-check every claim about existing code by READING the relevant src/tests/configs bodies (models/, storage/repository.py, main.py, api/); correct stale premises; (b) quality pass — falsifiable goal, executable steps, exact validation, scope-closing non-goals, rewriting weak sections in place; (c) scalability findings per plan (what breaks first at 10x/100x: unbounded state, per-request model calls, lock contention on shared stores, unindexed lookups, unbounded queues/caches) with bottleneck + at-what-scale + fix shape, folding cheap structural fixes into the plan. Doc edits only — no code changes, no tests, no new files.",
+          "done": "All 3 plan files refined in place; summary lists per-plan findings fixed, scalability notes added, and anything that needs cross-plan coordination (left for synthesis)."
+        }
+      ]
+    },
+    {
+      "name": "synthesize",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave1-synthesize",
+          "owns": "docs/workflow/tasks/2026-10-28-1241_subplans-review_plan.md (Review notes section), docs/workflow/tasks/tasks_status.md (rows 8-15, 17 notes only)",
+          "task": "Cross-plan synthesis (review plan steps 1, 3, 4, 6). Read docs/workflow/tasks/original-architecture.md plus all 9 refined sub-plans: (a) build the traceability matrix (every original requirement -> exactly one owning sub-plan; flag orphans and double-owners, resolving by editing the matrix notes, not the sub-plans); (b) seam check on adjacent plans (query->filters->scoring->rerank, rerank<->federated, filters<->AI-advisory, storage<->crawler<->custom-index) — shared boundaries must live in exactly one plan; (c) order check — no plan may require a later-numbered plan's output to validate (reorder tasks_status rows if violated); (d) consistency — uniform naming, no contradictory config shapes or interface assumptions. Write the matrix, refinements-applied summary, and order verdict into the Review notes section of the review plan file; update tasks_status rows 8-15 and 17 notes to match. Doc edits only.",
+          "done": "Review notes section filled with trace matrix, seam/order/consistency verdicts; tasks_status rows match refined scopes; summary names every orphan, double-owner, and order change (or states none found)."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "wave2-audit",
+    "owns": "verification only; may fix typos and broken cross-links in the 9 sub-plans and review plan, nothing else",
+    "task": "Final audit of the review (review plan Validation). Re-read all 9 refined sub-plans plus the filled Review notes end-to-end: verify each plan meets the quality bar (falsifiable goal, executable steps, exact validation, non-goals), the trace matrix covers every original requirement exactly once, scalability findings exist per plan, and tasks_status matches. Report pass/fail per validation item with the file+section evidencing each pass. Fix only typos and broken links; substantive gaps go in the report as unresolved, not silent fixes.",
+    "done": "Validation checklist reported with evidence per item; any remaining gaps named explicitly with the exact file and section."
+  }
+}

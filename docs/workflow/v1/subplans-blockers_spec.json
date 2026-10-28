@@ -1,0 +1,36 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1241_subplans-review_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "fix-blockers",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "fix-review-matrix",
+          "owns": "docs/workflow/tasks/2026-10-28-1241_subplans-review_plan.md only",
+          "task": "Fix the V1 traceability blockers in the review plan only. (1) Reword the Validation Plan traceability bullet so it no longer demands literal exactly-one-sub-plan where the matrix intentionally uses per-key/per-hunk ownership: require every original requirement to map to exactly one ACCOUNTABLE owner, where DONE (shipped skeleton), per-key ownership pinned by D1-D6, and named deferred orphans O1/O2 (explicitly owner=NONE, deferred by consensus, blocking nothing) are valid accountable dispositions; no silent drops allowed. (2) Add explicit trace rows for original-architecture section 4 (Recommended Project Structure -> DONE, target layout shipped by skeleton, modules created only when needed) and section 15 Phases 1-3 (-> DONE, shipped by skeleton task 1; Phase 4/5/6 rows already exist). (3) Define the cited seam aliases in the Seam verdicts section: S2=(c) sole-excluder, S3=(a)/(b) enrichment split, S4=D4 filter-key reservation, S6=(d) storage placement, alongside existing S1/S7/S8, so every S-reference in the matrix and sub-plans resolves. Keep all other verdicts unchanged. Doc edits only.",
+          "done": "Validation bullet reworded; section 4 and Phase 1-3 rows present; S2/S3/S4/S6 defined; summary cites exact lines/sections changed."
+        },
+        {
+          "label": "fix-filter-facilities",
+          "owns": "docs/workflow/tasks/2026-10-28-1237_filter-pack_plan.md only",
+          "task": "Fix the T10 facilities gap only. In Scope (forward-compatibility / review D4 paragraph) add `facilities` to the reserved pass-through keys alongside any prefer_* key and max_price/location keys (rerank pack consumer). In Steps step 3 add an explicit facilities pass-through assertion to the reserved-key pass-through tests. Change nothing else. Doc edits only.",
+          "done": "facilities appears in both the Scope D4 reservation and the step-3 test list; summary cites the edited lines."
+        },
+        {
+          "label": "fix-ai-decisions-headings",
+          "owns": "docs/workflow/tasks/2026-10-28-1237_ai-capabilities_plan.md, docs/workflow/tasks/2026-10-28-1237_observability-cli_plan.md (heading only), docs/workflow/tasks/2026-10-28-1243_db-connectors_plan.md (heading only)",
+          "task": "Two fixes. (1) T14 pre-code gates: in ai-capabilities Steps step 1, record the DECISIONS as settled (not to be re-decided by the implementer): seam = manager-primary (the plan's own criteria: 2+ AI plugins need a backend and Scope forbids per-plugin different backends in v1), and models source = load configs/models.yaml as a second file alongside default.yaml (file already exists, tests already load it directly, load_config resolves secrets per-file identically). Keep the surrounding implement/test text intact. (2) Normalise the scalability heading in all three owned files to exactly '## Scalability notes' (ai-capabilities, observability-cli, db-connectors currently use '## Scalability'). Doc edits only.",
+          "done": "Step 1 records both decisions as settled; all three files use '## Scalability notes'; summary cites edited lines."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "readiness-audit",
+    "owns": "docs/workflow/tasks/tasks_status.md (row 16 status only)",
+    "task": "Readiness verification for implementing tasks 8-15 and 17. Re-read the review plan (Validation, trace matrix, D1-D6, seam verdicts incl. aliases), all 9 sub-plans, and tasks_status.md. Verify with searches/reads, not memory: (a) V1 accountable-owner rule holds — every original requirement mapped, O1/O2 explicitly deferred, section 4 + Phase 1-3 rows present; (b) facilities present in filter-pack Scope D4 + step 3; (c) S1-S8 all defined exactly once in seam verdicts; (d) T14 step 1 records manager-primary + models.yaml-second-file as settled; (e) all 9 plans use '## Scalability notes'; (f) tasks_status rows 8-15,17 notes match plan scopes and all plan links resolve; (g) run: node --test docs/workflow/v1/workflow.test.mjs, UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src. If and only if (a)-(g) all pass, flip tasks_status.md row 16 to Done with a note that blockers are fixed and tasks 8-15,17 are ready to implement in row order (T8 first). Otherwise leave row 16 In Progress and report each failing item with file+section. No other edits except typos.",
+    "done": "Per-item pass/fail with file+section evidence and exact command outcomes; explicit READY or NOT READY verdict; row 16 flipped only on full pass."
+  }
+}
