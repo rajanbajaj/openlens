@@ -15,6 +15,7 @@ from openlens.core.interfaces import (
     SearchRequest,
     SearchResponse,
 )
+from openlens.providers.manager import ProviderManager
 from openlens.core.pipeline import Pipeline, assemble_explanations
 from openlens.core.registry import PluginRegistry
 from openlens.ranking.profiles import (
@@ -75,9 +76,12 @@ def _coerce_profiles(raw: Any) -> dict[str, RankingProfile] | None:
 class SearchEngine(Engine):
     """Default Engine implementation.
 
-    Providers are supplied by the caller (the provider manager owns them);
-    plugins are built from config via :class:`PluginRegistry`. Ranking uses
-    the per-mode profile named by ``SearchRequest.mode``.
+    Provider selection is owned by a :class:`ProviderManager` (single-owner
+    routing, which also puts the manager's timeout bound on the live path);
+    the engine keeps the query pipeline, ranker, and response assembly.
+    Pass ``manager=`` (or use :meth:`from_manager`); the legacy
+    ``providers=[...]`` list constructor keeps working by fanning out over
+    the list with single/fallback semantics.
     """
 
     def __init__(
@@ -85,11 +89,27 @@ class SearchEngine(Engine):
         providers: list[SearchProvider] | tuple[SearchProvider, ...] = (),
         plugins: list[Any] | tuple[Any, ...] = (),
         ranker: Ranker | None = None,
+        manager: ProviderManager | None = None,
     ) -> None:
+        if manager is not None and providers:
+            raise ConfigError(
+                "SearchEngine takes either 'manager' or 'providers', not both."
+            )
+        self._manager = manager
         self._providers = list(providers)
         self._pipeline = Pipeline(list(plugins))
         self._ranker = ranker or Ranker()
         self._query_processor = QueryProcessor()
+
+    @classmethod
+    def from_manager(
+        cls,
+        manager: ProviderManager,
+        plugins: list[Any] | tuple[Any, ...] = (),
+        ranker: Ranker | None = None,
+    ) -> "SearchEngine":
+        """Build an engine that delegates provider selection to ``manager``."""
+        return cls(plugins=plugins, ranker=ranker, manager=manager)
 
     @property
     def pipeline(self) -> Pipeline:
@@ -138,6 +158,21 @@ class SearchEngine(Engine):
         if not self._providers:
             raise ConfigError("No search providers configured.")
         return self._providers[0]
+
+    def _retrieve(
+        self, fetch_request: SearchRequest, context: SearchContext
+    ) -> list[Any]:
+        """Run provider selection for one fetch-depth request.
+
+        The manager path delegates selection (and timeout enforcement) to
+        the :class:`ProviderManager`; the legacy list path fans out over
+        the configured providers in order. Callers always pass the
+        fetch-depth request (``offset=0``, ``limit=offset+limit``); the
+        engine slices the page once after ranking.
+        """
+        if self._manager is not None:
+            return self._manager.search(fetch_request, context)
+        return self._search_with_fallback(fetch_request, context)
 
     def _search_with_fallback(
         self, request: SearchRequest, context: SearchContext
@@ -230,7 +265,9 @@ class SearchEngine(Engine):
 
         Primary hits keep their order; variant hits with unseen ids append
         (carrying an expansion reason). A failing variant is recorded in
-        diagnostics and skipped — it never fails the request.
+        diagnostics and skipped — it never fails the request. The request
+        is the fetch-depth request, so the merge cap below preserves the
+        full fetch window for the single post-ranking slice.
         """
         if not processed.added:
             return hits
@@ -238,7 +275,7 @@ class SearchEngine(Engine):
         merged = list(hits)
         for variant, term, source in self._expansion_variants(processed):
             try:
-                extra = self._search_with_fallback(
+                extra = self._retrieve(
                     replace(provider_request, query=variant), context
                 )
             except ProviderError as exc:
@@ -267,10 +304,18 @@ class SearchEngine(Engine):
             if processed.effective_mode == request.mode
             else replace(request, mode=processed.effective_mode)
         )
+        # Paging ownership: providers are queried once at the fetch depth
+        # (offset=0, limit=offset+limit); the single slice below is the only
+        # pagination applied, with total set to the pre-slice merged count.
+        fetch_request = replace(
+            provider_request,
+            offset=0,
+            limit=provider_request.offset + provider_request.limit,
+        )
         context = SearchContext(request=provider_request)
         context.metadata["query"] = _query_entry(processed)
-        hits = self._search_with_fallback(provider_request, context)
-        hits = self._merge_expansion_hits(provider_request, context, processed, hits)
+        hits = self._retrieve(fetch_request, context)
+        hits = self._merge_expansion_hits(fetch_request, context, processed, hits)
         # Defensive: providers must init final_score to original_score, but
         # never let a zero final_score wipe out a real provider signal.
         for hit in hits:
@@ -283,16 +328,22 @@ class SearchEngine(Engine):
         context = self._pipeline.run(context)
         context = self._ranker.run(context)
         context = assemble_explanations(context)
+        total = len(context.results)
+        page = context.results[
+            provider_request.offset : provider_request.offset + provider_request.limit
+        ]
         return SearchResponse(
             query=request.query,
             mode=processed.effective_mode,
-            results=list(context.results),
-            total=len(context.results),
+            results=list(page),
+            total=total,
             applied_filters=list(context.applied_filters),
             diagnostics=context.diagnostics(),
         )
 
     def health_check(self) -> dict[str, bool]:
+        if self._manager is not None:
+            return self._manager.health_check()
         statuses: dict[str, bool] = {}
         for provider in self._providers:
             try:

@@ -1,18 +1,39 @@
-"""Provider manager: startup validation plus the single-provider strategy.
+"""Provider manager: startup validation plus routing strategies.
 
 Only providers with ``enabled: true`` are instantiated — disabled entries
 are never imported beyond their type lookup, constructed, or contacted, so
 offline/secret-less operation is the default. Timeouts are bounded per
-provider (``timeout_s``) via a worker thread: a hung backend surfaces as
+provider (``timeout_s``) via worker threads: a hung backend surfaces as
 :class:`ProviderError` with code ``timeout`` instead of stalling the
 pipeline. Per-request latency is recorded into :class:`SearchContext`
 diagnostics when a context is supplied.
+
+Strategies:
+
+* ``single`` — route to the primary provider under its timeout bound.
+* ``fallback`` — primary first; on primary *failure* (including timeout)
+  the fallback is tried once under its own bound. An empty hit list is a
+  success and never triggers the fallback.
+* ``federated`` — fan out over the preference-selected providers in
+  parallel (bounded ``ThreadPoolExecutor``), fuse the per-provider ranked
+  lists with reciprocal rank fusion (:func:`fuse`), and return the merged
+  window. Partial failure degrades (survivor hits plus per-provider errors
+  recorded in diagnostics); empty results from every provider are a
+  success with zero hits, while every provider failing raises one
+  :class:`ProviderError` with code ``unavailable``.
+
+Paging ownership: every provider is queried at ``offset=0`` with a fetch
+depth of ``offset + limit``; the engine slices ``[offset:offset + limit]``
+once after ranking with ``total`` set to the pre-slice merged count. The
+original ``offset`` is never passed to providers (that would double-skip).
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from typing import Any, Optional
 
 from openlens.core.context import SearchContext
@@ -23,19 +44,106 @@ from openlens.core.interfaces import (
     SearchResult,
     SearchProvider,
 )
-from openlens.providers.base import DEFAULT_TIMEOUT_S
+from openlens.providers.base import DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S
 from openlens.providers.registry import create, register_builtin_providers
+from openlens.retrieval.fusion import fuse
 
-_RESERVED_KEYS = ("strategy", "primary", "fallback")
+#: Config keys that live in the ``providers:`` strategy section rather than
+#: naming a provider entry. Shared with ``openlens.main._manager_section``
+#: so the app config translator forwards them instead of treating them as
+#: provider entries.
+STRATEGY_SECTION_KEYS = (
+    "strategy",
+    "primary",
+    "fallback",
+    "federated_timeout_s",
+    "federated_primary_boost",
+    "federated_max_merged",
+)
 
-#: The only routing strategy the skeleton ships. Federated search arrives later.
+_RESERVED_KEYS = STRATEGY_SECTION_KEYS
+
+#: Route every request to the primary provider.
 SINGLE_STRATEGY = "single"
 
 #: Primary plus bounded fallback: on primary *failure* the fallback provider
 #: is tried once. An empty hit list is a success, never a trigger.
 FALLBACK_STRATEGY = "fallback"
 
-SUPPORTED_STRATEGIES = (SINGLE_STRATEGY, FALLBACK_STRATEGY)
+#: Parallel fan-out over the selected providers with RRF fusion.
+FEDERATED_STRATEGY = "federated"
+
+SUPPORTED_STRATEGIES = (SINGLE_STRATEGY, FALLBACK_STRATEGY, FEDERATED_STRATEGY)
+
+#: Upper bound on federated fan-out threads (one submit per provider).
+MAX_FANOUT_WORKERS = 16
+
+#: Default multiplier applied to the ``primary`` provider's fusion weight
+#: (only when ``provider_prefs.primary`` is set).
+DEFAULT_FEDERATED_PRIMARY_BOOST = 1.5
+
+#: Default cap on the merged federated window before the engine slices.
+DEFAULT_FEDERATED_MAX_MERGED = 200
+
+
+def _check_timeout_s(name: str, value: Any) -> float:
+    """Validate a timeout bound. Returns the float value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"'{name}' must be a number, got {value!r}. Startup validation failed."
+        )
+    bound = float(value)
+    if not 0 < bound <= MAX_TIMEOUT_S:
+        raise ConfigError(
+            f"'{name}' must be within (0, {MAX_TIMEOUT_S}], got {value!r}. "
+            "Startup validation failed."
+        )
+    return bound
+
+
+def _check_boost(name: str, value: Any) -> float:
+    """Validate the federated primary fusion-weight multiplier."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"'{name}' must be a number, got {value!r}. Startup validation failed."
+        )
+    boost = float(value)
+    if not boost > 0:
+        raise ConfigError(
+            f"'{name}' must be positive, got {value!r}. Startup validation failed."
+        )
+    return boost
+
+
+def _check_cost_per_call(name: str, value: Any) -> float:
+    """Validate a per-provider estimated call cost. Returns the float value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"'{name}' cost_per_call must be a number, got {value!r}. "
+            "Startup validation failed."
+        )
+    cost = float(value)
+    if cost < 0:
+        raise ConfigError(
+            f"'{name}' cost_per_call must be >= 0, got {value!r}. "
+            "Startup validation failed."
+        )
+    return cost
+
+
+def _check_max_merged(name: str, value: Any) -> int:
+    """Validate the merged-window cap."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"'{name}' must be a positive integer, got {value!r}. "
+            "Startup validation failed."
+        )
+    if value <= 0:
+        raise ConfigError(
+            f"'{name}' must be a positive integer, got {value!r}. "
+            "Startup validation failed."
+        )
+    return value
 
 
 class ProviderManager:
@@ -47,6 +155,11 @@ class ProviderManager:
         primary: str,
         strategy: str = SINGLE_STRATEGY,
         fallback: str | None = None,
+        *,
+        federated_timeout_s: float | None = None,
+        federated_primary_boost: float = DEFAULT_FEDERATED_PRIMARY_BOOST,
+        federated_max_merged: int = DEFAULT_FEDERATED_MAX_MERGED,
+        provider_costs: dict[str, float] | None = None,
     ) -> None:
         if strategy not in SUPPORTED_STRATEGIES:
             raise ConfigError(
@@ -77,12 +190,26 @@ class ProviderManager:
             if fallback == primary:
                 raise ConfigError(
                     f"Fallback provider '{fallback}' must differ from primary "
-                    f"'{primary}'. Startup validation failed."
+                    "'{primary}'. Startup validation failed."
                 )
+        if federated_timeout_s is not None:
+            federated_timeout_s = _check_timeout_s(
+                "federated_timeout_s", federated_timeout_s
+            )
+        federated_primary_boost = _check_boost(
+            "federated_primary_boost", federated_primary_boost
+        )
+        federated_max_merged = _check_max_merged(
+            "federated_max_merged", federated_max_merged
+        )
         self._providers = dict(providers)
         self._primary = primary
         self._strategy = strategy
         self._fallback = fallback
+        self._federated_timeout_s = federated_timeout_s
+        self._federated_primary_boost = federated_primary_boost
+        self._federated_max_merged = federated_max_merged
+        self._provider_costs = dict(provider_costs or {})
 
     # -- construction ----------------------------------------------------
 
@@ -112,8 +239,20 @@ class ProviderManager:
                 f"Unknown provider strategy '{strategy}'. "
                 f"Supported: {sorted(SUPPORTED_STRATEGIES)}. Startup validation failed."
             )
+        federated_timeout_s = section.get("federated_timeout_s", None)
+        if federated_timeout_s is not None:
+            _check_timeout_s("federated_timeout_s", federated_timeout_s)
+        federated_primary_boost = section.get(
+            "federated_primary_boost", DEFAULT_FEDERATED_PRIMARY_BOOST
+        )
+        _check_boost("federated_primary_boost", federated_primary_boost)
+        federated_max_merged = section.get(
+            "federated_max_merged", DEFAULT_FEDERATED_MAX_MERGED
+        )
+        _check_max_merged("federated_max_merged", federated_max_merged)
         register_builtin_providers()
         providers: dict[str, SearchProvider] = {}
+        provider_costs: dict[str, float] = {}
         for entry_name, entry in section.items():
             if entry_name in _RESERVED_KEYS:
                 continue
@@ -130,7 +269,16 @@ class ProviderManager:
                     f"Provider entry '{entry_name}': 'type' must be a "
                     "non-empty string. Startup validation failed."
                 )
-            options = {k: v for k, v in entry.items() if k not in ("enabled", "type")}
+            # Estimated call cost is manager accounting only: validate it
+            # here and never pass it to the provider constructor.
+            provider_costs[entry_name] = _check_cost_per_call(
+                entry_name, entry.get("cost_per_call", 0.0)
+            )
+            options = {
+                k: v
+                for k, v in entry.items()
+                if k not in ("enabled", "type", "cost_per_call")
+            }
             providers[entry_name] = create(provider_type, options)
         if not providers:
             raise ConfigError(
@@ -153,7 +301,16 @@ class ProviderManager:
                 f"Fallback provider {fallback!r} is not enabled. Enabled "
                 f"providers: {sorted(providers)}. Startup validation failed."
             )
-        return cls(providers, primary, strategy, fallback)
+        return cls(
+            providers,
+            primary,
+            strategy,
+            fallback,
+            federated_timeout_s=federated_timeout_s,
+            federated_primary_boost=federated_primary_boost,
+            federated_max_merged=federated_max_merged,
+            provider_costs=provider_costs,
+        )
 
     # -- runtime ---------------------------------------------------------
 
@@ -171,6 +328,21 @@ class ProviderManager:
         return self._fallback
 
     @property
+    def federated_timeout_s(self) -> float | None:
+        """Overall federated deadline, or None for max-per-provider-plus-1s."""
+        return self._federated_timeout_s
+
+    @property
+    def federated_primary_boost(self) -> float:
+        """Fusion weight multiplier for the preferred provider."""
+        return self._federated_primary_boost
+
+    @property
+    def federated_max_merged(self) -> int:
+        """Cap on the merged federated window before engine slicing."""
+        return self._federated_max_merged
+
+    @property
     def provider_names(self) -> list[str]:
         return sorted(self._providers)
 
@@ -184,19 +356,63 @@ class ProviderManager:
                 f"{sorted(self._providers)}."
             ) from None
 
+    def _select_providers(self, prefs: Any) -> list[str]:
+        """Resolve per-query provider preferences to entry names.
+
+        ``include`` restricts to the named providers, ``exclude`` removes,
+        and ``primary`` names the provider whose fusion weight is boosted.
+        All names reference config entry names and are validated loudly:
+        unknown names, a ``primary`` outside the selection, and an empty
+        selection are all request errors (ConfigError), never silent
+        fallback to all providers.
+        """
+        enabled = set(self._providers)
+        for name in (*prefs.include, *prefs.exclude):
+            if name not in enabled:
+                raise ConfigError(
+                    f"Unknown provider {name!r} in provider_prefs. Enabled "
+                    f"providers: {sorted(enabled)}. Request rejected."
+                )
+        if prefs.primary is not None and prefs.primary not in enabled:
+            raise ConfigError(
+                f"Unknown provider {prefs.primary!r} as provider_prefs.primary. "
+                f"Enabled providers: {sorted(enabled)}. Request rejected."
+            )
+        if prefs.include:
+            selected = list(dict.fromkeys(prefs.include))
+        else:
+            selected = sorted(enabled)
+        excluded = set(prefs.exclude)
+        selected = [name for name in selected if name not in excluded]
+        if prefs.primary is not None and prefs.primary not in selected:
+            raise ConfigError(
+                f"provider_prefs.primary {prefs.primary!r} is not in the selected "
+                f"providers {selected}. Request rejected."
+            )
+        if not selected:
+            raise ConfigError(
+                f"provider_prefs selects no providers (include={list(prefs.include)}, "
+                f"exclude={list(prefs.exclude)}). Request rejected."
+            )
+        return selected
+
     def search(
         self, request: SearchRequest, context: Optional[SearchContext] = None
     ) -> list[SearchResult]:
-        """Run the request against the primary provider with a bounded timeout.
+        """Run the request under the configured strategy.
 
-        On primary *failure* (including timeout) the configured fallback, if
-        any, is tried once under its own bound. An empty hit list is a
-        success and never triggers the fallback: failure and empty are
-        distinct outcomes. Raises ProviderError when every attempted backend
-        fails; never leaks raw client exceptions.
+        Every provider is queried at ``offset=0`` with a fetch depth of
+        ``offset + limit`` (paging ownership); the engine slices the page
+        once after ranking. Preferences are validated for every strategy
+        (unknown names and empty selections fail loudly); only the
+        federated strategy fans out over the selection.
         """
+        selected = self._select_providers(request.provider_prefs)
+        if self._strategy == FEDERATED_STRATEGY:
+            return self._search_federated(request, selected, context)
+        fetch = replace(request, offset=0, limit=request.offset + request.limit)
         try:
-            return self._search_one(self._primary, request, context)
+            return self._search_one(self._primary, fetch, context)
         except ProviderError as primary_exc:
             if self._fallback is None:
                 raise
@@ -207,7 +423,7 @@ class ProviderManager:
                 )
                 context.fallback_used = True
             try:
-                return self._search_one(self._fallback, request, context)
+                return self._search_one(self._fallback, fetch, context)
             except ProviderError as fallback_exc:
                 if context is not None:
                     context.add_error(f"fallback '{self._fallback}' also failed")
@@ -215,18 +431,59 @@ class ProviderManager:
                 # keep the primary failure visible in diagnostics.
                 raise fallback_exc from primary_exc
 
+    def _record_accounting(
+        self,
+        name: str,
+        hits: list[SearchResult] | None,
+        context: Optional[SearchContext],
+    ) -> None:
+        """Write per-request result counts and estimated costs.
+
+        Successes record their hit count; every attempt (success or
+        failure) records its estimated call cost, since a timed-out or
+        failed call still spends the backend invocation.
+        """
+        if context is None:
+            return
+        if hits is not None:
+            context.record_provider_results(name, len(hits))
+        context.record_provider_cost(name, self._provider_costs.get(name, 0.0))
+
+    def _invoke(self, name: str, request: SearchRequest) -> list[SearchResult]:
+        """Run one provider call with error mapping but no thread/timeout.
+
+        Thread-free core shared by the thread-bound single/fallback wrapper
+        (:meth:`_search_one`) and the federated executor fan-out, which
+        enforces its own per-provider and overall deadlines. Never leaks
+        raw client exceptions: non-ProviderError failures surface as
+        ProviderError.
+        """
+        provider = self._providers[name]
+        try:
+            return list(provider.search(request))
+        except ProviderError as exc:
+            if not exc.provider_name:
+                exc.provider_name = name
+            raise
+        except BaseException as exc:
+            raise ProviderError(
+                f"provider '{name}' failed: {exc}",
+                provider_name=name,
+                retryable=False,
+                code=ProviderError.UNKNOWN,
+            ) from exc
+
     def _search_one(
         self, name: str, request: SearchRequest, context: Optional[SearchContext]
     ) -> list[SearchResult]:
         """Run one provider under its bounded timeout. May raise ProviderError."""
-        provider = self._providers[name]
-        timeout_s = getattr(provider, "timeout_s", DEFAULT_TIMEOUT_S)
+        timeout_s = getattr(self._providers[name], "timeout_s", DEFAULT_TIMEOUT_S)
         start = time.monotonic()
         box: dict[str, Any] = {}
 
         def target() -> None:
             try:
-                box["result"] = provider.search(request)
+                box["result"] = self._invoke(name, request)
             except BaseException as exc:  # re-raised below as ProviderError
                 box["error"] = exc
 
@@ -239,12 +496,14 @@ class ProviderManager:
         if context is not None:
             context.record_provider_latency(name, elapsed_ms)
         if worker.is_alive():
+            self._record_accounting(name, None, context)
             raise ProviderError.timeout(
                 name,
                 f"provider '{name}' timed out after {timeout_s}s",
             )
         if "error" in box:
             err = box["error"]
+            self._record_accounting(name, None, context)
             if isinstance(err, ProviderError):
                 if not err.provider_name:
                     err.provider_name = name
@@ -255,7 +514,146 @@ class ProviderManager:
                 retryable=False,
                 code=ProviderError.UNKNOWN,
             ) from err
-        return list(box.get("result", []))
+        hits = list(box.get("result", []))
+        self._record_accounting(name, hits, context)
+        return hits
+
+    def _search_federated(
+        self,
+        request: SearchRequest,
+        selected: list[str],
+        context: Optional[SearchContext],
+    ) -> list[SearchResult]:
+        """Fan out over ``selected`` in parallel and fuse with RRF.
+
+        Each provider is queried at ``offset=0`` with fetch depth
+        ``offset + limit``; per-provider ``timeout_s`` bounds bound each
+        call and the overall ``federated_timeout_s`` deadline (default:
+        max per-provider bound + 1s) bounds the whole fan-out. Partial
+        failure degrades (survivor hits plus per-provider errors recorded
+        in diagnostics); empty results from every provider are a success
+        with zero hits, while every provider failing raises one
+        ProviderError with code ``unavailable`` naming every attempted
+        provider.
+        """
+        prefs = request.provider_prefs
+        fetch = replace(request, offset=0, limit=request.offset + request.limit)
+        weights: dict[str, float] | None = None
+        if prefs.primary is not None:
+            weights = {
+                name: (self._federated_primary_boost if name == prefs.primary else 1.0)
+                for name in selected
+            }
+        bounds = {
+            name: float(getattr(self._providers[name], "timeout_s", DEFAULT_TIMEOUT_S))
+            for name in selected
+        }
+        overall = self._federated_timeout_s
+        if overall is None:
+            overall = max(bounds.values()) + 1.0
+        started = time.monotonic()
+        provider_deadlines = {name: started + bound for name, bound in bounds.items()}
+        overall_deadline = started + overall
+
+        ranked: dict[str, list[SearchResult]] = {}
+        failures: dict[str, BaseException] = {}
+        latencies: dict[str, float] = {}
+        state_lock = threading.Lock()
+        expired = threading.Event()
+
+        def _fan_out() -> None:
+            # Runs on a daemon thread so the executor's worker threads
+            # inherit daemon status (threading.Thread defaults daemon to
+            # the creating thread's flag): abandoned provider calls can
+            # never stall interpreter shutdown.
+            executor = ThreadPoolExecutor(
+                max_workers=min(len(selected), MAX_FANOUT_WORKERS),
+                thread_name_prefix="openlens-federated",
+            )
+            try:
+                futures = {
+                    executor.submit(self._invoke, name, fetch): name
+                    for name in selected
+                }
+                for future, name in futures.items():
+                    if expired.is_set():
+                        break
+                    remaining = (
+                        min(provider_deadlines[name], overall_deadline)
+                        - time.monotonic()
+                    )
+                    try:
+                        if remaining <= 0:
+                            raise TimeoutError(
+                                f"provider '{name}' exceeded its deadline"
+                            )
+                        hits = future.result(timeout=remaining)
+                    except TimeoutError:
+                        with state_lock:
+                            failures[name] = ProviderError.timeout(
+                                name,
+                                f"provider '{name}' timed out after {bounds[name]}s",
+                            )
+                            latencies[name] = (time.monotonic() - started) * 1000.0
+                    except ProviderError as exc:
+                        with state_lock:
+                            failures[name] = exc
+                            latencies[name] = (time.monotonic() - started) * 1000.0
+                    else:
+                        with state_lock:
+                            ranked[name] = hits
+                            latencies[name] = (time.monotonic() - started) * 1000.0
+            finally:
+                # Never awaited: on overall expiry late workers are daemon
+                # threads recorded as timeouts above; the executor is not
+                # joined so collection can never stall the request.
+                executor.shutdown(wait=False)
+
+        launcher = threading.Thread(target=_fan_out, daemon=True)
+        launcher.start()
+        launcher.join(timeout=overall)
+        if launcher.is_alive():
+            expired.set()
+            with state_lock:
+                for name in selected:
+                    if name not in ranked and name not in failures:
+                        failures[name] = ProviderError.timeout(
+                            name,
+                            f"federated search exceeded overall deadline of "
+                            f"{overall}s; provider '{name}' did not respond "
+                            "in time",
+                        )
+                        latencies.setdefault(
+                            name, (time.monotonic() - started) * 1000.0
+                        )
+        with state_lock:
+            snap_ranked = dict(ranked)
+            snap_failures = dict(failures)
+            snap_latencies = dict(latencies)
+        if context is not None:
+            for name in selected:
+                context.record_provider_latency(
+                    name,
+                    snap_latencies.get(name, (time.monotonic() - started) * 1000.0),
+                )
+                self._record_accounting(name, snap_ranked.get(name), context)
+            for name in sorted(snap_failures):
+                context.add_error(f"{name}: {snap_failures[name]}")
+        if not snap_ranked:
+            attempted = sorted(selected)
+            first = next(iter(snap_failures.values()), None)
+            raise ProviderError(
+                "federated search failed: all "
+                f"{len(attempted)} provider(s) failed "
+                f"({', '.join(attempted)})",
+                provider_name="",
+                retryable=False,
+                code=ProviderError.UNAVAILABLE,
+            ) from first
+        merged = fuse(snap_ranked, weights=weights)
+        if len(merged) > self._federated_max_merged:
+            merged = merged[: self._federated_max_merged]
+        return merged
 
     def health_check(self) -> dict[str, bool]:
         """Per-provider health keyed by enabled provider name. Never raises."""

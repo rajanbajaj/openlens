@@ -67,6 +67,15 @@ class Document:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ProviderPrefs:
+    """Per-query provider preferences (federated selection hints)."""
+
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    primary: Optional[str] = None
+
+
 @dataclass
 class SearchRequest:
     """A search request as issued to the Engine or a provider."""
@@ -76,6 +85,7 @@ class SearchRequest:
     limit: int = 10
     offset: int = 0
     filters: dict[str, Any] = field(default_factory=dict)
+    provider_prefs: ProviderPrefs = field(default_factory=ProviderPrefs)
 
 
 @dataclass

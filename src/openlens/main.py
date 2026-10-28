@@ -22,7 +22,7 @@ from openlens.api.routes import router as search_router
 from openlens.config import load_config
 from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import ConfigError, Engine
-from openlens.providers.manager import ProviderManager
+from openlens.providers.manager import STRATEGY_SECTION_KEYS, ProviderManager
 from openlens.ranking.profiles import RankingProfile, load_profiles
 from openlens.retrieval.query_processor import extract_query_section
 
@@ -77,7 +77,7 @@ def _manager_section(config: dict[str, Any]) -> dict[str, Any]:
         names = [str(n) for n in enabled_list]
     normalized: dict[str, Any] = {}
     for key, value in section.items():
-        if key in ("strategy", "primary", "fallback"):
+        if key in STRATEGY_SECTION_KEYS:
             normalized[key] = value
         elif key == "enabled":
             continue
@@ -182,9 +182,9 @@ def _ranking_config(config: dict[str, Any]) -> dict[str, Any]:
 def build_engine(config: dict[str, Any]) -> SearchEngine:
     """Wire the real Engine from app config: providers, plugins, ranking.
 
-    Provider order is primary first, then the configured fallback, so the
-    engine's bounded fallback (failure moves on, empty never does) follows
-    the YAML without core edits.
+    Provider selection is owned by the ProviderManager (single, fallback,
+    or federated per the YAML strategy); the engine delegates to it, which
+    also puts the manager's per-provider timeout bound on the live path.
 
     Raises:
         ConfigError: the config is missing, malformed, or names no enabled
@@ -205,12 +205,8 @@ def build_engine(config: dict[str, Any]) -> SearchEngine:
                     if parent:
                         os.makedirs(parent, exist_ok=True)
     manager = ProviderManager.from_config(_manager_section(config))
-    ordered_names = [manager.primary]
-    if manager.fallback is not None:
-        ordered_names.append(manager.fallback)
-    providers = [manager.get(name) for name in ordered_names]
     entries = _plugin_entries(config)
-    engine = SearchEngine(providers=providers, plugins=[])
+    engine = SearchEngine.from_manager(manager, plugins=[])
     engine.configure(
         {
             "plugins": entries,

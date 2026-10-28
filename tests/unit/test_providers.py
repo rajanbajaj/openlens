@@ -165,12 +165,45 @@ def test_unknown_strategy_rejected():
         ProviderManager.from_config(
             {
                 "providers": {
-                    "strategy": "federated",
+                    "strategy": "round_robin",
                     "primary": "fast",
                     "fast": {"type": "fake_fast", "enabled": True},
                 }
             }
         )
+
+
+def test_cost_per_call_rejects_non_number():
+    for bad in (True, -1.0, "0.5", None):
+        with pytest.raises(ConfigError):
+            ProviderManager.from_config(
+                _config(
+                    primary="fast",
+                    fast={
+                        "type": "fake_fast",
+                        "enabled": True,
+                        "cost_per_call": bad,
+                    },
+                )
+            )
+
+
+def test_cost_per_call_recorded_per_request():
+    manager = ProviderManager.from_config(
+        _config(
+            primary="fast",
+            fast={
+                "type": "fake_fast",
+                "enabled": True,
+                "cost_per_call": 0.5,
+            },
+        )
+    )
+    context = SearchContext(request=SearchRequest(query="fast hit"))
+    hits = manager.search(context.request, context)
+    assert len(hits) == 1
+    assert context.provider_result_counts == {"fast": 1}
+    assert context.provider_costs_estimated == {"fast": 0.5}
 
 
 def test_primary_must_be_enabled():

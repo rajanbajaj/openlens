@@ -53,12 +53,20 @@ class SearchContext:
     applied_filters: list[str] = field(default_factory=list)
     plugin_executions: list[PluginExecution] = field(default_factory=list)
     provider_latencies_ms: dict[str, float] = field(default_factory=dict)
+    provider_result_counts: dict[str, int] = field(default_factory=dict)
+    provider_costs_estimated: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     fallback_used: bool = False
 
     def record_provider_latency(self, provider_name: str, latency_ms: float) -> None:
         self.provider_latencies_ms[provider_name] = latency_ms
+
+    def record_provider_results(self, provider_name: str, count: int) -> None:
+        self.provider_result_counts[provider_name] = count
+
+    def record_provider_cost(self, provider_name: str, cost: float) -> None:
+        self.provider_costs_estimated[provider_name] = cost
 
     def record_plugin_execution(
         self,
@@ -92,6 +100,8 @@ class SearchContext:
         payload: dict[str, Any] = {
             "fallback_used": self.fallback_used,
             "provider_latencies_ms": dict(self.provider_latencies_ms),
+            "provider_result_counts": dict(self.provider_result_counts),
+            "provider_costs_estimated": dict(self.provider_costs_estimated),
             "plugin_executions": [
                 {
                     "plugin": e.plugin_name,

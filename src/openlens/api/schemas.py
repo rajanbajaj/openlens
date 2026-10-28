@@ -20,6 +20,14 @@ DEFAULT_LIMIT = 10
 MAX_QUERY_LENGTH = 1000
 
 
+class ProviderPrefsSchema(BaseModel):
+    """Optional per-query provider preferences on the wire."""
+
+    include: tuple[str, ...] = Field(default_factory=tuple)
+    exclude: tuple[str, ...] = Field(default_factory=tuple)
+    primary: Optional[str] = None
+
+
 class SearchRequestSchema(BaseModel):
     """POST /api/v1/search request body."""
 
@@ -27,6 +35,7 @@ class SearchRequestSchema(BaseModel):
     mode: str = Field(default="default", min_length=1, max_length=64)
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
+    provider_prefs: Optional[ProviderPrefsSchema] = None
     # Free-form filters passed through to the engine. The `prefer_` prefix
     # is reserved for advisory scoring boosts (never exclusion):
     # `prefer_domains: list[str]` (exact-or-subdomain match) and
@@ -84,6 +93,8 @@ class DiagnosticsSchema(BaseModel):
 
     fallback_used: bool = False
     provider_latencies_ms: dict[str, float] = Field(default_factory=dict)
+    provider_result_counts: dict[str, int] = Field(default_factory=dict)
+    provider_costs_estimated: dict[str, float] = Field(default_factory=dict)
     plugin_executions: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     query: dict[str, Any] = Field(default_factory=dict)
@@ -94,6 +105,10 @@ class DiagnosticsSchema(BaseModel):
         return cls(
             fallback_used=bool(diagnostics.get("fallback_used", False)),
             provider_latencies_ms=dict(diagnostics.get("provider_latencies_ms", {})),
+            provider_result_counts=dict(diagnostics.get("provider_result_counts", {})),
+            provider_costs_estimated=dict(
+                diagnostics.get("provider_costs_estimated", {})
+            ),
             plugin_executions=list(diagnostics.get("plugin_executions", [])),
             errors=list(diagnostics.get("errors", [])),
             query=dict(query_entry) if isinstance(query_entry, dict) else {},

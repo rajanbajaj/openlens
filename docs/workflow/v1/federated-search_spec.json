@@ -1,0 +1,42 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_federated-search_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t13-fusion-prefs",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t13-fusion",
+          "owns": "src/openlens/retrieval/fusion.py, tests/unit/test_federated.py",
+          "task": "Implement federated-search plan Step 1 only: NEW src/openlens/retrieval/fusion.py with the pure function fuse(ranked_lists, k=60, weights) -> merged list. Reciprocal rank fusion over per-provider RANKS (never raw cross-provider scores), keyed by retrieval/deduplicator.py dedupe_key so the same URL from two providers merges into one hit (kept object: the contributor with the best rank; other provider names recorded in metadata['also_from']); merged hit carries metadata['rrf_score'] and final_score initialized to the fused score (original_score untouched); deterministic tie-break (fused score desc, provider name asc, doc id asc); empty input lists handled. Tests in NEW tests/unit/test_federated.py: rank-only merging on hand-built lists with exact expected orders, same-URL merge across providers with also_from, weight config effect, tie-break determinism, empty-list handling. No manager/engine/API/config changes.",
+          "done": "fusion.py + RRF unit tests green with exact asserted orders."
+        },
+        {
+          "label": "t13-prefs",
+          "owns": "src/openlens/core/interfaces.py, src/openlens/api/schemas.py, src/openlens/api/routes.py, tests/unit/test_provider_prefs.py",
+          "task": "Implement federated-search plan provider-preferences data path only (part of Step 3): add frozen dataclass ProviderPrefs(include: tuple[str, ...] = (), exclude: tuple[str, ...] = (), primary: str | None = None) in src/openlens/core/interfaces.py (core stays Pydantic-free, no bare dict field); append provider_prefs: ProviderPrefs field with a default factory AFTER filters on SearchRequest (existing positional construction stays compatible). Add matching optional nested ProviderPrefsSchema API field in src/openlens/api/schemas.py with routes pass-through (src/openlens/api/routes.py builds the core dataclass; wrong types fail Pydantic -> 422). Unknown provider names are rejected loudly at selection time (never silently dropped); status split pinned: ConfigError -> 500 config_error, malformed shapes -> 422 (no errors.py changes). Tests in NEW tests/unit/test_provider_prefs.py: dataclass defaults/immutability, API schema shape pass-through, malformed shapes rejected. No manager selection logic, no fusion, no engine changes.",
+          "done": "ProviderPrefs end-to-end data path (core + API) with tests green."
+        }
+      ]
+    },
+    {
+      "name": "t13-manager",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t13-manager",
+          "owns": "src/openlens/providers/manager.py, src/openlens/core/engine.py, src/openlens/main.py, configs/providers.yaml, tests/unit/test_federated.py, tests/unit/test_engine_delegation.py",
+          "task": "Implement federated-search plan Step 2 only, reading the landed retrieval/fusion.py and ProviderPrefs (core/interfaces.py) first (do not change their shapes). (a) Manager federated strategy: parallel fan-out over enabled providers (bounded ThreadPoolExecutor, max_workers = min(selected, 16)) with per-provider timeout_s plus overall deadline federated_timeout_s (providers strategy section, NOT a per-provider entry; default = max per-provider bound + 1s; validated 0 < value <= MAX_TIMEOUT_S). Extract thread-free _invoke(name, request) from _search_one; single/fallback keep the existing thread-bound wrapper; federated submits _invoke and collects with the overall deadline (shutdown(wait=False) on expiry; late daemon threads recorded as timeouts, never awaited). Partial failure degrades (survivor results + per-provider errors recorded, never silently drops a provider); empty from all providers is success with zero hits; all-failed raises one ProviderError (code unavailable) naming every attempted provider, each failure also in context.errors. (b) Engine delegation: SearchEngine gains an optional manager-backed constructor path (SearchEngine.from_manager(manager, plugins=...) or optional manager= argument) and delegates provider selection to the manager (single-owner routing; engine keeps pipeline + ranker + response assembly); the existing SearchEngine(providers=[...]) list constructor keeps working for shipped tests; build_engine switches to the manager path (this puts the timeout bound on the live path). (c) Paging ownership: manager queries every provider with offset=0, limit=offset+limit (fetch depth); merged window capped at M; engine slices once after ranking with total = pre-slice merged count; pin single-slice semantics for ALL strategies (single/fallback regression tests unchanged). (d) Prefs selection: include restricts, exclude removes, primary boosts via fusion weight multiplier federated_primary_boost default x1.5 (applied only when primary set); intersect with enabled providers; empty selection is a request error (ConfigError), not silent fallback; unknown names rejected loudly. (e) configs/providers.yaml: document the federated strategy + federated_timeout_s. Extend tests/unit/test_federated.py with manager/prefs/paging tests; NEW tests/unit/test_engine_delegation.py: single/fallback unchanged after delegation, slow provider through SearchEngine times out within bound, offset paging through the engine returns the correct page exactly once with pre-slice total (single and federated alike). Do not touch retrieval/fusion.py shapes, diagnostics keys, or the eval harness.",
+          "done": "federated strategy + delegation + paging + prefs selection with tests green; single/fallback unchanged."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t13-integrate",
+    "owns": "src/openlens/core/context.py, src/openlens/api/schemas.py, tests/integration/test_federated_eval.py",
+    "task": "Implement federated-search plan Step 4: accounting + eval harness. Add provider_result_counts: dict[str, int] and provider_costs_estimated: dict[str, float] (from per-provider cost_per_call config, default 0.0; cost_per_call read and validated by ProviderManager.from_config — number >= 0, bools rejected -> ConfigError, popped before provider construction so providers never receive it) to SearchContext storage and diagnostics() plus matching DiagnosticsSchema fields with from_core pass-through (currently copies only the four existing keys and would silently drop them). Write tests/integration/test_federated_eval.py (+ helper, offline, no network/keys): test-local fake providers (distinct names, in-memory token-overlap search over tests/fixtures/corpus.py documents via normalize_many — NOT seeded custom-index instances since all share name 'custom_index', NOT the http stub); fixed query set comparing single vs federated on expected-doc recall, p50/p99 latency shape (keys present, federated p50 within documented multiple of single, never exact milliseconds), and estimated cost; prints a quality/latency/cost table (pinned repetitions: each of the 4 fixture requests run 20x per strategy after 3 warmups; recall >= single-provider recall; cost table has one row per strategy; no flaky latency assertions). Manual proof via the harness: federated query over two fakes returns RRF-merged hits with provider attribution; killing one provider returns survivor hits with the failure in diagnostics. Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "diagnostics + API accounting end-to-end; eval harness prints table with recall/cost assertions; full suite + ruff + mypy clean."
+  }
+}

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Request
 
 from openlens.api.errors import EngineUnavailableError
 from openlens.api.schemas import SearchRequestSchema, SearchResponseSchema
-from openlens.core.interfaces import Engine, SearchRequest
+from openlens.core.interfaces import Engine, ProviderPrefs, SearchRequest
 
 router = APIRouter(prefix="/api/v1", tags=["search"])
 
@@ -32,12 +32,22 @@ def search(
     body: SearchRequestSchema,
     engine: Engine = Depends(get_engine),
 ) -> SearchResponseSchema:
+    prefs = (
+        ProviderPrefs(
+            include=tuple(body.provider_prefs.include),
+            exclude=tuple(body.provider_prefs.exclude),
+            primary=body.provider_prefs.primary,
+        )
+        if body.provider_prefs is not None
+        else ProviderPrefs()
+    )
     core_request = SearchRequest(
         query=body.query.strip(),
         mode=body.mode,
         limit=body.limit,
         offset=body.offset,
         filters=dict(body.filters),
+        provider_prefs=prefs,
     )
     core_response = engine.search(core_request)
     return SearchResponseSchema.from_core(core_response)

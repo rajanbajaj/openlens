@@ -15,11 +15,23 @@
 # retrieval wave; it is the enabled default so search works with no infra.
 
 providers:
+  # Routing strategy: `single` (primary only), `fallback` (primary, then the
+  # `fallback:` provider once on primary *failure*; an empty hit list never
+  # triggers it), or `federated` (parallel fan-out over the
+  # preference-selected providers with reciprocal-rank-fusion merging).
   strategy: single
   primary: custom_index
   # fallback: <other-enabled-provider>  # optional 2nd provider (!= primary):
   # primary *failure* retries once against it under its own timeout bound;
   # an empty hit list never triggers it. `strategy: fallback` requires it.
+  # Federated-only knobs (ignored by the `single`/`fallback` strategies):
+  # federated_timeout_s: overall fan-out deadline in seconds (default: max
+  #   per-provider `timeout_s` + 1s; must satisfy 0 < value <= 300).
+  # federated_primary_boost: fusion weight multiplier for the
+  #   `provider_prefs.primary` provider (default 1.5; applied only when a
+  #   primary preference is set).
+  # federated_max_merged: cap on the merged federated window before the
+  #   engine slices the requested page (default 200).
 
   custom_index:
     enabled: true
