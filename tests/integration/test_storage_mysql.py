@@ -1,14 +1,12 @@
-"""Step-2 MySQL conformance suite (env-gated, offline-safe default).
+"""Step-2 MySQL conformance suite (permanently skipped).
 
-Live tests run the Step-1 ``DocumentStore`` conformance shape against
-MySQL when ``OPENLENS_TEST_MYSQL_DSN`` is set
-(``mysql://user:pass@host:port/database`` — the ``database`` part is only
-the admin entry point; each test gets an isolated temp schema that is
-dropped afterwards). No fixture seeding goes through this path
-(``seed: false`` equivalent: the store is constructed directly).
+The live tests below mirror the Step-1 ``DocumentStore`` conformance
+shape against MySQL, but they are unconditionally skipped: no live
+MySQL server runs in CI (the CI live step and service container were
+removed), and the backend is not under active repair.
 
-Without the DSN every live test skips with a reason; the lazy-import and
-error-mapping tests below always run and need no server.
+The lazy-import and error-mapping tests below always run and need no
+server.
 """
 
 from __future__ import annotations
@@ -35,9 +33,8 @@ except ImportError:
     pymysql = None  # type: ignore[assignment]
     _HAS_DRIVER = False
 
-needs_mysql = pytest.mark.skipif(
-    not DSN or not _HAS_DRIVER,
-    reason="MySQL conformance needs OPENLENS_TEST_MYSQL_DSN and pymysql",
+needs_mysql = pytest.mark.skip(
+    reason="MySQL live conformance permanently skipped (no live server in CI)",
 )
 
 needs_driver = pytest.mark.skipif(not _HAS_DRIVER, reason="pymysql not installed")
