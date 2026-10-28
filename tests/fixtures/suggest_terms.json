@@ -1,0 +1,42 @@
+{
+  "terms": [
+    "running shoes",
+    "running shoes for flat feet",
+    "running watch",
+    "trail shoes",
+    "trail running vest",
+    "wireless headphones",
+    "wireless charger",
+    "coffee maker",
+    "cold brew recipe",
+    "budget travel japan",
+    "best time to visit japan",
+    "japan rail pass",
+    "sourdough starter",
+    "cast iron skillet",
+    "indoor plants low light"
+  ],
+  "vocabulary": [
+    "running",
+    "shoes",
+    "trail",
+    "wireless",
+    "headphones",
+    "coffee",
+    "japan",
+    "sourdough",
+    "plants"
+  ],
+  "counts": {
+    "running shoes": 42,
+    "running shoes for flat feet": 17,
+    "running watch": 25,
+    "trail shoes": 19,
+    "trail running vest": 8,
+    "wireless headphones": 31,
+    "wireless charger": 12,
+    "coffee maker": 22,
+    "cold brew recipe": 9,
+    "budget travel japan": 14
+  }
+}

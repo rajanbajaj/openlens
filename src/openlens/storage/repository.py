@@ -11,6 +11,7 @@ import json
 import sqlite3
 import threading
 from typing import Any, Optional
+from urllib.parse import urldefrag
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
@@ -30,13 +31,16 @@ def normalize_url(url: Optional[str]) -> Optional[str]:
     """Ingest-time URL normalization.
 
     Uses exactly the query-time rule from
-    `retrieval/deduplicator.py::dedupe_key` (`url.strip().lower().rstrip("/")`)
-    so ingest-time dedup can never disagree with query-time dedup.
+    `retrieval/deduplicator.py::dedupe_key` (strip, drop `#fragment`,
+    lowercase, strip trailing `/`) so ingest-time dedup can never
+    disagree with query-time dedup. Fragments never change server
+    content, so `page#section` and `page` share one identity.
     `None` stays `None` (SQLite UNIQUE indexes admit multiple NULLs).
     """
     if url is None:
         return None
-    return url.strip().lower().rstrip("/")
+    bare, _ = urldefrag(url.strip())
+    return bare.lower().rstrip("/")
 
 
 class DocumentRepository(DocumentStore):
@@ -302,6 +306,48 @@ class DocumentRepository(DocumentStore):
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
         return int(row["n"])
+
+    def list_documents(self, limit: int = 500, offset: int = 0) -> list[Document]:
+        """Return one page of documents in stable id order (export seam)."""
+        if limit <= 0 or offset < 0:
+            return []
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT id, title, content, url, metadata FROM documents"
+                    " ORDER BY id ASC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list documents: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return [_row_to_document(row) for row in rows]
+
+    def list_titles(self, limit: int = 500) -> list[str]:
+        """Return up to ``limit`` document titles (suggest-vocabulary source).
+
+        Best-effort read for the query-assistance path: a closed store or
+        any SQLite failure yields ``[]`` rather than raising, so suggest
+        degrades to its static fallback instead of failing the request.
+        """
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+            or self._closed
+        ):
+            return []
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT title FROM documents LIMIT ?", (limit,)
+                ).fetchall()
+        except Exception:
+            return []
+        return [str(row["title"]) for row in rows if row["title"]]
 
     def search(
         self, fts_query: str, limit: int = 10, offset: int = 0

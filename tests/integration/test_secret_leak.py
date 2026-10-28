@@ -675,3 +675,80 @@ def test_api_ai_search_failure_leaks_no_secrets_into_logs_or_metrics(
         assert secret not in scrape.text, (
             f"[observability] sentinel leaked in /metrics text: {secret!r}"
         )
+
+
+def _assist_engine() -> SearchEngine:
+    eng = SearchEngine(providers=[_SecretFakeProvider()], plugins=[])
+    eng.configure(
+        {
+            "plugins": [{"name": "safety-filter", "enabled": True, "config": {}}],
+            "ranking": {},
+            # Sentinel lives only in config; responses must never echo it.
+            "models": {
+                "primary": "openai",
+                "openai": {"enabled": False, "api_key": SENTINEL_KEY},
+            },
+        }
+    )
+    return eng
+
+
+def test_search_assistance_fields_carry_no_secrets():
+    app = create_app(_assist_engine())
+    client = TestClient(app)
+    http = client.post(
+        "/api/v1/search", json={"query": "running shoes", "limit": 2, "offset": 0}
+    )
+    assert http.status_code == 200, http.text
+    body = http.json()
+    for field in (
+        "suggestions",
+        "spelling",
+        "related",
+        "next_offset",
+        "limit",
+        "offset",
+    ):
+        assert field in body, f"missing new field {field}"
+    _assert_no_secrets(body, "POST /api/v1/search (assistance fields)")
+    for secret in SECRETS:
+        assert secret not in http.text
+
+
+def test_suggest_endpoint_carry_no_secrets():
+    app = create_app(_assist_engine())
+    client = TestClient(app)
+    http = client.get("/api/v1/suggest", params={"q": "run"})
+    assert http.status_code == 200, http.text
+    assert "suggestions" in http.json()
+    _assert_no_secrets(http.json(), "GET /api/v1/suggest")
+    http = client.get("/api/v1/suggest", params={"q": ""})
+    assert http.status_code == 200 and http.json()["suggestions"] == []
+
+
+def test_feedback_counts_only_and_carries_no_secrets():
+    eng = _assist_engine()
+    app = create_app(eng)
+    client = TestClient(app)
+    http = client.post(
+        "/api/v1/feedback", json={"doc_id": "doc-shopping-1", "action": "click"}
+    )
+    assert http.status_code == 200, http.text
+    fb = http.json()
+    assert fb == {"doc_id": "doc-shopping-1", "action": "click", "count": 1}, fb
+    assert set(fb.keys()) == {"doc_id", "action", "count"}, "response key allowlist"
+    _assert_no_secrets(fb, "POST /api/v1/feedback")
+    http = client.post(
+        "/api/v1/feedback", json={"doc_id": "doc-shopping-1", "action": "click"}
+    )
+    assert http.json()["count"] == 2
+    assert eng.feedback_counts() == {("doc-shopping-1", "click"): 2}
+    _assert_no_secrets(
+        {f"{k[0]}:{k[1]}": v for k, v in eng.feedback_counts().items()},
+        "engine feedback store",
+    )
+    http = client.post(
+        "/api/v1/feedback", json={"doc_id": "x", "action": "click", "extra": 1}
+    )
+    assert http.status_code == 422, http.text
+    _assert_no_secrets(http.json(), "feedback 422 envelope")

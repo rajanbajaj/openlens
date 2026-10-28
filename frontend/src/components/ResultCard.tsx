@@ -13,6 +13,12 @@ import { Card } from './ui/Card.tsx';
 
 export interface ResultCardProps {
   result: SearchResult;
+  /** Vertical mode regrouping which readers get prominence. Defaults to "default". */
+  mode?: string;
+  /** Whether this hit is already in the personal library. */
+  saved?: boolean;
+  /** Called when the save toggle is activated; omit to hide the button. */
+  onSave?: (result: SearchResult) => void;
 }
 
 function formatPrice(price: number | null, currency: string | null): string | null {
@@ -20,15 +26,55 @@ function formatPrice(price: number | null, currency: string | null): string | nu
   return currency ? `${price.toFixed(2)} ${currency}` : price.toFixed(2);
 }
 
+interface VerticalHighlight {
+  kind: 'news' | 'shopping' | 'travel';
+  text: string;
+}
+
 /**
- * One search hit on a solid card body (glass stays on header/hero/
- * sidebar/rail only): title row, provider + federation badges, snippet,
+ * Mode-specific prominence line built only from fields the backend
+ * already returns (via the shared enrichment readers — no new data).
+ * News foregrounds date + source, shopping foregrounds price,
+ * travel foregrounds location + facilities. Unknown modes (including
+ * "default" and "child-safe") return null so the default layout is kept.
+ */
+function verticalHighlight(result: SearchResult, mode: string): VerticalHighlight | null {
+  const commerce = resultCommerce(result.metadata);
+  if (mode === 'news') {
+    const parts: string[] = [];
+    if (commerce.published) parts.push(commerce.published);
+    parts.push(`Source: ${result.provider}`);
+    return { kind: 'news', text: parts.join(' · ') };
+  }
+  if (mode === 'shopping') {
+    const price = formatPrice(commerce.price, commerce.currency);
+    if (price === null) return null;
+    return { kind: 'shopping', text: price };
+  }
+  if (mode === 'travel') {
+    const parts: string[] = [];
+    if (commerce.location) parts.push(commerce.location);
+    if (commerce.facilities.length > 0) parts.push(commerce.facilities.join(', '));
+    if (parts.length === 0) return null;
+    return { kind: 'travel', text: parts.join(' · ') };
+  }
+  return null;
+}
+
+/**
+ * One search hit on a subtle glass card (the vibrant backdrop does the
+ * refracting; the card itself stays near-opaque for readability): title row,
+ * provider + federation badges, snippet,
  * secondary commerce/understanding lines, score with an expandable
  * breakdown (original vs final, T11 signals in display order), the
  * labelled AI block (rendered only when the backend produced one), and
  * reasons/warnings disclosures — trust warnings visually distinct.
+ *
+ * News/shopping/travel modes add one prominent vertical line regrouping
+ * the same readers (date/source, price, location/facilities); every
+ * other line keeps its `data-testid` and default placement.
  */
-export function ResultCard({ result }: ResultCardProps) {
+export function ResultCard({ result, mode = 'default', saved = false, onSave }: ResultCardProps) {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showReasons, setShowReasons] = useState(false);
   const [showWarnings, setShowWarnings] = useState(false);
@@ -44,6 +90,7 @@ export function ResultCard({ result }: ResultCardProps) {
   if (commerce.location) attributes.push(commerce.location);
   if (commerce.facilities.length > 0) attributes.push(commerce.facilities.join(', '));
   if (commerce.published) attributes.push(commerce.published);
+  const highlight = verticalHighlight(result, mode);
 
   return (
     <Card>
@@ -63,8 +110,34 @@ export function ResultCard({ result }: ResultCardProps) {
             {alsoFrom.map((provider) => (
               <Badge key={provider}>also from {provider}</Badge>
             ))}
+            {onSave ? (
+              <>
+                {' '}
+                <Button
+                  variant="ghost"
+                  data-testid="result-save"
+                  aria-pressed={saved}
+                  aria-label={
+                    saved
+                      ? `Remove ${result.title} from library`
+                      : `Save ${result.title} to library`
+                  }
+                  onClick={() => onSave(result)}
+                >
+                  {saved ? 'Saved' : 'Save'}
+                </Button>
+              </>
+            ) : null}
           </p>
         </header>
+        {highlight ? (
+          <p
+            data-testid={`result-vertical-${highlight.kind}`}
+            className="ol-result-meta ol-result-vertical"
+          >
+            {highlight.text}
+          </p>
+        ) : null}
         <p data-testid="result-snippet">{result.snippet}</p>
         {attributes.length > 0 ? (
           <p data-testid="result-attributes" className="ol-result-meta">

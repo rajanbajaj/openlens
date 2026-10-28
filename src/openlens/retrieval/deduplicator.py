@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from urllib.parse import urldefrag
+
 from openlens.core.interfaces import SearchResult
 
 
 def dedupe_key(result: SearchResult) -> str:
     if result.url:
-        return "url:" + result.url.strip().lower().rstrip("/")
+        bare, _ = urldefrag(result.url.strip())
+        return "url:" + bare.lower().rstrip("/")
     return "id:" + result.id
 
 

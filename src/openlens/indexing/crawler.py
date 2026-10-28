@@ -19,6 +19,12 @@ Politeness and bounds:
   ``max_bytes`` abort cap (never buffered past the cap); only
   ``allowed_content_types`` are indexed.
 - ``allow_domains`` / ``deny_domains`` gate which hosts are fetched.
+- ``domain_policies`` adds per-domain overrides: ``allow`` (block or
+  exempt one domain), ``rate_limit_s`` (per-domain minimum gap between
+  hits, taking the max with ``crawl_delay_s`` and robots Crawl-delay),
+  and ``max_depth`` (link-following cap for that domain;
+  ``default_max_depth`` caps the rest, null means unlimited). Malformed
+  policy config raises ``ConfigError`` (fail-closed at startup).
 - The frontier is a FIFO queue with on-disk backing, capped at
   ``max_queued_urls`` with oldest-first eviction counted in stats.
 - Servers that send ``ETag``/``Last-Modified`` get conditional
@@ -57,6 +63,12 @@ DEFAULT_MAX_TRACKED_DOMAINS = 1_000
 DEFAULT_ALLOWED_CONTENT_TYPES: tuple[str, ...] = ("text/html", "text/plain")
 DEFAULT_USER_AGENT = "OpenLensBot/1.0"
 
+#: No per-domain policy configured: unlimited depth, global delay only.
+DEFAULT_MAX_DEPTH: int | None = None
+
+#: Allowed per-domain policy keys inside ``domain_policies``.
+ALLOWED_DOMAIN_POLICY_KEYS = frozenset({"allow", "rate_limit_s", "max_depth"})
+
 #: Allowed ``configure()`` keys; anything else raises ConfigError because
 #: the config loader itself is permissive and rejects nothing.
 ALLOWED_CONFIG_KEYS = frozenset(
@@ -70,6 +82,8 @@ ALLOWED_CONFIG_KEYS = frozenset(
         "allowed_content_types",
         "allow_domains",
         "deny_domains",
+        "domain_policies",
+        "default_max_depth",
         "user_agent",
         "respect_robots",
     }
@@ -82,10 +96,13 @@ def normalize_url(url: str) -> str:
     """Normalize a URL for frontier dedup.
 
     Reuses the query-time ingest rule from
-    ``retrieval/deduplicator.py`` (``url.strip().lower().rstrip("/")``)
-    so ingest stores what query-time dedup keeps, never a divergent form.
+    ``retrieval/deduplicator.py`` (strip, drop ``#fragment``,
+    lowercase, strip trailing ``/``) so ingest stores what query-time
+    dedup keeps, never a divergent form. Fragment-only link variants
+    are never enqueued as separate fetches.
     """
-    return url.strip().lower().rstrip("/")
+    bare, _ = urllib.parse.urldefrag(url.strip())
+    return bare.lower().rstrip("/")
 
 
 class CrawlError(Exception):
@@ -99,6 +116,8 @@ class CrawlStats:
     fetched: int = 0
     skipped_robots: int = 0
     skipped_domain: int = 0
+    skipped_policy: int = 0
+    skipped_depth: int = 0
     skipped_content_type: int = 0
     skipped_not_modified: int = 0
     aborted_bytes: int = 0
@@ -241,6 +260,8 @@ class PoliteCrawler:
         self.allowed_content_types = list(DEFAULT_ALLOWED_CONTENT_TYPES)
         self.allow_domains: list[str] = []
         self.deny_domains: list[str] = []
+        self.domain_policies: dict[str, dict[str, Any]] = {}
+        self.default_max_depth: int | None = DEFAULT_MAX_DEPTH
         self.user_agent = DEFAULT_USER_AGENT
         self.respect_robots = True
         self._queue_path = Path(queue_path) if queue_path else None
@@ -338,6 +359,76 @@ class PoliteCrawler:
                     f"crawler: '{key}' must be a list of strings, "
                     f"got {value!r}. Startup validation failed."
                 )
+        policies = config.get("domain_policies", {})
+        if not isinstance(policies, dict):
+            raise ConfigError(
+                "crawler: 'domain_policies' must be a mapping of domain "
+                f"to policy, got {policies!r}. Startup validation failed."
+            )
+        normalized_policies: dict[str, dict[str, Any]] = {}
+        for domain, policy in policies.items():
+            if not isinstance(domain, str) or not domain.strip():
+                raise ConfigError(
+                    "crawler: 'domain_policies' keys must be non-empty "
+                    f"strings, got {domain!r}. Startup validation failed."
+                )
+            if not isinstance(policy, dict):
+                raise ConfigError(
+                    f"crawler: policy for domain {domain!r} must be a "
+                    f"mapping, got {policy!r}. Startup validation failed."
+                )
+            unknown_policy = sorted(set(policy) - ALLOWED_DOMAIN_POLICY_KEYS)
+            if unknown_policy:
+                raise ConfigError(
+                    f"crawler: unknown policy keys {unknown_policy} for "
+                    f"domain {domain!r}. Startup validation failed."
+                )
+            if "allow" in policy and not isinstance(policy["allow"], bool):
+                raise ConfigError(
+                    f"crawler: 'allow' for domain {domain!r} must be a "
+                    f"bool, got {policy['allow']!r}. "
+                    "Startup validation failed."
+                )
+            if "rate_limit_s" in policy:
+                rate = policy["rate_limit_s"]
+                if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+                    raise ConfigError(
+                        f"crawler: 'rate_limit_s' for domain {domain!r} "
+                        f"must be a number, got {rate!r}. "
+                        "Startup validation failed."
+                    )
+                if not 0 <= float(rate) <= MAX_TIMEOUT_S:
+                    raise ConfigError(
+                        f"crawler: 'rate_limit_s' for domain {domain!r} "
+                        f"must be within [0, {MAX_TIMEOUT_S}], got {rate!r}. "
+                        "Startup validation failed."
+                    )
+            if "max_depth" in policy:
+                depth = policy["max_depth"]
+                if isinstance(depth, bool) or not isinstance(depth, int):
+                    raise ConfigError(
+                        f"crawler: 'max_depth' for domain {domain!r} must "
+                        f"be an int, got {depth!r}. Startup validation failed."
+                    )
+                if depth < 0:
+                    raise ConfigError(
+                        f"crawler: 'max_depth' for domain {domain!r} must "
+                        f"be >= 0, got {depth!r}. Startup validation failed."
+                    )
+            normalized_policies[domain.strip().lower()] = dict(policy)
+        default_depth = config.get("default_max_depth", DEFAULT_MAX_DEPTH)
+        if default_depth is not None and (
+            +isinstance(default_depth, bool) or not isinstance(default_depth, int)
+        ):
+            raise ConfigError(
+                "crawler: 'default_max_depth' must be an int or null, "
+                f"got {default_depth!r}. Startup validation failed."
+            )
+        if isinstance(default_depth, int) and default_depth < 0:
+            raise ConfigError(
+                "crawler: 'default_max_depth' must be >= 0, "
+                f"got {default_depth!r}. Startup validation failed."
+            )
         user_agent = config.get("user_agent", DEFAULT_USER_AGENT)
         if not isinstance(user_agent, str) or not user_agent.strip():
             raise ConfigError(
@@ -359,6 +450,8 @@ class PoliteCrawler:
         self.allowed_content_types = [item.strip().lower() for item in content_types]
         self.allow_domains = [item.strip().lower() for item in allow]
         self.deny_domains = [item.strip().lower() for item in deny]
+        self.domain_policies = normalized_policies
+        self.default_max_depth = default_depth
         self.user_agent = user_agent.strip()
         self.respect_robots = respect
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
@@ -374,10 +467,13 @@ class PoliteCrawler:
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
         frontier = BoundedFrontier(self.max_queued_urls, path=self._queue_path)
         try:
+            depths: dict[str, int] = {}
             for seed in seed_urls:
                 if not isinstance(seed, str) or not seed.strip():
                     continue
-                frontier.push(seed.strip())
+                cleaned = seed.strip()
+                frontier.push(cleaned)
+                depths.setdefault(normalize_url(cleaned), 0)
             stats.evicted = frontier.evicted
             documents: list[Document] = []
             seen: set[str] = set()
@@ -390,8 +486,19 @@ class PoliteCrawler:
                     continue
                 seen.add(normalize_url(raw))
                 host = urllib.parse.urlsplit(raw).hostname or ""
-                if not self._domain_allowed(host.lower()):
+                host = host.lower()
+                depth = depths.get(normalize_url(raw), 0)
+                if self._denied(host):
                     stats.skipped_domain += 1
+                    continue
+                if not self._policy_allowed(host):
+                    stats.skipped_policy += 1
+                    continue
+                if not self._policy_exempt(host) and not self._domain_allowed(host):
+                    stats.skipped_domain += 1
+                    continue
+                if not self._depth_allowed(host, depth):
+                    stats.skipped_depth += 1
                     continue
                 if self.respect_robots and not self._allowed_by_robots(raw):
                     stats.skipped_robots += 1
@@ -425,6 +532,16 @@ class PoliteCrawler:
                 if page.content_type.startswith("text/html"):
                     for link in self._extract_links(page):
                         if normalize_url(link) not in seen:
+                            child_depth = depth + 1
+                            child_host = (
+                                urllib.parse.urlsplit(link).hostname or ""
+                            ).lower()
+                            if not self._depth_allowed(child_host, child_depth):
+                                stats.skipped_depth += 1
+                                continue
+                            key = normalize_url(link)
+                            if key not in depths or child_depth < depths[key]:
+                                depths[key] = child_depth
                             frontier.push(link)
             stats.evicted = frontier.evicted
             return documents
@@ -433,6 +550,12 @@ class PoliteCrawler:
                 frontier.close()
 
     # -- politeness ------------------------------------------------------
+
+    def _denied(self, host: str) -> bool:
+        """True when the global ``deny_domains`` blocklist covers ``host``."""
+        return any(
+            host == entry or host.endswith("." + entry) for entry in self.deny_domains
+        )
 
     def _domain_allowed(self, host: str) -> bool:
         if any(
@@ -444,6 +567,63 @@ class PoliteCrawler:
         ):
             return False
         return True
+
+    def _policy_for(self, host: str) -> dict[str, Any]:
+        """Return the per-domain policy for ``host`` (exact or parent match).
+
+        A policy keyed ``example.com`` also covers ``sub.example.com``;
+        the most specific (longest) matching domain wins. Empty when no
+        policy covers the host.
+        """
+        best: dict[str, Any] = {}
+        best_len = -1
+        for domain, policy in self.domain_policies.items():
+            if host == domain or host.endswith("." + domain):
+                if len(domain) > best_len:
+                    best = policy
+                    best_len = len(domain)
+        return best
+
+    def _policy_allowed(self, host: str) -> bool:
+        """Enforce a per-domain ``allow`` override (fail-closed default).
+
+        ``allow: false`` denies the host even when the global allowlist
+        would permit it; ``allow: true`` exempts the host from the global
+        ``allow_domains`` gate (global ``deny_domains`` still denies, since
+        :meth:`_domain_allowed` runs first). No policy means allowed here.
+        """
+        policy = self._policy_for(host)
+        if not policy:
+            return True
+        return policy.get("allow", True) is not False
+
+    def _policy_exempt(self, host: str) -> bool:
+        """True when a per-domain ``allow: true`` bypasses the allowlist gate.
+
+        The global ``deny_domains`` blocklist still applies (checked first
+        in :meth:`crawl`), so exemption never re-admits a denied host.
+        """
+        return self._policy_for(host).get("allow", False) is True
+
+    def _rate_limit_for(self, host: str) -> float:
+        """Per-domain minimum gap between hits (0.0 when unconfigured)."""
+        policy = self._policy_for(host)
+        rate = policy.get("rate_limit_s", 0.0)
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            return 0.0
+        return max(0.0, float(rate))
+
+    def _max_depth_for(self, host: str) -> int | None:
+        """Per-domain link-following depth cap (None means unlimited)."""
+        policy = self._policy_for(host)
+        depth = policy.get("max_depth", self.default_max_depth)
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            return self.default_max_depth
+        return depth
+
+    def _depth_allowed(self, host: str, depth: int) -> bool:
+        cap = self._max_depth_for(host)
+        return cap is None or depth <= cap
 
     def _robots_for(self, url: str) -> urllib.robotparser.RobotFileParser:
         parts = urllib.parse.urlsplit(url)
@@ -483,7 +663,7 @@ class PoliteCrawler:
         return float(value) if value is not None else 0.0
 
     def _wait_polite(self, host: str, url: str) -> None:
-        delay = self.crawl_delay_s
+        delay = max(self.crawl_delay_s, self._rate_limit_for(host))
         if self.respect_robots:
             delay = max(delay, self._robots_delay(url))
         last = self._politeness.get(host)

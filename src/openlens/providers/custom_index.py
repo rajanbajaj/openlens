@@ -29,8 +29,10 @@ from openlens.core.interfaces import (
 from openlens.indexing.indexer import DocumentIndexer
 from openlens.indexing.seed import SEED_DOCUMENTS
 from openlens.retrieval.deduplicator import deduplicate
+from openlens.retrieval.fusion import fuse
 from openlens.retrieval.normalizer import normalize_many
 from openlens.retrieval.query_parser import parse_query
+from openlens.retrieval.semantic import rank_ids_by_semantic
 from openlens.storage.base import DocumentStore
 from openlens.storage.repository import DocumentRepository
 
@@ -117,14 +119,32 @@ def open_store(
 
 
 class CustomIndexProvider(SearchProvider):
-    """SearchProvider over a swappable document store (default SQLite FTS5)."""
+    """SearchProvider over a swappable document store (default SQLite FTS5).
+
+    Hybrid retrieval is opt-in: ``semantic_enabled`` defaults to ``False``,
+    in which case :meth:`search` serves the plain FTS5 order. When enabled
+    AND a model manager is attached (see :meth:`attach_models`), FTS5
+    candidates are additionally ordered by the embedding signal and fused
+    with the existing RRF helper; any semantic failure falls back to the
+    keyword order (fail open).
+    """
+
+    #: Rank list key for the keyword signal in the RRF fusion map.
+    FTS_LIST_NAME = "custom_index"
+
+    #: Rank list key for the semantic signal in the RRF fusion map.
+    SEMANTIC_LIST_NAME = "custom_index_semantic"
 
     def __init__(
         self,
         db_path: str = ":memory:",
         repository: DocumentStore | None = None,
+        models: Any | None = None,
+        semantic_enabled: bool = False,
     ) -> None:
         self._db_path = db_path
+        self._models = models
+        self._semantic_enabled = bool(semantic_enabled)
         self._repository: DocumentStore = (
             repository if repository is not None else DocumentRepository(db_path)
         )
@@ -145,6 +165,46 @@ class CustomIndexProvider(SearchProvider):
             DocumentIndexer(store) if isinstance(store, DocumentRepository) else None
         )
 
+    def attach_models(self, models: Any | None) -> None:
+        """Attach (or detach with ``None``) the embedding model manager."""
+        self._models = models
+
+    def suggest_terms(self, limit: int = 200) -> list[str]:
+        """Best-effort live index vocabulary for query assistance.
+
+        Returns distinct title words (length > 2) plus full titles from
+        the SQLite store, sorted case-insensitively for determinism and
+        capped at ``limit``. Any failure (non-SQLite backend, closed
+        store) yields ``[]`` so the API layer falls back to its static
+        vocabulary instead of failing the request.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        try:
+            if not isinstance(self._repository, DocumentRepository):
+                return []
+            titles = self._repository.list_titles(limit=limit)
+        except Exception:
+            return []
+        seen: set[str] = set()
+        terms: list[str] = []
+        for title in titles:
+            for candidate in [title, *title.split()]:
+                cleaned = candidate.strip()
+                if len(cleaned) <= 2:
+                    continue
+                key = cleaned.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                terms.append(cleaned)
+        terms.sort(key=str.casefold)
+        return terms[:limit]
+
+    @property
+    def semantic_enabled(self) -> bool:
+        return self._semantic_enabled
+
     def configure(self, config: dict[str, Any]) -> None:
         if not isinstance(config, dict):
             raise ConfigError("custom_index config must be a mapping")
@@ -153,6 +213,9 @@ class CustomIndexProvider(SearchProvider):
         seed = config.get("seed", True)
         if not isinstance(seed, bool):
             raise ConfigError("custom_index 'seed' must be a boolean")
+        semantic_enabled = config.get("semantic_enabled", self._semantic_enabled)
+        if not isinstance(semantic_enabled, bool):
+            raise ConfigError("custom_index 'semantic_enabled' must be a boolean")
         # Fail fast on unknown backends / malformed sections while the
         # previous repository is still open (raises ConfigError).
         store = open_store(config, fallback_db_path=self._db_path)
@@ -161,6 +224,7 @@ class CustomIndexProvider(SearchProvider):
             previous.close()
         if isinstance(store, DocumentRepository):
             self._db_path = resolve_sqlite_db_path(config, self._db_path)
+        self._semantic_enabled = semantic_enabled
         self._attach_store(store)
         if seed:
             self._index_seed()
@@ -198,9 +262,31 @@ class CustomIndexProvider(SearchProvider):
         parsed = parse_query(request.query)
         if not parsed.fts_query:
             return []
+        if not self._semantic_enabled or self._models is None:
+            try:
+                scored, _total = self._repository.search(
+                    parsed.fts_query, limit=request.limit, offset=request.offset
+                )
+            except ProviderError:
+                raise
+            except Exception as exc:  # never leak raw client errors
+                raise ProviderError(
+                    f"search failed: {exc}",
+                    provider_name=self.name,
+                    code=ProviderError.UNKNOWN,
+                ) from exc
+            results = normalize_many(scored, provider=self.name, query=request.query)
+            return deduplicate(results)
+        return self._hybrid_search(request, parsed.fts_query)
+
+    def _hybrid_search(
+        self, request: SearchRequest, fts_query: str
+    ) -> list[SearchResult]:
+        """FTS5 + embedding candidates fused with RRF; fail open to FTS5."""
+        fetch_depth = request.offset + request.limit
         try:
             scored, _total = self._repository.search(
-                parsed.fts_query, limit=request.limit, offset=request.offset
+                fts_query, limit=fetch_depth, offset=0
             )
         except ProviderError:
             raise
@@ -210,8 +296,26 @@ class CustomIndexProvider(SearchProvider):
                 provider_name=self.name,
                 code=ProviderError.UNKNOWN,
             ) from exc
-        results = normalize_many(scored, provider=self.name, query=request.query)
-        return deduplicate(results)
+        fts_results = deduplicate(
+            normalize_many(scored, provider=self.name, query=request.query)
+        )
+        # Fail open: rank_ids_by_semantic never raises; [] keeps keyword order.
+        semantic_ids = rank_ids_by_semantic(request.query, fts_results, self._models)
+        if not semantic_ids:
+            return fts_results[request.offset : request.offset + request.limit]
+        by_id = {hit.id: hit for hit in fts_results}
+        semantic_results = [
+            by_id[item_id] for item_id in semantic_ids if item_id in by_id
+        ]
+        if not semantic_results:
+            return fts_results[request.offset : request.offset + request.limit]
+        fused = fuse(
+            {
+                self.FTS_LIST_NAME: fts_results,
+                self.SEMANTIC_LIST_NAME: semantic_results,
+            }
+        )
+        return fused[request.offset : request.offset + request.limit]
 
     def health_check(self) -> bool:
         try:

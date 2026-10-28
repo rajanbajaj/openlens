@@ -11,6 +11,9 @@ services:
     environment:
       OPENSEARCH_HOST: http://opensearch:9200
       BING_API_KEY: ${BING_API_KEY:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
+      MODEL_NAME: ${MODEL_NAME:-muse-spark-1.3}
     volumes:
       - openlens-data:/app/data
     healthcheck:

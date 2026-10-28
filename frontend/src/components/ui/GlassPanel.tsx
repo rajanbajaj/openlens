@@ -19,7 +19,8 @@ const VARIANT_CLASSES: Record<GlassPanelVariant, string> = {
 /**
  * Frosted-glass panel for selective chrome (hero, sticky header, filter
  * sidebar, diagnostics rail). Same contract as Card: a plain container
- * that forwards extra props to the div. Result bodies stay solid.
+ * that forwards extra props to the div. Result bodies use the lighter
+ * glass weight on `.ol-card`.
  */
 export function GlassPanel({ children, variant = 'hero', className, ...rest }: GlassPanelProps) {
   const classes = [VARIANT_CLASSES[variant], className].filter(Boolean).join(' ');

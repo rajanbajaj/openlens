@@ -327,3 +327,45 @@ def test_legacy_db_without_hash_columns_migrates(tmp_path):
         assert repo.count() == 1
     finally:
         repo.close()
+
+
+# ---------------------------------------------------------------------------
+# list_documents (offline export seam for the OpenSearch bulk loader)
+# ---------------------------------------------------------------------------
+
+
+def test_list_documents_paginates_in_stable_id_order():
+    repo = DocumentRepository(":memory:")
+    try:
+        for doc_id in ("c", "a", "b"):
+            repo.add_document(_doc(doc_id=doc_id))
+        first = repo.list_documents(limit=2, offset=0)
+        second = repo.list_documents(limit=2, offset=2)
+        assert [doc.id for doc in first] == ["a", "b"]
+        assert [doc.id for doc in second] == ["c"]
+        assert repo.list_documents(limit=2, offset=3) == []
+    finally:
+        repo.close()
+
+
+def test_list_documents_rejects_nonsense_paging():
+    repo = DocumentRepository(":memory:")
+    try:
+        repo.add_document(_doc())
+        assert repo.list_documents(limit=0) == []
+        assert repo.list_documents(limit=-5) == []
+        assert repo.list_documents(limit=10, offset=-1) == []
+    finally:
+        repo.close()
+
+
+def test_list_documents_round_trips_bodies():
+    repo = DocumentRepository(":memory:")
+    try:
+        repo.add_document(_doc(doc_id="x", metadata={"k": "v"}))
+        (fetched,) = repo.list_documents()
+        assert fetched.id == "x"
+        assert fetched.content == "hello world content"
+        assert fetched.metadata == {"k": "v"}
+    finally:
+        repo.close()

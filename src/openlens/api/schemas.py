@@ -122,6 +122,19 @@ class DiagnosticsSchema(BaseModel):
         )
 
 
+def compute_next_offset(total: int, limit: int, offset: int) -> Optional[int]:
+    """Return the next-page offset, or None when this page reaches the end."""
+    candidate = offset + limit
+    return candidate if candidate < total else None
+
+
+class SuggestResponseSchema(BaseModel):
+    """GET /api/v1/suggest response body: prefix completions for `q`."""
+
+    q: str
+    suggestions: list[str] = Field(default_factory=list)
+
+
 class SearchResponseSchema(BaseModel):
     """POST /api/v1/search response body."""
 
@@ -129,16 +142,40 @@ class SearchResponseSchema(BaseModel):
     mode: str
     results: list[SearchResultSchema] = Field(default_factory=list)
     total: int = Field(ge=0)
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
+    offset: int = Field(default=0, ge=0)
+    next_offset: Optional[int] = Field(default=None, ge=0)
+    suggestions: list[str] = Field(default_factory=list)
+    spelling: Optional[str] = None
+    related: list[str] = Field(default_factory=list)
     applied_filters: list[str] = Field(default_factory=list)
     diagnostics: DiagnosticsSchema = Field(default_factory=DiagnosticsSchema)
 
     @classmethod
-    def from_core(cls, response: CoreResponse) -> "SearchResponseSchema":
+    def from_core(
+        cls,
+        response: CoreResponse,
+        *,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        suggestions: list[str] | None = None,
+        spelling: Optional[str] = None,
+        related: list[str] | None = None,
+        next_offset: Optional[int] = None,
+    ) -> "SearchResponseSchema":
+        if next_offset is None:
+            next_offset = compute_next_offset(response.total, limit, offset)
         return cls(
             query=response.query,
             mode=response.mode,
             results=[SearchResultSchema.from_core(r) for r in response.results],
             total=response.total,
+            limit=limit,
+            offset=offset,
+            next_offset=next_offset,
+            suggestions=list(suggestions) if suggestions is not None else [],
+            spelling=spelling,
+            related=list(related) if related is not None else [],
             applied_filters=list(response.applied_filters),
             diagnostics=DiagnosticsSchema.from_core(response.diagnostics),
         )

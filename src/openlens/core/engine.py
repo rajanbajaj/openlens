@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from dataclasses import replace
 from typing import Any
 
@@ -135,6 +136,8 @@ class SearchEngine(Engine):
         self._cache_ttl_s = cache_ttl_s
         self._ranking_profile = "default"
         self._providers = list(providers)
+        self._feedback_counts: dict[tuple[str, str], int] = {}
+        self._propagate_models()
         plugin_list = list(plugins)
         if self._model_manager is not None:
             primary = self._model_manager.get(self._model_manager.primary)
@@ -172,6 +175,81 @@ class SearchEngine(Engine):
     @model_manager.setter
     def model_manager(self, value: ModelManager | None) -> None:
         self._model_manager = value
+        self._propagate_models()
+
+    def _propagate_models(self) -> None:
+        """Push the model manager into providers exposing ``attach_models``.
+
+        Semantic fan-in call-site: the engine owns the optional
+        ``ModelManager`` (``None`` when no embedding backend is enabled)
+        and every supporting provider (``custom_index``) mirrors it, so
+        enabling ``semantic_enabled`` in provider config takes effect
+        without the caller touching providers directly.
+        """
+        if self._manager is not None:
+            self._manager.attach_models(self._model_manager)
+            return
+        for provider in self._providers:
+            hook = getattr(provider, "attach_models", None)
+            if callable(hook):
+                with suppress(Exception):
+                    hook(self._model_manager)
+
+    def suggest_terms(self, limit: int = 200) -> list[str]:
+        """Live index vocabulary for query assistance (``[]`` when none).
+
+        Aggregates provider vocabularies via the manager (or the legacy
+        provider list); the API layer prefers this hook over its static
+        fallback. Never raises: provider failures degrade to ``[]``.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        collected: list[str] = []
+        seen: set[str] = set()
+        if self._manager is not None:
+            try:
+                return self._manager.suggest_terms(limit=limit)
+            except Exception:
+                return []
+        for provider in self._providers:
+            hook = getattr(provider, "suggest_terms", None)
+            if not callable(hook):
+                continue
+            terms: Any = None
+            with suppress(Exception):
+                terms = hook(limit=limit)
+            if not isinstance(terms, list):
+                continue
+            for term in terms:
+                if not isinstance(term, str) or not term.strip():
+                    continue
+                key = term.strip().casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append(term.strip())
+        collected.sort(key=str.casefold)
+        return collected[:limit]
+
+    def record_feedback(self, doc_id: str, action: str) -> int:
+        """Record one anonymous feedback event; return its in-process count.
+
+        Counts only: the store keeps ``(doc_id, action)`` tallies, never
+        query text or identifiers. Raises ``ValueError`` on blank inputs
+        so API validation stays the single gate for the HTTP path.
+        """
+        if not isinstance(doc_id, str) or not isinstance(action, str):
+            raise ValueError("doc_id and action must not be blank")
+        pair = (doc_id.strip(), action.strip())
+        if not pair[0] or not pair[1]:
+            raise ValueError("doc_id and action must not be blank")
+        count = self._feedback_counts.get(pair, 0) + 1
+        self._feedback_counts[pair] = count
+        return count
+
+    def feedback_counts(self) -> dict[tuple[str, str], int]:
+        """Copy of the in-process anonymous feedback tallies."""
+        return dict(self._feedback_counts)
 
     @property
     def pipeline(self) -> Pipeline:
@@ -218,6 +296,9 @@ class SearchEngine(Engine):
             self._model_manager = direct
         elif "models" in config:
             self._model_manager = _build_model_manager(config.get("models"))
+        # Fan the (possibly None) manager out to supporting providers so
+        # the semantic signal follows the engine's model configuration.
+        self._propagate_models()
         # Manager-primary seam: with no enabled backend there is no AI, so
         # AI plugins are omitted rather than falling back to a dummy model.
         effective_entries = plugin_entries

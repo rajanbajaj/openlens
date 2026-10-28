@@ -288,3 +288,134 @@ def test_cors_preflight_rejects_non_localhost() -> None:
         },
     )
     assert "access-control-allow-origin" not in resp.headers
+
+
+# --- suggest ---------------------------------------------------------------
+
+
+def test_suggest_happy_path() -> None:
+    resp = make_client().get("/api/v1/suggest", params={"q": "cof", "limit": 5})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["q"] == "cof"
+    assert body["suggestions"] == ["coffee", "coffee maker"]
+
+
+def test_suggest_limit_caps_results() -> None:
+    resp = make_client().get("/api/v1/suggest", params={"q": "cof", "limit": 1})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["suggestions"] == ["coffee"]
+
+
+def test_suggest_empty_q_returns_empty_list() -> None:
+    client = make_client()
+    for params in ({"q": ""}, {"q": "   "}, {}):
+        resp = client.get("/api/v1/suggest", params=params)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["suggestions"] == [], params
+
+
+def test_suggest_no_match_returns_empty_list() -> None:
+    resp = make_client().get("/api/v1/suggest", params={"q": "zxqv"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["suggestions"] == []
+
+
+def test_suggest_uses_app_state_vocabulary() -> None:
+    app = create_app(engine=FakeEngine())
+    app.state.suggest_terms = ["zebra crossing", "zebra finch"]
+    resp = TestClient(app).get("/api/v1/suggest", params={"q": "zeb"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["suggestions"] == ["zebra crossing", "zebra finch"]
+
+
+# --- search assistance -------------------------------------------------------
+
+
+def test_search_assistance_populated() -> None:
+    resp = make_client().post("/api/v1/search", json={"query": "running"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["suggestions"] == ["running shoes", "running watch"]
+    assert body["related"] == ["running shoes", "running watch"]
+    assert body["spelling"] is None  # exact term needs no correction
+
+
+def test_search_spelling_correction_offered() -> None:
+    resp = make_client().post("/api/v1/search", json={"query": "runing shoes"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["spelling"] == "running shoes"
+
+
+def test_search_assistance_absent_for_unknown_query() -> None:
+    resp = make_client().post("/api/v1/search", json={"query": "zxqv wobble"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["suggestions"] == []
+    assert body["spelling"] is None
+    assert body["related"] == []
+
+
+# --- pagination hint ---------------------------------------------------------
+
+
+def test_search_next_offset_math() -> None:
+    client = make_client()
+    first = client.post(
+        "/api/v1/search", json={"query": "q", "limit": 10, "offset": 0}
+    ).json()
+    assert (first["limit"], first["offset"], first["total"]) == (10, 0, 25)
+    assert first["next_offset"] == 10
+    mid = client.post(
+        "/api/v1/search", json={"query": "q", "limit": 10, "offset": 10}
+    ).json()
+    assert mid["next_offset"] == 20
+    tail = client.post(
+        "/api/v1/search", json={"query": "q", "limit": 10, "offset": 22}
+    ).json()
+    assert tail["next_offset"] is None
+    exact = client.post(
+        "/api/v1/search", json={"query": "q", "limit": 25, "offset": 0}
+    ).json()
+    assert exact["next_offset"] is None  # page reaching total has no next
+
+
+# --- feedback ----------------------------------------------------------------
+
+
+def test_feedback_counts_only() -> None:
+    client = make_client()
+    payload = {"doc_id": "feedback-doc-a", "action": "click"}
+    first = client.post("/api/v1/feedback", json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json() == {**payload, "count": 1}
+    second = client.post("/api/v1/feedback", json=payload)
+    assert second.status_code == 200, second.text
+    assert second.json()["count"] == 2
+    other_action = client.post(
+        "/api/v1/feedback",
+        json={"doc_id": "feedback-doc-a", "action": "impression"},
+    )
+    assert other_action.json()["count"] == 1  # counted per (doc, action)
+
+
+def test_feedback_rejects_extra_fields_and_blanks() -> None:
+    client = make_client()
+    smuggled = client.post(
+        "/api/v1/feedback",
+        json={"doc_id": "d", "action": "click", "query": "cats"},
+    )
+    assert smuggled.status_code == 422, smuggled.text  # no query text kept
+    blank = client.post("/api/v1/feedback", json={"doc_id": "   ", "action": "click"})
+    assert blank.status_code == 422, blank.text
+    missing = client.post("/api/v1/feedback", json={"doc_id": "d"})
+    assert missing.status_code == 422, missing.text
+
+
+def test_feedback_body_carries_no_identifiers() -> None:
+    resp = make_client().post(
+        "/api/v1/feedback",
+        json={"doc_id": "feedback-doc-b", "action": "click"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json().keys()) == {"doc_id", "action", "count"}

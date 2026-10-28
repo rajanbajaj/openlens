@@ -438,6 +438,29 @@ class PostgresDocumentStore(DocumentStore):
                 ) from exc
         return int(row[0])
 
+    def list_documents(self, limit: int = 500, offset: int = 0) -> list[Document]:
+        """Return one page of documents in stable id order (export seam)."""
+        if limit <= 0 or offset < 0:
+            return []
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    # S608 false positive: validated identifiers, bound %s.
+                    cur.execute(
+                        f"SELECT id, title, content, url, metadata"  # noqa: S608
+                        f" FROM {self._qualified()} ORDER BY id ASC"
+                        " LIMIT %s OFFSET %s",
+                        (limit, offset),
+                    )
+                    rows = cur.fetchall()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to list documents: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return [_row_to_document(row) for row in rows]
+
     def search(
         self, fts_query: str, limit: int = 10, offset: int = 0
     ) -> tuple[list[tuple[Document, float]], int]:

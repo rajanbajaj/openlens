@@ -76,6 +76,19 @@ class IndexStats:
         """Rows deliberately not written."""
         return self.skipped_unchanged + self.skipped_duplicates
 
+    def summary(self) -> dict[str, int]:
+        """Plain-count refresh report (added/updated/unchanged/duplicates).
+
+        The ``index`` CLI prints exactly these keys after ``run_index``,
+        so refresh/duplicate reporting needs no new subcommand.
+        """
+        return {
+            "added": self.added,
+            "updated": self.updated,
+            "unchanged": self.skipped_unchanged,
+            "duplicates": self.skipped_duplicates,
+        }
+
 
 def _with_preserved_metadata(stored: Document | None, doc: Document) -> Document:
     """Return `doc` with stored ranking-critical metadata merged in.
@@ -251,6 +264,42 @@ class DocumentIndexer:
             stats.batches += 1
         stats.added = len(to_add)
         stats.skipped_unchanged = len(unchanged)
+        return stats
+
+    def describe_refresh(self, docs: list[Document]) -> IndexStats:
+        """Classify a crawl batch against stored hashes without writing.
+
+        Read-only refresh preview using the same ingest dedup rule as
+        :meth:`index_incremental` (stored ``get`` / ``hash_exists`` reads
+        only): counts what a refresh *would* add, update, leave unchanged,
+        or drop as duplicate. The repository is never modified.
+        """
+        stats = IndexStats()
+        staged_norms: set[str] = set()
+        for doc in docs:
+            content_hash = content_hash_of(doc.content)
+            norm = normalize_url(doc.url)
+            stored = self._repository.get(doc.id)
+            if stored is not None:
+                effective = _with_preserved_metadata(stored, doc)
+                if (
+                    normalize_url(stored.url) == norm
+                    and content_hash_of(stored.content) == content_hash
+                    and stored.title == effective.title
+                    and (stored.metadata or {}) == (effective.metadata or {})
+                ):
+                    stats.skipped_unchanged += 1
+                else:
+                    stats.updated += 1
+                continue
+            if norm is not None and (
+                self._repository.hash_exists(content_hash) or norm in staged_norms
+            ):
+                stats.skipped_duplicates += 1
+                continue
+            if norm is not None:
+                staged_norms.add(norm)
+            stats.added += 1
         return stats
 
     def reindex(

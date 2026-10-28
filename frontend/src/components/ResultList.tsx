@@ -2,10 +2,23 @@ import type { SearchResult } from '../api/types';
 import { resultStoryId } from '../api/enrichments.ts';
 import { ResultCard } from './ResultCard';
 import { EmptyResults } from './States';
+import { Button } from './ui/Button.tsx';
 
 export interface ResultListProps {
   results: SearchResult[];
   total: number;
+  /** Vertical mode forwarded to each card; defaults to "default". */
+  mode?: string;
+  /** Corrected spelling hint; the hint row renders only when non-null. */
+  spelling?: string | null;
+  /** Related queries; the chip row renders only when non-empty. */
+  related?: string[];
+  /** Called when a related-search chip is activated. */
+  onRelatedSelect?: (query: string) => void;
+  /** Ids already in the personal library (for the per-card save toggle). */
+  savedIds?: readonly string[];
+  /** Called when a card save toggle is activated; omit to hide save buttons. */
+  onSaveResult?: (result: SearchResult) => void;
 }
 
 interface StoryGroup {
@@ -44,13 +57,61 @@ export function groupByStory(results: SearchResult[]): StoryGroup[] {
  * Ordered result list with a pre-pagination total and story-group
  * headers for multi-hit stories. Single hits render as plain cards —
  * no group chrome — and group order follows first appearance.
+ *
+ * Query-assistance rows (spelling hint, related-search chips) render
+ * only when the backend supplied them; absent or malformed assistance
+ * renders nothing. Cards inherit the list `mode` for vertical regroups.
  */
-export function ResultList({ results, total }: ResultListProps) {
+export function ResultList({
+  results,
+  total,
+  mode = 'default',
+  spelling = null,
+  related = [],
+  onRelatedSelect,
+  savedIds = [],
+  onSaveResult,
+}: ResultListProps) {
+  const relatedQueries = related.filter(
+    (query): query is string => typeof query === 'string' && query !== '',
+  );
+  const assistance =
+    spelling || relatedQueries.length > 0 ? (
+      <>
+        {spelling ? (
+          <p data-testid="spelling-hint" className="ol-spelling-hint">
+            Showing results for &ldquo;{spelling}&rdquo;
+          </p>
+        ) : null}
+        {relatedQueries.length > 0 ? (
+          <ul data-testid="related-searches" className="ol-related-searches">
+            {relatedQueries.map((query) => (
+              <li key={query}>
+                <Button
+                  variant="ghost"
+                  data-testid="related-chip"
+                  onClick={() => onRelatedSelect?.(query)}
+                >
+                  {query}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </>
+    ) : null;
+
   if (results.length === 0) {
-    return <EmptyResults />;
+    return (
+      <>
+        {assistance}
+        <EmptyResults />
+      </>
+    );
   }
   return (
     <section aria-label="Search results">
+      {assistance}
       <p data-testid="result-count" className="ol-result-count">
         Showing {results.length} of {total} result{total === 1 ? '' : 's'}
       </p>
@@ -67,7 +128,12 @@ export function ResultList({ results, total }: ResultListProps) {
                 <ol className="ol-result-list">
                   {group.members.map((result) => (
                     <li key={result.id}>
-                      <ResultCard result={result} />
+                      <ResultCard
+                        result={result}
+                        mode={mode}
+                        saved={savedIds.includes(result.id)}
+                        onSave={onSaveResult}
+                      />
                     </li>
                   ))}
                 </ol>
@@ -76,7 +142,12 @@ export function ResultList({ results, total }: ResultListProps) {
           ) : (
             group.members.map((result) => (
               <li key={result.id}>
-                <ResultCard result={result} />
+                <ResultCard
+                  result={result}
+                  mode={mode}
+                  saved={savedIds.includes(result.id)}
+                  onSave={onSaveResult}
+                />
               </li>
             ))
           ),

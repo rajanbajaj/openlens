@@ -43,6 +43,22 @@ function mockFetchEnvelope(payload: unknown) {
   return stub;
 }
 
+/**
+ * Route-aware fetch stub: `/api/v1/suggest` answers with the given
+ * completions (valid `{q, suggestions}` envelope), every other call
+ * answers with the search payload.
+ */
+function mockSearchAndSuggest(searchPayload: unknown, suggestions: string[]) {
+  const stub = vi.fn(async (input: unknown) => {
+    if (String(input).includes('/api/v1/suggest')) {
+      return { ok: true, json: () => Promise.resolve({ q: 'wireless', suggestions }) };
+    }
+    return { ok: true, json: () => Promise.resolve(searchPayload) };
+  });
+  vi.stubGlobal('fetch', stub);
+  return stub;
+}
+
 async function submitQuery() {
   render(<App />);
   fireEvent.change(screen.getByLabelText(/search query/i), {
@@ -59,26 +75,32 @@ describe('search workspace', () => {
   it('sends advanced panel filters and offers removable chips', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
     render(<App />);
-    fireEvent.change(screen.getByLabelText(/max price/i), { target: { value: '250' } });
-    fireEvent.change(screen.getByLabelText(/location/i), { target: { value: 'Berlin' } });
+    // Google-style landing: the filter panel only exists after the
+    // first search, so search first, then refine and resubmit.
     fireEvent.change(screen.getByLabelText(/search query/i), {
       target: { value: 'wireless headphones' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
-
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
-    const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+
+    fireEvent.change(screen.getByLabelText(/max price/i), { target: { value: '250' } });
+    fireEvent.change(screen.getByLabelText(/location/i), { target: { value: 'Berlin' } });
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+    await waitFor(() => {
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+    });
+    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.filters).toEqual({ max_price: 250, location: 'Berlin' });
     expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Max price 250');
 
     fireEvent.click(screen.getByRole('button', { name: /remove max price 250/i }));
     await waitFor(() => {
-      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(fetchStub).toHaveBeenCalledTimes(3);
     });
-    const [, retryInit] = fetchStub.mock.calls[1] as [string, RequestInit];
+    const [, retryInit] = fetchStub.mock.calls[2] as [string, RequestInit];
     const retryBody = JSON.parse(retryInit.body as string) as Record<string, unknown>;
     expect(retryBody.filters).toEqual({ location: 'Berlin' });
   });
@@ -117,18 +139,21 @@ describe('search workspace', () => {
 
   it('sends provider prefs only when the user sets them', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
-    render(<App />);
-    fireEvent.change(screen.getByLabelText(/primary provider/i), {
-      target: { value: 'mock' },
-    });
-    fireEvent.change(screen.getByLabelText(/search query/i), {
-      target: { value: 'wireless headphones' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+    // Google-style landing: provider prefs live in the sidebar, which
+    // only mounts after the first search — search, set, resubmit.
+    // (submitQuery mounts the app.)
+    await submitQuery();
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
-    const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+    fireEvent.change(screen.getByLabelText(/primary provider/i), {
+      target: { value: 'mock' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+    await waitFor(() => {
+      expect(fetchStub.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.provider_prefs).toEqual({ include: [], exclude: [], primary: 'mock' });
   });
@@ -162,11 +187,12 @@ describe('search workspace', () => {
   it('mounts the shell grid: sidebar filters, results column, lazy rail', async () => {
     mockFetchEnvelope(BASE_ENVELOPE);
     render(<App />);
-    // Sidebar mount is labelled and present before the first search.
+    // Google-style landing: no sidebar before the first search.
+    expect(screen.queryByTestId('sidebar-mount')).not.toBeInTheDocument();
+    await submitQueryRerun();
     const sidebar = screen.getByTestId('sidebar-mount');
     expect(sidebar).toHaveAttribute('aria-label', 'Search filters');
     expect(sidebar.tagName).toBe('ASIDE');
-    await submitQueryRerun();
     expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
     expect(screen.getByLabelText(/search results/i)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
@@ -201,6 +227,54 @@ describe('search workspace', () => {
     const [, prevInit] = fetchStub.mock.calls[2] as [string, RequestInit];
     const prevBody = JSON.parse(prevInit.body as string) as Record<string, unknown>;
     expect(prevBody.offset).toBe(0);
+  });
+
+  it('header search box offers suggestions and Escape keeps results intact', async () => {
+    mockSearchAndSuggest(BASE_ENVELOPE, ['wireless headphones', 'wireless earbuds']);
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+    });
+
+    // The sticky-header form is the same wired SearchForm: typing
+    // reopens the dropdown with a live announcement.
+    const headerInput = screen.getByLabelText(/search query/i);
+    headerInput.focus();
+    fireEvent.change(headerInput, { target: { value: 'wireless' } });
+    await screen.findByTestId('suggest-option-0');
+    expect(screen.getByTestId('suggest-announcer')).toHaveTextContent('2 suggestions available');
+    expect(headerInput).toHaveAttribute('aria-expanded', 'true');
+
+    // Escape dismisses the dropdown; the result list is untouched.
+    fireEvent.keyDown(headerInput, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('suggest-dropdown')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+  });
+
+  it('skips idle prefetch when every result fits on one page', async () => {
+    mockSearchAndSuggest(BASE_ENVELOPE, ['wireless headphones']);
+    const idleCallback = vi.fn((callback: () => void) => {
+      callback();
+      return 1;
+    });
+    Object.defineProperty(window, 'requestIdleCallback', {
+      value: idleCallback,
+      configurable: true,
+    });
+    try {
+      await submitQuery();
+      await waitFor(() => {
+        expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('page-indicator')).not.toBeInTheDocument();
+      // Give the idle effect a chance to run, then confirm it stood down.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(idleCallback).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
+    }
   });
 
   it('leaves focus on a live node (never a detached one) across result updates', async () => {

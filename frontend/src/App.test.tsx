@@ -43,18 +43,34 @@ function mockFetchOnce(payload: unknown, ok = true) {
   return stub;
 }
 
+/**
+ * Route-aware fetch stub: `/api/v1/suggest` answers with the given
+ * completions (valid `{q, suggestions}` envelope), every other call
+ * answers with the search payload.
+ */
+function mockSearchAndSuggest(searchPayload: unknown, suggestions: string[]) {
+  const stub = vi.fn(async (input: unknown) => {
+    if (String(input).includes('/api/v1/suggest')) {
+      return { ok: true, json: () => Promise.resolve({ q: 'wireless', suggestions }) };
+    }
+    return { ok: true, json: () => Promise.resolve(searchPayload) };
+  });
+  vi.stubGlobal('fetch', stub);
+  return stub;
+}
+
 async function runShoppingSearch() {
   render(<App />);
-  // Empty-state shell: hero mounted, exactly one search form, sidebar mounted.
+  // Google-style landing: hero mounted, exactly one search form, and
+  // none of the workspace chrome (header, sidebar) exists yet.
   expect(screen.getByTestId('search-hero')).toBeInTheDocument();
   expect(screen.queryByTestId('search-header')).not.toBeInTheDocument();
   expect(screen.getAllByRole('search')).toHaveLength(1);
-  expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
+  expect(screen.queryByTestId('sidebar-mount')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText(/search query/i), {
     target: { value: 'wireless headphones' },
   });
   fireEvent.change(screen.getByLabelText(/search mode/i), { target: { value: 'shopping' } });
-  fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
   fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
 }
 
@@ -70,6 +86,15 @@ async function waitForResults() {
 }
 
 describe('App wiring', () => {
+  it('shows only the centered search before the first search', () => {
+    mockFetchOnce(SHOPPING_ENVELOPE);
+    render(<App />);
+    expect(screen.getByTestId('search-hero')).toBeInTheDocument();
+    expect(screen.getAllByRole('search')).toHaveLength(1);
+    expect(screen.queryByTestId('search-header')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-mount')).not.toBeInTheDocument();
+  });
+
   it('shopping-mode query renders results, applied filters, and diagnostics', async () => {
     const fetchStub = mockFetchOnce(SHOPPING_ENVELOPE);
     await runShoppingSearch();
@@ -80,10 +105,16 @@ describe('App wiring', () => {
       'Applied filters: user-restrictions, safety-filter, privacy-filter',
     );
 
-    // Request shaping: shopping mode + backend-owned term filter + page 1 offset.
+    // Filters exist only after the first search (Google-style landing):
+    // toggle in the now-mounted sidebar, resubmit, assert the wire call.
     // `exclude_sponsored` is a UI concept only — the wire must carry the
     // user-restrictions owned key (the backend 500s unknown filter keys).
-    const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+    await waitFor(() => {
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+    });
+    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.mode).toBe('shopping');
     expect(body.filters).toEqual({ must_not_terms: ['sponsored'] });
@@ -131,5 +162,69 @@ describe('App wiring', () => {
       expect(screen.getByTestId('error-state')).toBeInTheDocument();
     });
     expect(screen.getByTestId('error-state')).toHaveTextContent('network_error');
+  });
+
+  it('selecting a dropdown suggestion runs the search with the picked query', async () => {
+    const fetchStub = mockSearchAndSuggest(SHOPPING_ENVELOPE, ['wireless headphones']);
+    render(<App />);
+    const input = screen.getByLabelText(/search query/i);
+    fireEvent.change(input, { target: { value: 'wireless' } });
+    await screen.findByTestId('suggest-option-0');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitForResults();
+    const searchCall = fetchStub.mock.calls.find(([url]) =>
+      String(url).includes('/api/v1/search'),
+    ) as unknown as [string, RequestInit] | undefined;
+    expect(searchCall).toBeDefined();
+    const [, init] = searchCall as [string, RequestInit];
+    expect((JSON.parse(init.body as string) as Record<string, unknown>).query).toBe(
+      'wireless headphones',
+    );
+  });
+
+  it('opens and closes the personal library from the sidebar', async () => {
+    mockFetchOnce(SHOPPING_ENVELOPE);
+    await runShoppingSearch();
+    await waitForResults();
+
+    const open = screen.getByRole('button', { name: /open library/i });
+    open.focus();
+    expect(document.activeElement).toBe(open);
+    fireEvent.click(open);
+    expect(screen.getByTestId('library-drawer')).toBeInTheDocument();
+
+    const close = screen.getByRole('button', { name: /close library/i });
+    close.focus();
+    expect(document.activeElement).toBe(close);
+    fireEvent.click(close);
+    expect(screen.queryByTestId('library-drawer')).not.toBeInTheDocument();
+  });
+
+  it('prefetches the next page while idle once results land', async () => {
+    mockFetchOnce({ ...SHOPPING_ENVELOPE, total: 25 });
+    const idleCallback = vi.fn((callback: () => void) => {
+      callback();
+      return 1;
+    });
+    Object.defineProperty(window, 'requestIdleCallback', {
+      value: idleCallback,
+      configurable: true,
+    });
+    try {
+      await runShoppingSearch();
+      await waitForResults();
+      await waitFor(() => {
+        expect(idleCallback).toHaveBeenCalled();
+      });
+      // The prefetch requests page 2 server-side with the page-1 body.
+      fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 2 of 3');
+      });
+    } finally {
+      Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
+    }
   });
 });

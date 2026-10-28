@@ -36,6 +36,12 @@ export interface SidebarProps {
    * shell can re-run the search. Chip clears only update state otherwise.
    */
   onChipRemove?: (cleared: UserFilterState) => void;
+  /**
+   * Optional hook opening the personal-library drawer, owned by the
+   * shell. Filters stay owned here; the library affordance only
+   * signals the shell to mount the drawer entry point.
+   */
+  onLibraryOpen?: () => void;
 }
 
 interface SidebarChip {
@@ -135,6 +141,7 @@ export function Sidebar({
   collapsed,
   onCollapsedChange,
   onChipRemove,
+  onLibraryOpen,
 }: SidebarProps) {
   const chips = sidebarChips(filters);
 
@@ -155,6 +162,11 @@ export function Sidebar({
       >
         {collapsed ? 'Show filters' : 'Hide filters'}
       </Button>
+      {onLibraryOpen ? (
+        <Button variant="secondary" onClick={onLibraryOpen} data-testid="library-open">
+          Open library
+        </Button>
+      ) : null}
       <GlassPanel
         variant="sidebar"
         id="ol-sidebar-panel"

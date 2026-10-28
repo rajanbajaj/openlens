@@ -6,8 +6,8 @@
  * no secrets or API keys anywhere in this module.
  */
 
-import { isErrorEnvelope, isSearchResponse } from './guard.ts';
-import type { ProviderPrefs, SearchRequest, SearchResponse } from './types.ts';
+import { isErrorEnvelope, isSearchResponse, isSuggestResponse } from './guard.ts';
+import type { FeedbackRequest, ProviderPrefs, SearchRequest, SearchResponse } from './types.ts';
 
 /**
  * Dev fallback when `VITE_OPENLENS_API_URL` is unset and the app runs
@@ -139,4 +139,121 @@ export function offsetForPage(page: number, limit: number): number {
 export function pageForOffset(offset: number, limit: number): number {
   if (limit <= 0) return 1;
   return Math.floor(Math.max(0, offset) / limit) + 1;
+}
+
+/** Debounce delay for as-you-type suggestions (plan contract). */
+export const SUGGEST_DEBOUNCE_MS = 150;
+
+type AnyArgs = unknown[];
+
+/**
+ * Debounce `fn`: restart the `delayMs` timer on every call and invoke
+ * `fn` with the latest arguments once the timer elapses. The caller
+ * owns cancellation via the returned `cancel`.
+ */
+export function debounce<Args extends AnyArgs>(
+  fn: (...args: Args) => void,
+  delayMs: number,
+): ((...args: Args) => void) & { cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const debounced = (...args: Args): void => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, delayMs);
+  };
+  debounced.cancel = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  return debounced;
+}
+
+/** Options accepted by {@link fetchSuggestions}. */
+export interface SuggestOptions {
+  /** Prefix-completion cap (backend default 10, max 50). */
+  limit?: number;
+  /**
+   * Caller-owned abort signal: the caller creates the
+   * `AbortController`, aborts stale in-flight requests, and passes
+   * `controller.signal` here. An abort resolves to `[]`, never throws.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/suggest` and return the completion
+ * list. Never throws into rendering: blank queries skip the fetch,
+ * and backend-absent (404/5xx), malformed, or aborted requests
+ * resolve to `[]` so the UI degrades to direct search.
+ */
+export async function fetchSuggestions(
+  query: string,
+  options: SuggestOptions = {},
+  fetchImpl: FetchImpl = fetch,
+): Promise<string[]> {
+  if (!query.trim()) return [];
+  const params = new URLSearchParams({ q: query });
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  let response: Response;
+  try {
+    response = await fetchImpl(`${API_BASE_URL}/api/v1/suggest?${params.toString()}`, {
+      signal: options.signal,
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    return [];
+  }
+  if (!isSuggestResponse(payload)) return [];
+  return payload.suggestions;
+}
+
+/**
+ * Fire-and-forget `POST {API_URL}/api/v1/feedback` click signal.
+ * Sends only the anonymous (doc id, action) pair — no query text, no
+ * user/session identifiers. Never rejects into rendering: transport
+ * or backend failures resolve silently to `void`.
+ */
+export async function sendFeedback(
+  docId: string,
+  action: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<void> {
+  if (!docId.trim() || !action.trim()) return;
+  const body: FeedbackRequest = { doc_id: docId, action };
+  try {
+    await fetchImpl(`${API_BASE_URL}/api/v1/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Fire-and-forget: feedback must never break rendering.
+  }
+}
+
+/**
+ * Speculatively fetch 1-based `page` of a prior search `body` via the
+ * existing offset math. Resolves to `null` (instead of throwing) when
+ * the prefetch fails, so callers treat a miss as "not prefetched".
+ */
+export function prefetchPage(
+  body: SearchRequest,
+  page: number,
+  fetchImpl: FetchImpl = fetch,
+): Promise<SearchResponse | null> {
+  const next: SearchRequest = { ...body, offset: offsetForPage(page, body.limit) };
+  return searchLens(next, fetchImpl).then(
+    (response) => response,
+    () => null,
+  );
 }

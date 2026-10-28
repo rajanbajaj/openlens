@@ -2,17 +2,19 @@
 
 `create_app` builds the FastAPI app and attaches the search router plus the
 shared error envelope. Pass an `Engine` explicitly to serve search (tests do
-this), or rely on the module-level `app`, which boots the real Engine from
-`configs/default.yaml` via :func:`build_engine` (leaving the engine unset —
-HTTP 503 — when that config cannot boot, so importing this module never
-crashes).
+this), or rely on the module-level `app`, whose lifespan handler boots the
+real Engine from `configs/default.yaml` via :func:`build_engine` on server
+startup (leaving the engine unset — HTTP 503 — when that config cannot
+boot, and writing nothing at import time, so importing this module never
+crashes and never touches the index).
 """
 
 from __future__ import annotations
 
 import logging as stdlib_logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
@@ -498,6 +500,17 @@ class _ObservedEngine(Engine):
     def __init__(self, inner: Engine) -> None:
         self._inner = inner
 
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attributes (suggest/feedback hooks) to the inner engine.
+
+        Only missing attributes reach here, so ``search``/``configure``/
+        ``health_check`` keep their observability behavior. Dunder probes
+        are rejected so introspection never touches the inner engine.
+        """
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
     def configure(self, config: dict[str, Any]) -> None:
         self._inner.configure(config)
 
@@ -514,8 +527,40 @@ class _ObservedEngine(Engine):
         return self._inner.health_check()
 
 
+def _boot_default_engine() -> Optional[Engine]:
+    """Build the engine from the default config; None when it cannot boot."""
+    config = load_app_config()
+    if not config:
+        return None
+    try:
+        return build_engine(config)
+    except Exception:  # noqa: BLE001 — boot must never crash; API reports 503
+        return None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Start the default engine on server startup (uvicorn lifespan).
+
+    Importing this module must have no side effects — in particular it
+    must not write seed rows — so the default engine boots here instead
+    of at import time. Apps created with an explicit engine (tests, CLI
+    callers that build their own) are left untouched. Without a lifespan
+    runner the engine stays unset and search reports 503.
+    """
+    if app.state.engine is None:
+        booted = _boot_default_engine()
+        if booted is not None:
+            app.state.engine = _ObservedEngine(booted)
+            try:
+                app.state.config = load_app_config() or {}
+            except (ConfigError, OSError):
+                pass
+    yield
+
+
 def create_app(engine: Optional[Engine] = None) -> FastAPI:
-    app = FastAPI(title="OpenLens", version="0.1.0")
+    app = FastAPI(title="OpenLens", version="0.1.0", lifespan=_lifespan)
     # Browser frontends call the API cross-origin in dev (vite :5173 ->
     # backend :8000); answer preflights for local origins only.
     # X-Request-Id is allowed so browsers can send and read it.
@@ -568,22 +613,4 @@ def create_app(engine: Optional[Engine] = None) -> FastAPI:
     return app
 
 
-def _boot_default_engine() -> Optional[Engine]:
-    """Build the engine from the default config; None when it cannot boot."""
-    config = load_app_config()
-    if not config:
-        return None
-    try:
-        return build_engine(config)
-    except Exception:  # noqa: BLE001 — import must never crash; API reports 503
-        return None
-
-
 app = create_app()
-_booted = _boot_default_engine()
-if _booted is not None:
-    app.state.engine = _ObservedEngine(_booted)
-    try:
-        app.state.config = load_app_config() or {}
-    except (ConfigError, OSError):
-        pass

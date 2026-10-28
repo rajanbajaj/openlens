@@ -75,6 +75,15 @@ class DocumentStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def list_documents(self, limit: int = 500, offset: int = 0) -> list[Document]:
+        """Return one page of stored documents in stable id order.
+
+        Paginating with increasing ``offset`` enumerates the whole store;
+        used by offline export paths (e.g. bulk-loading a search index).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def close(self) -> None:
         """Release the backend connection. Idempotent."""
         raise NotImplementedError

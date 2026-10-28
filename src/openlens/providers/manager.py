@@ -33,6 +33,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import replace
 from typing import Any, Optional
 
@@ -355,6 +356,55 @@ class ProviderManager:
                 f"Provider '{name}' is not enabled. Enabled providers: "
                 f"{sorted(self._providers)}."
             ) from None
+
+    def attach_models(self, models: Any | None) -> None:
+        """Inject the embedding model manager into supporting providers.
+
+        Semantic fan-in call-site: providers exposing ``attach_models``
+        (currently ``custom_index``) receive the engine's model manager
+        (or ``None`` when no embedding backend is enabled, restoring
+        keyword-only behavior). Providers without the hook are skipped;
+        a provider that rejects the manager keeps its previous setting
+        rather than failing startup.
+        """
+        for provider in self._providers.values():
+            hook = getattr(provider, "attach_models", None)
+            if not callable(hook):
+                continue
+            with suppress(Exception):
+                hook(models)
+
+    def suggest_terms(self, limit: int = 200) -> list[str]:
+        """Aggregate the live index vocabulary for query assistance.
+
+        Collects terms from every provider exposing ``suggest_terms``,
+        deduplicated (first-seen spelling wins) and sorted
+        case-insensitively for determinism. Returns ``[]`` when no
+        provider offers a vocabulary, so callers fall back gracefully.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        collected: list[str] = []
+        seen: set[str] = set()
+        for name in sorted(self._providers):
+            hook = getattr(self._providers[name], "suggest_terms", None)
+            if not callable(hook):
+                continue
+            terms: Any = None
+            with suppress(Exception):
+                terms = hook(limit=limit)
+            if not isinstance(terms, list):
+                continue
+            for term in terms:
+                if not isinstance(term, str) or not term.strip():
+                    continue
+                key = term.strip().casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append(term.strip())
+        collected.sort(key=str.casefold)
+        return collected[:limit]
 
     def _select_providers(self, prefs: Any) -> list[str]:
         """Resolve per-query provider preferences to entry names.

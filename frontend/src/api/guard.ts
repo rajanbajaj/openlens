@@ -9,10 +9,12 @@ import type {
   CacheStatus,
   Diagnostics,
   ErrorEnvelope,
+  FeedbackResponse,
   ProviderPrefs,
   QueryProvenance,
   SearchResponse,
   SearchResult,
+  SuggestResponse,
 } from './types.ts';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +120,64 @@ export function isSearchResponse(value: unknown): value is SearchResponse {
     isStringArray(value.applied_filters) &&
     isDiagnostics(value.diagnostics)
   );
+}
+
+/**
+ * `GET /api/v1/suggest` response shape (`SuggestResponseSchema`).
+ * Structural check only; note `isSearchResponse` deliberately ignores
+ * assistance fields so a malformed `suggestions`/`spelling`/`related`
+ * entry degrades via the readers below instead of failing the page.
+ */
+export function isSuggestResponse(value: unknown): value is SuggestResponse {
+  if (!isRecord(value)) return false;
+  return typeof value.q === 'string' && isStringArray(value.suggestions);
+}
+
+/** `POST /api/v1/feedback` acknowledgement shape. */
+export function isFeedbackResponse(value: unknown): value is FeedbackResponse {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.doc_id === 'string' &&
+    typeof value.action === 'string' &&
+    typeof value.count === 'number'
+  );
+}
+
+/**
+ * Assistance readers: extract the optional search-assistance fields
+ * from an unknown search payload, returning the absent value
+ * (`[]` / `null`) for missing or malformed input. They never throw,
+ * so malformed assistance renders as absent instead of crashing the UI.
+ */
+
+/** `suggestions` completions, or `[]` when absent or malformed. */
+export function readSuggestions(response: unknown): string[] {
+  if (!isRecord(response)) return [];
+  const suggestions = response['suggestions'];
+  return suggestions === undefined || !isStringArray(suggestions) ? [] : suggestions;
+}
+
+/** `related` queries, or `[]` when absent or malformed. */
+export function readRelated(response: unknown): string[] {
+  if (!isRecord(response)) return [];
+  const related = response['related'];
+  return related === undefined || !isStringArray(related) ? [] : related;
+}
+
+/** `spelling` hint, or `null` when absent, null, blank, or malformed. */
+export function readSpelling(response: unknown): string | null {
+  if (!isRecord(response)) return null;
+  const spelling = response['spelling'];
+  return typeof spelling === 'string' && spelling !== '' ? spelling : null;
+}
+
+/** `next_offset`, or `null` when absent, null, or malformed. */
+export function readNextOffset(response: unknown): number | null {
+  if (!isRecord(response)) return null;
+  const nextOffset = response['next_offset'];
+  return typeof nextOffset === 'number' && Number.isInteger(nextOffset) && nextOffset >= 0
+    ? nextOffset
+    : null;
 }
 
 export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {

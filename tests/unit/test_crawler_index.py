@@ -62,6 +62,37 @@ def test_normalize_url_reuses_dedupe_key_rule():
     assert normalize_url(None) is None
 
 
+def test_fragment_variants_share_one_identity():
+    from openlens.indexing.crawler import normalize_url as crawl_normalize_url
+
+    base = "https://example.com/page"
+    assert normalize_url(base + "#section") == base
+    assert crawl_normalize_url(base + "#section") == normalize_url(base)
+    probe = SearchResult(
+        id="x",
+        title="t",
+        snippet="s",
+        original_score=0.0,
+        final_score=0.0,
+        url=base + "#section",
+    )
+    assert dedupe_key(probe) == "url:" + base
+
+
+def test_incremental_fragment_refetch_collapses_to_duplicate():
+    repo, indexer = _make_indexer()
+    first = Document(
+        id="a", title="t", content="same body", url="http://example.com/p#one"
+    )
+    second = Document(
+        id="b", title="t", content="same body", url="http://example.com/p#two"
+    )
+    stats = indexer.index_incremental([first, second])
+    assert repo.count() == 1
+    assert stats.added == 1
+    assert stats.skipped_duplicates == 1
+
+
 def test_update_document_rewrites_fts_row():
     repo = DocumentRepository(":memory:")
     repo.add_document(_doc())

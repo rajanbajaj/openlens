@@ -110,8 +110,42 @@ export interface SearchResponse {
   mode: string;
   results: SearchResult[];
   total: number;
+  /** Page size the backend applied (`DEFAULT_LIMIT` when omitted). */
+  limit?: number;
+  /** Offset of the first result on this page. */
+  offset?: number;
+  /** Next-page offset, or null when this page reaches the end. */
+  next_offset?: number | null;
+  /** Query assistance: prefix completions (absent on older envelopes). */
+  suggestions?: string[];
+  /** Query assistance: corrected spelling hint (null/absent when none). */
+  spelling?: string | null;
+  /** Query assistance: related queries (absent on older envelopes). */
+  related?: string[];
   applied_filters: string[];
   diagnostics: Diagnostics;
+}
+
+/** GET /api/v1/suggest response body (`SuggestResponseSchema`). */
+export interface SuggestResponse {
+  q: string;
+  suggestions: string[];
+}
+
+/**
+ * POST /api/v1/feedback request body: anonymous (doc id, action)
+ * counts only. Never carries query text or user/session identifiers.
+ */
+export interface FeedbackRequest {
+  doc_id: string;
+  action: string;
+}
+
+/** POST /api/v1/feedback acknowledgement. */
+export interface FeedbackResponse {
+  doc_id: string;
+  action: string;
+  count: number;
 }
 
 /** Machine-readable error code plus a human-readable message. */

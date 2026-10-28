@@ -29,13 +29,34 @@ providers:
     type: custom_index
     timeout_s: 5
     db_path: "data/openlens.db"
+    # Hybrid retrieval (modern-search-backend plan, step 5 wiring).
+    # Disabled by default: plain FTS5 order is served and no embedding
+    # backend is contacted. Set true plus an enabled `models:` backend
+    # to fuse the embedding signal via RRF (fail-open on any error).
+    semantic_enabled: false
   opensearch:
     enabled: false
     type: opensearch
     hosts: ["${OPENSEARCH_HOST:-http://localhost:9200}"]
+    # `index` may be a concrete index or a serving alias. The blue-green
+    # lifecycle (`opensearch_index:` below + `cli opensearch ...`) serves
+    # through the `openlens` alias, so promotion never touches this file.
     index: openlens
     timeout_s: 5
     verify_certs: true
+
+# Blue-green OpenSearch lifecycle (single cluster, timestamped stage
+# indices, one serving alias). Operated via the `opensearch` CLI group:
+# stage -> load -> verify -> promote -> prune; rollback flips the alias
+# back; migrate copies one index between endpoints (local <-> remote over
+# an `ssh -L` tunnel, auth via OPENSEARCH_{SOURCE,DEST}_{USER,PASSWORD}
+# environment variables — never commit credentials).
+opensearch_index:
+  hosts: ["${OPENSEARCH_HOST:-http://localhost:9200}"]
+  alias: openlens
+  index_prefix: openlens
+  timeout_s: 5
+  verify_certs: true
 
 # Document store backend selection (db-connectors plan, step 4).
 # `storage.backend` is the single switch (`sqlite` | `mysql` |
@@ -175,6 +196,23 @@ indexing:
   deny_domains: []
   user_agent: "OpenLensBot/1.0"
   respect_robots: true
+  # Per-domain crawl policy (index breadth, plan step 4). Active keys
+  # below carry the defaults (no per-domain overrides, unlimited
+  # link-following depth); add entries under `domain_policies` to scope
+  # a crawl:
+  # `allow: false` blocks the domain even when the global allowlist would
+  # permit it; `allow: true` exempts it from the `allow_domains` gate
+  # (global `deny_domains` still wins). `rate_limit_s` is the minimum gap
+  # between hits to that domain (max with `crawl_delay_s` and robots
+  # Crawl-delay). `max_depth` caps link-following for that domain
+  # (seeds are depth 0); `default_max_depth` caps every other domain.
+  # Malformed policy blocks fail startup validation loudly (fail-closed).
+  domain_policies: {}
+  # Example entries (add under domain_policies to scope a crawl):
+  #   example.com: {allow: true, rate_limit_s: 1.0, max_depth: 2}
+  #   slow.example.org: {rate_limit_s: 5.0}
+  #   blocked.example.net: {allow: false}
+  default_max_depth: null
 
 # Search-result cache (caching-audit plan). `cache.backend` is the single
 # switch (`memory` | `sqlite` | `redis`, default `memory`); `enabled: false`

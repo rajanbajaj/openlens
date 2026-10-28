@@ -72,6 +72,46 @@ Secrets use `${ENV_VAR}` (or `${ENV_VAR:-default}`) references resolved at
 load time. An `${ENV_VAR}` with no value and no default fails startup
 validation loudly via `ConfigError` — secrets are never logged or returned.
 
+## Environment variables
+
+Every variable the repo reads, with its default and where it is consumed.
+Only enabled backends are instantiated, so most of these can stay unset —
+set the ones for the backends you turn on.
+
+| Variable | Default | Used for |
+|---|---|---|
+| `OPENLENS_CONFIG` | (source tree, then CWD) | Override config file location (`src/openlens/main.py`) |
+| `MODEL_API_KEY` | (none — required when enabled) | Key for the `openai_compat` model backend (`configs/models.yaml`) |
+| `MODEL_BASE_URL` | `https://api.meta.ai/v1` | Endpoint for the `openai_compat` model backend |
+| `MODEL_NAME` | `muse-spark-1.3` | Model name sent to the `openai_compat` backend |
+| `ANTHROPIC_API_KEY` | (none — required when enabled) | Key for the `claude` model backend |
+| `MUSE_API_KEY` | (none — required when enabled) | Key for the `muse` model backend |
+| `LOCAL_MODEL_ENDPOINT` | `http://localhost:11434` | Endpoint for the `local` model backend |
+| `BING_API_KEY` | (none — required when enabled) | Key for the `bing` search provider (`configs/providers.yaml`) |
+| `MYENGINE_URL` / `MYENGINE_API_KEY` | (commented example only) | Endpoint/key for a custom `http`-type provider |
+| `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | (commented example only) | Basic-auth credentials for the `opensearch` provider |
+| `OPENLENS_MYSQL_HOST` / `OPENLENS_MYSQL_PORT` / `OPENLENS_MYSQL_DATABASE` / `OPENLENS_MYSQL_USER` / `OPENLENS_MYSQL_PASSWORD` | `localhost` / `3306` / `openlens` / `root` / (empty) | MySQL storage backend (`storage.mysql` in `configs/default.yaml`) |
+| `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD` | `localhost` / `5432` / `openlens` / `postgres` / (empty) | Postgres storage backend (`storage.postgres` in `configs/default.yaml`) |
+| `OPENLENS_REDIS_URL` | `redis://localhost:6379/0` | Redis cache backend (`cache.redis` in `configs/default.yaml`) |
+| `VITE_OPENLENS_API_URL` | dev `http://localhost:8000`, prod same-origin | Backend URL baked into the frontend (`frontend/src/api/client.ts`) |
+| `OPENLENS_SMOKE_URL` | (unset — test skipped) | Target for the opt-in live-backend frontend smoke test |
+| `BACKEND_PORT` / `FRONTEND_PORT` / `OPENSEARCH_PORT` | `8000` / `3000` / `9200` | Published ports in `deploy/local/docker-compose.yml` |
+| `OPENSEARCH_INITIAL_ADMIN_PASSWORD` | (see `deploy/local/.env.example`) | First-boot admin password required by the OpenSearch image |
+
+Rules: never commit a real key. Copy the root `.env.example` to `.env`
+and export it before running (the loader reads process env only —
+there is no dotenv dependency):
+
+```bash
+cp .env.example .env   # then fill in the backends you enabled
+set -a; source .env; set +a
+uv run uvicorn openlens.main:app --reload
+```
+
+(`deploy/local/.env.example` is the separate Docker Compose file.)
+A bare `${VAR}` with no value and no `:-default` fails startup via
+`ConfigError`; a `${VAR:-default}` reference falls back silently.
+
 ## Storage backends
 
 `storage.backend` in `configs/default.yaml` is the single switch
@@ -152,6 +192,44 @@ uv run python -m openlens.cli search "cats" --json
 uv run python -m openlens.cli config validate
 uv run python -m openlens.cli providers health
 ```
+
+### Blue-green search index
+
+One OpenSearch cluster serves through the `openlens` alias while each
+crawl fills a fresh timestamped stage index (`openlens_YYYYMMDDHHMMSS`).
+Promoting a verified stage index is one atomic alias flip — no app
+restart, no data copy, instant rollback. The SQL store stays canonical;
+the CLI loads it into stage and manages the lifecycle:
+
+```bash
+uv run python -m openlens.cli index add seed-urls...   # crawl -> SQL store
+uv run python -m openlens.cli opensearch stage          # fresh stage index
+uv run python -m openlens.cli opensearch load           # SQL store -> stage
+uv run python -m openlens.cli opensearch verify --index openlens_<stamp>
+uv run python -m openlens.cli opensearch promote --index openlens_<stamp>
+uv run python -m openlens.cli opensearch rollback --index openlens_<prior>
+uv run python -m openlens.cli opensearch prune          # drop old indices
+```
+
+(`load` targets the newest stage index, creating one when none exists;
+serving reads the alias, so running servers need no restart after a
+flip — only the short result-cache TTL can briefly serve pre-flip hits.)
+
+Moving an index between clusters (local <-> remote over an `ssh -L`
+tunnel) copies mappings first, then documents with ids preserved, so
+reruns overwrite instead of duplicating:
+
+```bash
+ssh -L 19201:localhost:9200 you@remote-host   # one terminal
+OPENSEARCH_SOURCE_USER=... OPENSEARCH_SOURCE_PASSWORD=... \
+OPENSEARCH_DEST_USER=... OPENSEARCH_DEST_PASSWORD=... \
+uv run python -m openlens.cli opensearch migrate \
+  --source http://localhost:9201 --dest http://localhost:9200 \
+  --index openlens_20261028
+```
+
+Credentials travel via environment variables only — they are never
+logged, returned, or echoed on failure.
 
 ### Observe
 

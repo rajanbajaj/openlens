@@ -21,6 +21,9 @@ htmlcov/
 # Local data and indexes (spec: ./data/index)
 data/
 
+# Local environment (copy from .env.example, never commit)
+.env
+
 # Editors / OS
 .vscode/
 .idea/

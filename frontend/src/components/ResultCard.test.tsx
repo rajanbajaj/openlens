@@ -179,3 +179,104 @@ describe('ResultCard disclosures', () => {
     expect(screen.getByTestId(testId)).toHaveAttribute('id', controls);
   });
 });
+
+describe('ResultCard verticals', () => {
+  const NEWS_RESULT: SearchResult = {
+    ...RICH_RESULT,
+    id: 'news-1',
+    provider: 'news_wire',
+    metadata: { ...RICH_RESULT.metadata, published: '2026-10-20', price: null },
+  };
+
+  const TRAVEL_RESULT: SearchResult = {
+    id: 't1',
+    title: 'Harbor Hotel',
+    snippet: 'Near the bay',
+    original_score: 1,
+    final_score: 2,
+    url: null,
+    provider: 'travel_index',
+    reasons: [],
+    warnings: [],
+    metadata: { location: 'Lisbon', facilities: ['wifi', 'pool'], published: null },
+  };
+
+  it('foregrounds date and source for news mode', () => {
+    render(<ResultCard result={NEWS_RESULT} mode="news" />);
+    const vertical = screen.getByTestId('result-vertical-news');
+    expect(vertical).toHaveTextContent('2026-10-20');
+    expect(vertical).toHaveTextContent('news_wire');
+    // Default readers keep their hooks and placement.
+    expect(screen.getByTestId('result-attributes')).toBeInTheDocument();
+    expect(screen.getByTestId('result-snippet')).toBeInTheDocument();
+  });
+
+  it('foregrounds price for shopping mode', () => {
+    render(<ResultCard result={RICH_RESULT} mode="shopping" />);
+    const vertical = screen.getByTestId('result-vertical-shopping');
+    expect(vertical).toHaveTextContent('199.99 USD');
+    expect(screen.getByTestId('result-attributes')).toHaveTextContent('199.99 USD');
+  });
+
+  it('foregrounds location and facilities for travel mode', () => {
+    render(<ResultCard result={TRAVEL_RESULT} mode="travel" />);
+    const vertical = screen.getByTestId('result-vertical-travel');
+    expect(vertical).toHaveTextContent('Lisbon');
+    expect(vertical).toHaveTextContent('wifi, pool');
+  });
+
+  it('renders no vertical line when travel fields are absent', () => {
+    render(<ResultCard result={{ ...TRAVEL_RESULT, metadata: {} }} mode="travel" />);
+    expect(screen.queryByTestId('result-vertical-travel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('result-attributes')).not.toBeInTheDocument();
+  });
+
+  it('renders no vertical line when shopping has no price', () => {
+    const noPrice: SearchResult = {
+      ...RICH_RESULT,
+      metadata: { ...RICH_RESULT.metadata, price: null },
+    };
+    render(<ResultCard result={noPrice} mode="shopping" />);
+    expect(screen.queryByTestId('result-vertical-shopping')).not.toBeInTheDocument();
+  });
+
+  it.each(['default', 'child-safe', 'mystery-mode'] as const)(
+    'keeps the default layout for %s mode',
+    (mode) => {
+      render(<ResultCard result={RICH_RESULT} mode={mode} />);
+      expect(screen.queryByTestId('result-vertical-news')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('result-vertical-shopping')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('result-vertical-travel')).not.toBeInTheDocument();
+      expect(screen.getByTestId('result-attributes')).toHaveTextContent('199.99 USD');
+    },
+  );
+});
+
+describe('ResultCard save toggle', () => {
+  it('hides the save button without an onSave handler', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    expect(screen.queryByTestId('result-save')).not.toBeInTheDocument();
+  });
+
+  it('saves through the handler and reflects the saved state', () => {
+    const seen: SearchResult[] = [];
+    const { rerender } = render(
+      <ResultCard
+        result={RICH_RESULT}
+        onSave={(result) => {
+          seen.push(result);
+        }}
+      />,
+    );
+    const save = screen.getByTestId('result-save');
+    expect(save).toHaveTextContent('Save');
+    expect(save).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(save);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.id).toBe('r1');
+
+    rerender(<ResultCard result={RICH_RESULT} saved onSave={() => {}} />);
+    expect(screen.getByTestId('result-save')).toHaveTextContent('Saved');
+    expect(screen.getByTestId('result-save')).toHaveAttribute('aria-pressed', 'true');
+  });
+});
