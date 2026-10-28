@@ -10,6 +10,9 @@ Composite signal per hit::
             + trust_weight * signals["trust"]
             + freshness_weight * signals["freshness"]
             + preference_weight * signals["preference"]
+            + diversity_weight * signals["diversity"]
+            + perspective_weight * signals["perspective"]
+            + commerce_weight * signals["commerce"]
 
 Missing signal keys degrade to the neutral 0.5 default (never ``KeyError``),
 so with no scorer enabled every hit carries the same constant offset and
@@ -106,6 +109,9 @@ class Ranker(BasePlugin):
             + profile.trust_weight * get_signal(result, "trust")
             + profile.freshness_weight * get_signal(result, "freshness")
             + profile.preference_weight * get_signal(result, "preference")
+            + profile.diversity_weight * get_signal(result, "diversity")
+            + profile.perspective_weight * get_signal(result, "perspective")
+            + profile.commerce_weight * get_signal(result, "commerce")
         )
 
     def run(self, context: SearchContext) -> SearchContext:

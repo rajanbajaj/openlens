@@ -35,6 +35,9 @@ class RankingProfile:
     trust_weight: float = 0.0
     freshness_weight: float = 0.0
     preference_weight: float = 0.0
+    diversity_weight: float = 0.0
+    perspective_weight: float = 0.0
+    commerce_weight: float = 0.0
 
 
 BUILTIN_PROFILES: dict[str, RankingProfile] = {
@@ -44,6 +47,7 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         trust_weight=0.5,
         freshness_weight=0.25,
         preference_weight=1.0,
+        diversity_weight=0.25,
     ),
     "child-safe": RankingProfile(
         name="child-safe",
@@ -53,6 +57,7 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         trust_weight=1.0,
         freshness_weight=0.0,
         preference_weight=0.0,
+        diversity_weight=0.25,
     ),
     "news": RankingProfile(
         name="news",
@@ -61,6 +66,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         trust_weight=0.5,
         freshness_weight=2.0,
         preference_weight=0.0,
+        diversity_weight=0.25,
+        perspective_weight=1.0,
     ),
     "shopping": RankingProfile(
         name="shopping",
@@ -70,6 +77,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         trust_weight=0.25,
         freshness_weight=0.0,
         preference_weight=1.0,
+        diversity_weight=0.25,
+        commerce_weight=1.5,
     ),
     "travel": RankingProfile(
         name="travel",
@@ -79,6 +88,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         trust_weight=0.25,
         freshness_weight=0.0,
         preference_weight=1.0,
+        diversity_weight=0.25,
+        commerce_weight=1.5,
     ),
 }
 
@@ -158,6 +169,9 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
         "trust_weight",
         "freshness_weight",
         "preference_weight",
+        "diversity_weight",
+        "perspective_weight",
+        "commerce_weight",
     }
     unknown = set(data) - known
     if unknown:
@@ -177,6 +191,9 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
             trust_weight=_signal_weight(data, "trust_weight", name),
             freshness_weight=_signal_weight(data, "freshness_weight", name),
             preference_weight=_signal_weight(data, "preference_weight", name),
+            diversity_weight=_signal_weight(data, "diversity_weight", name),
+            perspective_weight=_signal_weight(data, "perspective_weight", name),
+            commerce_weight=_signal_weight(data, "commerce_weight", name),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(

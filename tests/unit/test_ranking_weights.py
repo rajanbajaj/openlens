@@ -98,7 +98,12 @@ def test_missing_signals_default_to_neutral_without_keyerror() -> None:
     profile = get_profile("default")
     score = ranker.composite(profile, _hit("a", "Alpha", original=1.0))
     expected_offset = 0.5 * (
-        profile.trust_weight + profile.freshness_weight + profile.preference_weight
+        profile.trust_weight
+        + profile.freshness_weight
+        + profile.preference_weight
+        + profile.diversity_weight
+        + profile.perspective_weight
+        + profile.commerce_weight
     )
     assert score == pytest.approx(profile.relevance_weight * 1.0 + expected_offset)
 

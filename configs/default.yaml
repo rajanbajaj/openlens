@@ -78,6 +78,20 @@ plugins:
   - name: preference-scorer
     enabled: false
     config: {}
+  # Rerank pack (rerank-pack plan). Opt-in: disabled by default so shipped
+  # behavior is unchanged. Tests enable these explicitly.
+  - name: attribute-enricher
+    enabled: false
+    config: {}
+  - name: diversity-reranker
+    enabled: false
+    config: {}
+  - name: news-reranker
+    enabled: false
+    config: {}
+  - name: commerce-reranker
+    enabled: false
+    config: {}
 
 ranking:
   default_profile: "default"

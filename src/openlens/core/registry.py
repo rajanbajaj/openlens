@@ -22,6 +22,10 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "trust-scorer": "openlens.plugins.trust_scorer:TrustScorer",
     "freshness-scorer": "openlens.plugins.freshness_scorer:FreshnessScorer",
     "preference-scorer": "openlens.plugins.preference_scorer:PreferenceScorer",
+    "attribute-enricher": "openlens.plugins.attribute_enricher:AttributeEnricher",
+    "diversity-reranker": "openlens.plugins.diversity_reranker:DiversityReranker",
+    "news-reranker": "openlens.plugins.news_reranker:NewsReranker",
+    "commerce-reranker": "openlens.plugins.commerce_reranker:CommerceReranker",
     "ranker": "openlens.ranking.ranker:Ranker",
 }
 

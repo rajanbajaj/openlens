@@ -1,0 +1,54 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_rerank-pack_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t12-rerankers",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t12-attr",
+          "owns": "src/openlens/plugins/attribute_enricher.py, tests/unit/test_rerank_attr.py",
+          "task": "Implement rerank-pack plan Scope/Step 1 only: NEW src/openlens/plugins/attribute_enricher.py AttributeEnricher (ENRICHMENT stage, optional). Normalizes product/hotel/article metadata into documented keys (price, currency, location, facilities, published, perspective); missing attributes degrade to documented neutral sentinels; unparseable values keep the raw string plus a warning, never raise; never emits trust warnings (no overlap with trust-enricher). Parse once here — rerankers read the normalized keys, never re-parse raw metadata. Tests in NEW tests/unit/test_rerank_attr.py: each attribute class, missing -> sentinel, unparseable -> raw + warning, deterministic output. Shares ENRICHMENT with trust-enricher as independent (no dependencies). No registry/config/ranker changes.",
+          "done": "attribute_enricher.py + tests green; normalized keys documented in module docstring."
+        },
+        {
+          "label": "t12-diversity",
+          "owns": "src/openlens/plugins/diversity_reranker.py, tests/unit/test_rerank_diversity.py",
+          "task": "Implement rerank-pack plan Scope/Step 2 only: NEW src/openlens/plugins/diversity_reranker.py DiversityReranker (EXPLANATION stage, optional). Soft per-domain demotion as a diversity ordering signal in the shared 0..1 signals namespace (reuse plugins/_signals.py get/set): signal = 1/(1+prior_same_domain_count) counted in incoming order (first per domain 1.0, then 0.5, 0.33...), so rank-1 is never demoted by diversity alone. Single O(n) dict pass. No hit is ever removed or excluded. Signals only — no private re-sort of context.results. Tests in NEW tests/unit/test_rerank_diversity.py: exact signal values on a hand-built 6-hit list (1.0/0.5/0.33...), rank-1 stability, no removal. No registry/config/ranker changes.",
+          "done": "diversity_reranker.py + exact-value tests green."
+        },
+        {
+          "label": "t12-news",
+          "owns": "src/openlens/plugins/news_reranker.py, tests/unit/test_rerank_news.py",
+          "task": "Implement rerank-pack plan Scope/Step 3 only: NEW src/openlens/plugins/news_reranker.py NewsReranker (EXPLANATION stage, optional; reads enriched attributes from the attribute enricher's documented keys — same-pass RANKING placement is impossible, EXPLANATION is the pinned home). Story grouping over top-K candidates (K=50, configurable): tokenize titles, build word bigrams, bigram->candidate index, union-find merge pairs sharing >=1 bigram with title-token Jaccard >= 0.5 and same normalized published date (or both undated); blocks over 25 candidates left unmerged; hits beyond K get no story_id. Perspective mix weighted by credibility: consume the scoring-pack graded trust signal with trusted-bool fallback (trust absent -> 1.0/0.5 from metadata trusted, else 0.5) — never equal-weight; missing perspective normalizes to 'unknown'. Emits 0..1 perspective ordering signal (most credible member of each perspective per group gets its credibility, other same-perspective members half, ungrouped hits neutral 0.5) plus context.metadata['story_groups'] (group id -> member ids + perspective labels) and per-result metadata['story_id'] (internal only, asserted on SearchContext, NOT API diagnostics). Pure signal functions kept stage-agnostic. Tests in NEW tests/unit/test_rerank_news.py: grouping on near-duplicate titles per the pinned rule, credibility-weighted mix with a distrusted outlier ranked below, story_groups shape on metadata, K-cap behavior, trusted-bool fallback with signals absent. No registry/config/ranker changes.",
+          "done": "news_reranker.py + grouping/credibility tests green; story_groups internal."
+        },
+        {
+          "label": "t12-commerce",
+          "owns": "src/openlens/plugins/commerce_reranker.py, tests/unit/test_rerank_commerce.py",
+          "task": "Implement rerank-pack plan Scope/Step 4 only: NEW src/openlens/plugins/commerce_reranker.py CommerceReranker (EXPLANATION stage, optional; reads enriched attributes from the attribute enricher's documented keys). Budget (max_price filter), location, facilities (facilities: list[str] filter) constraints from request filters (already reserved pass-through by filter-pack T10; consumes them, never validates the schema) + normalized attributes -> commerce ordering signal (satisfied fraction of requested constraints; no constraints requested -> neutral 0.5) with cited reasons ('within your budget', 'matches location'). Price compares only when currencies match (or filter carries no currency); mismatch -> neutral with a reason; location match is case-insensitive equality on normalized value. Constraints unsatisfied -> demote, never exclude. Missing attributes fall back to keyword behavior with a reason saying so. Tests in NEW tests/unit/test_rerank_commerce.py: budget/location/facilities reorder with cited reasons on hand-built hits with price/currency/location metadata, currency mismatch neutral, keyword fallback with reason. No registry/config/ranker changes.",
+          "done": "commerce_reranker.py + constraint tests green; demote-never-exclude."
+        }
+      ]
+    },
+    {
+      "name": "t12-rank",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t12-rank",
+          "owns": "src/openlens/ranking/ranker.py, src/openlens/ranking/profiles.py, configs/ranking.yaml, tests/unit/test_rerank_weights.py",
+          "task": "Implement rerank-pack plan Step 5 (profiles/composite) only, reading the landed reranker modules first (do not change their signal keys: diversity, perspective, commerce). Extend RankingProfile/profile_from_dict/builtins/configs/ranking.yaml with diversity (all modes 0.25), perspective (news 1.0, 0 elsewhere), commerce (shopping/travel 1.5, 0 elsewhere) weights (sequential T11->T12 edits to these shared files; T11 has landed). Composite adds the three terms via get_signal neutral-0.5 defaults (absent signals keep existing orderings unchanged); explanation reasons cite the rerank signals (at most one concise reason per reranker per result). Tests in NEW tests/unit/test_rerank_weights.py: pre-existing ranking tests unchanged, per-mode weight presence, neutral-absent stability. No registry/config/plugin-file changes.",
+          "done": "weights + composite + tests green; existing ranking behavior unchanged."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t12-integrate",
+    "owns": "src/openlens/core/registry.py, configs/default.yaml, tests/unit/test_rerank_pack.py",
+    "task": "Finish rerank-pack: register attribute-enricher, diversity-reranker, news-reranker, commerce-reranker in BUILTIN_PLUGINS (src/openlens/core/registry.py), all shipped disabled (enabled: false) in configs/default.yaml. Write tests/unit/test_rerank_pack.py proving the Goal through the full engine (attribute enricher -> rerankers -> engine Ranker): news query returns grouped stories with credibility-weighted perspective mix; shopping query with budget filter ranks in-budget hits first with cited reasons; repeated runs produce identical context.results id order (determinism: stable sorts, no timestamps/randomness in ordering path); shipped fixture corpus used only for a determinism/diversity smoke check. Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "registry + disabled config entries present; engine-level mode/determinism tests green; full suite + ruff + mypy clean."
+  }
+}
