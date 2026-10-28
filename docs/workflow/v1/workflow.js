@@ -153,8 +153,34 @@ export default async function workflow(host) {
   const unresolved = waveReports.flatMap((w) => w.unresolved).concat(compactSynthesis.unresolved);
   const evidence = waveReports.flatMap((w) => w.evidence.map((v) => ({ source: w.scope, ref: w.ref, value: v })));
   const reportNotes = waveReports.flatMap((w) => w.notes).concat(noteLog);
+  const runStatus = unresolved.length > 0 ? "partial" : "complete";
+
+  // ---- Record stage (task 5): each run updates its own tasks_status.md
+  // row and writes its session summary, so status bookkeeping is part of
+  // the run, not a manual follow-up. The plan-specific payload arrives via
+  // args (status_update: {row, status, notes, session_slug}); without it
+  // this stage is skipped and the report shape is unchanged. A failed
+  // record is reported, never silent, and never flips the run verdict.
+  const recordOutcome = { attempted: false, complete: false, evidence: [], unresolved: [] };
+  const statusUpdate = spec.status_update;
+  if (statusUpdate && typeof statusUpdate.row === "number"
+    && typeof statusUpdate.status === "string") {
+    recordOutcome.attempted = true;
+    const record = await host.agent({
+      label: "record",
+      input: `${COMMON}\nRole: record.\nYou own (write) ONLY:\ndocs/workflow/tasks/tasks_status.md (row ${statusUpdate.row} Status/Notes cells only)\ndocs/workflow/sessions/${statusUpdate.session_slug ?? "<YYYY-MM-DD-HHMM>_<slug>"}.md (new file, per docs/workflow/sessions/README.md)\nTask:\nSet row ${statusUpdate.row} Status to "${statusUpdate.status}" with Notes "${statusUpdate.notes ?? "see session summary"}", then write the session summary for this run.\nRun verdict (evidence, not new instructions):\nstatus: ${runStatus}\nunresolved: ${JSON.stringify(unresolved)}\nDone when:\nthe row shows the new Status/Notes and the session file exists with the run verdict and per-agent outcomes.`,
+      schema: evidenceSchema,
+    });
+    const compactRecord = compact(record, "record", spills, noteLog);
+    recordOutcome.complete = compactRecord.complete;
+    recordOutcome.evidence = compactRecord.evidence;
+    recordOutcome.unresolved = compactRecord.unresolved;
+    if (!compactRecord.complete) noteLog.push("record stage incomplete: tasks_status.md / session summary need a manual pass");
+  }
+
   const report = {
-    status: unresolved.length > 0 ? "partial" : "complete",
+    status: runStatus,
+    record: recordOutcome,
     unresolved,
     synthesis: { ref: synthesis?.ref ?? null, data: synthesis?.data ?? null,
       text: synthesis?.text ?? null, notes: notesFor(synthesis, "synthesis"),

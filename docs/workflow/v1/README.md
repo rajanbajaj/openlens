@@ -29,6 +29,26 @@ skeleton run is:
 Existing specs: `skeleton_spec.json` (backend, with `context.md`),
 `frontend_spec.json` (frontend in `frontend/`, with `frontend_context.md`).
 
+## Record (Task Status Updates)
+
+After synthesis, the runner executes a final `record` stage that updates
+`docs/workflow/tasks/tasks_status.md` and writes the session summary — but
+only when the spec carries the plan-specific payload:
+
+```json
+"status_update": {
+  "row": 5,
+  "status": "Done",
+  "notes": "what landed, with evidence",
+  "session_slug": "2026-10-28-1900_task-5"
+}
+```
+
+The recorder agent owns only that row's Status/Notes cells and the new
+`docs/workflow/sessions/<session_slug>.md` file. Without `status_update`
+the stage is skipped. A failed record is reported in `report.record`
+without flipping the run verdict — bookkeeping never rewrites history.
+
 ## Resume
 
 If a wave fails, relaunch the script with the same spec plus
