@@ -81,14 +81,17 @@ class DiagnosticsSchema(BaseModel):
     provider_latencies_ms: dict[str, float] = Field(default_factory=dict)
     plugin_executions: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    query: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_core(cls, diagnostics: dict[str, Any]) -> "DiagnosticsSchema":
+        query_entry = diagnostics.get("query", {})
         return cls(
             fallback_used=bool(diagnostics.get("fallback_used", False)),
             provider_latencies_ms=dict(diagnostics.get("provider_latencies_ms", {})),
             plugin_executions=list(diagnostics.get("plugin_executions", [])),
             errors=list(diagnostics.get("errors", [])),
+            query=dict(query_entry) if isinstance(query_entry, dict) else {},
         )
 
 

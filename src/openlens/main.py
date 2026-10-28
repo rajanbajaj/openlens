@@ -23,6 +23,7 @@ from openlens.config import load_config
 from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import ConfigError, Engine
 from openlens.providers.manager import ProviderManager
+from openlens.retrieval.query_processor import extract_query_section
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent.parent / "configs" / "default.yaml"
@@ -176,7 +177,13 @@ def build_engine(config: dict[str, Any]) -> SearchEngine:
     providers = [manager.get(name) for name in ordered_names]
     entries = _plugin_entries(config)
     engine = SearchEngine(providers=providers, plugins=[])
-    engine.configure({"plugins": entries, "ranking": _ranking_config(config)})
+    engine.configure(
+        {
+            "plugins": entries,
+            "ranking": _ranking_config(config),
+            "query": extract_query_section(config),
+        }
+    )
     return engine
 
 

@@ -1,0 +1,36 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_query-intelligence_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t9-normalize",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t9-normalize",
+          "owns": "src/openlens/retrieval/query_normalize.py, tests/unit/test_query_intelligence.py",
+          "task": "Implement query-intelligence plan Step 1 only: NEW retrieval/query_normalize.py query-text normalizer (unicode NFKC, casefold, whitespace collapse, punctuation policy) with a fixture test table in NEW tests/unit/test_query_intelligence.py (unicode, mixed case, punctuation-only input, 1000-char input, over-cap input from a direct engine caller). The normalizer enforces its own input bound per config (reject or truncate; never assume the API 1000-char cap). Prove existing parser expectations in tests/unit/test_custom_index.py still pass (or update with written justification). Do NOT touch retrieval/normalizer.py's result-normalizer role. No intent, expansion, engine, config, or API changes.",
+          "done": "query_normalize.py + fixture tests pass incl. over-cap bound; existing parser tests green."
+        }
+      ]
+    },
+    {
+      "name": "t9-intent-expand",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t9-intent-expand",
+          "owns": "src/openlens/retrieval/query_intent.py, src/openlens/retrieval/query_expand.py, src/openlens/retrieval/query_processor.py, tests/unit/test_query_intelligence.py",
+          "task": "Implement query-intelligence plan Steps 2-3 only, on top of the landed query_normalize.py (read its final API first). (a) NEW retrieval/query_intent.py: rule-based intent classifier (navigational/informational/shopping/travel/news) from config-driven keyword sets compiled ONCE at configure() (set/trie lookups, never per-request); pinned intent->mode map (shopping->shopping, travel->travel, news->news, navigational/informational->default; child-safe never suggested); deterministic tie priority documented in the config schema; explicit mode always wins (suggestion recorded separately). (b) NEW retrieval/query_expand.py: synonym/related-term expansion with per-term provenance (source rule/set id per added term), hard cap default <=8 added terms (config-tunable), synonym/intent sets in the stage's own config dict, expansion as a structured term set (never a rewritten query string). (c) NEW retrieval/query_processor.py: standalone QueryProcessor composing normalize->intent->expand, constructed/configured via SearchEngine.configure/build_engine (NOT a PluginRegistry plugin, NOT Pipeline). Fixture-table tests (>=20 queries: normalized form, intent, expansion set, provenance per row; 100% explicit-mode passthrough) extended into tests/unit/test_query_intelligence.py, plus term-cap test. Semantic hooks (embed/classify) stay optional and OFF by default with timeout-bounded calls; no heavy model deps. No engine call-site, no diagnostics/API/config-file changes.",
+          "done": "intent + expansion + QueryProcessor with fixture-table and cap tests green; hooks off by default."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t9-integrate",
+    "owns": "src/openlens/core/engine.py, src/openlens/core/context.py, src/openlens/api/schemas.py, configs/default.yaml",
+    "task": "Implement query-intelligence plan Steps 4-5 (engine call-site + regression). Invoke the QueryProcessor in SearchEngine.search ahead of provider selection, handing expanded terms to providers as the structured set (provider builds OR-of-ANDs MATCH; original terms stay required). Carry expansion provenance into context metadata AND a bounded query entry in SearchContext.diagnostics() (extend diagnostics()/engine response assembly), plus the required api/schemas.py DiagnosticsSchema passthrough touch for that entry. Add the query: config section to configs/default.yaml (normalizer/intent/expansion dicts in the {name, config} shape). Mode-suggestion rules: explicit mode always wins; suggested modes validated against get_profile at startup (unknown impossible by construction). Fix fallout, keep existing parser/normalizer tests green (normalize-then-parse equivalence on seed corpus queries). Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "Engine invokes the stage pre-retrieval; expanded synonym matches docs the unexpanded AND query misses; provenance visible at engine level; full suite + ruff + mypy clean."
+  }
+}

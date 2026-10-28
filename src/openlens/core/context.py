@@ -12,6 +12,26 @@ from typing import Any, Optional
 
 from openlens.core.interfaces import PipelineStage, SearchRequest, SearchResult
 
+#: Cap applied to every list inside the bounded ``query`` diagnostics entry
+#: so provenance can never grow a response payload (added terms are already
+#: capped by the expansion stage; this is the outer display bound).
+QUERY_DIAGNOSTICS_ENTRY_CAP = 16
+
+
+def _bounded_query_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return a display-bounded copy of the ``query`` provenance entry."""
+    bounded = dict(entry)
+    for key in ("base_terms", "added_terms", "reasons"):
+        value = bounded.get(key)
+        if isinstance(value, list):
+            bounded[key] = list(value[:QUERY_DIAGNOSTICS_ENTRY_CAP])
+    provenance = bounded.get("provenance")
+    if isinstance(provenance, dict):
+        bounded["provenance"] = dict(
+            list(provenance.items())[:QUERY_DIAGNOSTICS_ENTRY_CAP]
+        )
+    return bounded
+
 
 @dataclass
 class PluginExecution:
@@ -63,8 +83,13 @@ class SearchContext:
         self.errors.append(message)
 
     def diagnostics(self) -> dict[str, Any]:
-        """Diagnostics payload embedded in SearchResponse."""
-        return {
+        """Diagnostics payload embedded in SearchResponse.
+
+        Carries the bounded ``query`` provenance entry when the engine has
+        recorded one in ``metadata["query"]`` (query-intelligence plan,
+        step 3); ``metadata`` itself is never embedded wholesale.
+        """
+        payload: dict[str, Any] = {
             "fallback_used": self.fallback_used,
             "provider_latencies_ms": dict(self.provider_latencies_ms),
             "plugin_executions": [
@@ -79,3 +104,7 @@ class SearchContext:
             ],
             "errors": list(self.errors),
         }
+        query_entry = self.metadata.get("query")
+        if isinstance(query_entry, dict):
+            payload["query"] = _bounded_query_entry(query_entry)
+        return payload

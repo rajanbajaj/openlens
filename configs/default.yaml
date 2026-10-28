@@ -50,6 +50,40 @@ plugins:
 ranking:
   default_profile: "default"
 
+# Query intelligence (query-intelligence plan, steps 1-4). Consumed by
+# `QueryProcessor.configure` via `SearchEngine.configure` — the standalone
+# pre-retrieval stage (normalize -> intent -> expand), NOT a plugin-registry
+# entry and NOT run inside the post-retrieval pipeline. Shapes mirror the
+# stage-owned dataclasses: `normalizer` {max_length, on_overflow},
+# `intent` {keywords, tie_priority, semantic_*}, `expansion`
+# {synonym_sets, max_added_terms}. Suggested modes are validated against
+# `get_profile` at startup; `child-safe` is never suggested, only explicit.
+query:
+  normalizer:
+    max_length: 1000
+    on_overflow: truncate
+  intent:
+    keywords:
+      navigational: ["login", "signin", "sign in", "signup", "homepage", "official", "website", "portal", "download", "app"]
+      shopping: ["buy", "price", "cheap", "deal", "deals", "shop", "shopping", "dress", "dresses", "shoes", "discount", "coupon", "sale", "store", "order", "under", "best"]
+      travel: ["flight", "flights", "hotel", "hotels", "trip", "travel", "vacation", "booking", "itinerary", "visa", "beach"]
+      news: ["news", "breaking", "headlines", "election", "elections", "results", "today", "latest", "update"]
+      informational: ["how", "what", "why", "when", "who", "explain", "tutorial", "guide", "review", "reviews", "compare"]
+    tie_priority: ["navigational", "shopping", "travel", "news", "informational"]
+    semantic_enabled: false
+    semantic_timeout_s: 1.0
+  expansion:
+    synonym_sets:
+      apparel: ["dress", "dresses", "gown"]
+      footwear: ["shoe", "shoes", "sneaker", "sneakers"]
+      mobile: ["phone", "phones", "smartphone", "mobile"]
+      air-travel: ["flight", "flights", "airfare"]
+      lodging: ["hotel", "hotels", "lodging"]
+      television: ["tv", "television"]
+      computing: ["laptop", "laptops", "notebook"]
+      pricing: ["cheap", "affordable", "budget"]
+    max_added_terms: 8
+
 # Ingestion policies for the polite crawler + incremental indexer
 # (crawler-index plan, step 4). Consumed by `PoliteCrawler.configure()`
 # (and the future indexer `configure()`): unknown keys are rejected
