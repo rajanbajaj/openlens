@@ -5,6 +5,7 @@ import { Button } from './Button.tsx';
 import { Card } from './Card.tsx';
 import { Chip } from './Chip.tsx';
 import { Drawer } from './Drawer.tsx';
+import { GlassPanel } from './GlassPanel.tsx';
 import { Select } from './Select.tsx';
 import { Skeleton } from './Skeleton.tsx';
 import { TextInput } from './TextInput.tsx';
@@ -111,6 +112,43 @@ describe('ui primitives', () => {
       'true',
     );
     expect(screen.getByTestId('panel')).toHaveTextContent('body');
+  });
+
+  it('GlassPanel renders hero glass by default like a Card container', () => {
+    render(<GlassPanel data-testid="panel">hello</GlassPanel>);
+    const panel = screen.getByTestId('panel');
+    expect(panel).toHaveClass('ol-glass', 'ol-glass-hero');
+    expect(panel).toHaveTextContent('hello');
+  });
+
+  it('GlassPanel selects the frosted surface per variant', () => {
+    render(
+      <>
+        <GlassPanel variant="header" data-testid="header">
+          h
+        </GlassPanel>
+        <GlassPanel variant="sidebar" data-testid="sidebar">
+          s
+        </GlassPanel>
+        <GlassPanel variant="rail" data-testid="rail">
+          r
+        </GlassPanel>
+      </>,
+    );
+    expect(screen.getByTestId('header')).toHaveClass('ol-glass', 'ol-glass-header');
+    expect(screen.getByTestId('sidebar')).toHaveClass('ol-glass', 'ol-glass-sidebar');
+    expect(screen.getByTestId('rail')).toHaveClass('ol-glass', 'ol-glass-rail');
+  });
+
+  it('GlassPanel merges className and forwards extra props', () => {
+    render(
+      <GlassPanel variant="sidebar" className="extra" data-testid="panel" role="complementary">
+        body
+      </GlassPanel>,
+    );
+    const panel = screen.getByTestId('panel');
+    expect(panel).toHaveClass('ol-glass', 'ol-glass-sidebar', 'extra');
+    expect(panel).toHaveAttribute('role', 'complementary');
   });
 
   it('Badge renders an inline label', () => {

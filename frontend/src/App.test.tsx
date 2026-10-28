@@ -45,6 +45,11 @@ function mockFetchOnce(payload: unknown, ok = true) {
 
 async function runShoppingSearch() {
   render(<App />);
+  // Empty-state shell: hero mounted, exactly one search form, sidebar mounted.
+  expect(screen.getByTestId('search-hero')).toBeInTheDocument();
+  expect(screen.queryByTestId('search-header')).not.toBeInTheDocument();
+  expect(screen.getAllByRole('search')).toHaveLength(1);
+  expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText(/search query/i), {
     target: { value: 'wireless headphones' },
   });
@@ -53,14 +58,23 @@ async function runShoppingSearch() {
   fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
 }
 
+async function waitForResults() {
+  await waitFor(() => {
+    expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+  });
+  // Post-search shell: sticky header replaces the hero; one form stays mounted.
+  expect(screen.queryByTestId('search-hero')).not.toBeInTheDocument();
+  expect(screen.getByTestId('search-header')).toHaveAttribute('role', 'banner');
+  expect(screen.getAllByRole('search')).toHaveLength(1);
+  expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
+}
+
 describe('App wiring', () => {
   it('shopping-mode query renders results, applied filters, and diagnostics', async () => {
     const fetchStub = mockFetchOnce(SHOPPING_ENVELOPE);
     await runShoppingSearch();
 
-    await waitFor(() => {
-      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
-    });
+    await waitForResults();
     expect(screen.getByText(/showing 1 of 1 result/i)).toBeInTheDocument();
     expect(screen.getByTestId('applied-filters')).toHaveTextContent(
       'Applied filters: user-restrictions, safety-filter, privacy-filter',
@@ -83,6 +97,18 @@ describe('App wiring', () => {
     expect(screen.getByTestId('diagnostics-fallback')).toHaveTextContent('Live');
   });
 
+  it('renders the sticky header (not the hero) once the first search runs', async () => {
+    mockFetchOnce(SHOPPING_ENVELOPE);
+    await runShoppingSearch();
+    await waitForResults();
+    // The header keeps the query + mode visible while results scroll beneath.
+    expect(screen.getByLabelText(/search query/i)).toHaveDisplayValue('wireless headphones');
+    expect(screen.getByLabelText(/search mode/i)).toHaveValue('shopping');
+    expect(screen.getByTestId('result-announcer')).toHaveTextContent(
+      '1 result for “wireless headphones”',
+    );
+  });
+
   it('renders the error envelope instead of crashing when the backend fails', async () => {
     mockFetchOnce({ error: { code: 'validation_error', message: 'query must not be blank' } });
     await runShoppingSearch();
@@ -92,6 +118,9 @@ describe('App wiring', () => {
     });
     expect(screen.getByTestId('error-state')).toHaveTextContent('validation_error');
     expect(screen.queryByLabelText(/search results/i)).not.toBeInTheDocument();
+    // The failed search still collapses the hero into the sticky header.
+    expect(screen.queryByTestId('search-hero')).not.toBeInTheDocument();
+    expect(screen.getByTestId('search-header')).toHaveAttribute('role', 'banner');
   });
 
   it('renders an error state when the backend is unreachable', async () => {

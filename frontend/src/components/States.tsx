@@ -1,14 +1,20 @@
 import type { ErrorDetail } from '../api/types';
+import { Card } from './ui/Card.tsx';
 import { Skeleton } from './ui/Skeleton.tsx';
 
 export type ErrorStateProps = ErrorDetail;
 
-/** Empty-result state shown when a successful search returns zero hits. */
+/**
+ * Empty-result state shown when a successful search returns zero hits.
+ * Solid card surface, matching the result cards it replaces.
+ */
 export function EmptyResults() {
   return (
-    <p role="status" data-testid="empty-results">
-      No results found. Try a different query or change the filters.
-    </p>
+    <Card>
+      <p role="status" data-testid="empty-results">
+        No results found. Try a different query or change the filters.
+      </p>
+    </Card>
   );
 }
 
@@ -27,27 +33,35 @@ export const ERROR_TITLES: Record<string, string> = {
   unknown_error: 'Search failed',
 };
 
-/** Error-envelope state: plain-language title plus the backend message. */
+/**
+ * Error-envelope state: plain-language title plus the backend message,
+ * on the same solid card surface as results.
+ */
 export function ErrorState({ code, message }: ErrorStateProps) {
   return (
-    <div role="alert" data-testid="error-state">
+    <Card role="alert" data-testid="error-state">
       <h3>{ERROR_TITLES[code] ?? 'Search failed'}</h3>
       <p>{message}</p>
       <p className="ol-result-meta" data-testid="error-code">
         Error code: {code}
       </p>
-    </div>
+    </Card>
   );
 }
 
-/** Loading state shown while a search request is in flight. */
+/**
+ * Loading state shown while a search request is in flight: a live
+ * status line plus placeholder bars shaped like incoming cards.
+ */
 export function LoadingState() {
   return (
     <>
       <p role="status" data-testid="loading-state">
         Searching…
       </p>
-      <Skeleton bars={3} />
+      <Card>
+        <Skeleton bars={6} />
+      </Card>
     </>
   );
 }

@@ -114,3 +114,68 @@ describe('ResultCard transparency', () => {
     expect(screen.getByTestId('result-warnings')).toHaveTextContent('trust: unknown domain');
   });
 });
+
+describe('ResultCard hierarchy', () => {
+  it('demotes commerce and understanding lines to secondary meta text', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    expect(screen.getByTestId('result-snippet')).not.toHaveClass('ol-result-meta');
+    expect(screen.getByTestId('result-attributes')).toHaveClass('ol-result-meta');
+    expect(screen.getByTestId('result-understanding')).toHaveClass('ol-result-meta');
+    expect(screen.getByTestId('result-meta')).toHaveClass('ol-result-meta');
+  });
+
+  it('renders signals in display order with labelled bars', () => {
+    const result: SearchResult = {
+      ...RICH_RESULT,
+      metadata: { ...RICH_RESULT.metadata, signals: { trust: 0.55, relevance: 1 } },
+    };
+    render(<ResultCard result={result} />);
+    fireEvent.click(screen.getByRole('button', { name: /show score breakdown/i }));
+    const breakdown = screen.getByTestId('result-breakdown');
+    const items = within(breakdown)
+      .getAllByRole('term')
+      .map((term) => term.textContent);
+    expect(items.indexOf('relevance')).toBeLessThan(items.indexOf('trust'));
+    expect(within(breakdown).getByRole('img', { name: 'relevance signal 1' })).toBeInTheDocument();
+    expect(within(breakdown).getByRole('img', { name: 'trust signal 0.55' })).toBeInTheDocument();
+  });
+
+  it('renders no AI chrome at all without an AI summary', () => {
+    render(<ResultCard result={{ ...RICH_RESULT, metadata: {} }} />);
+    const card = screen.getByTestId('result-card');
+    expect(card).not.toHaveTextContent('AI summary');
+    expect(card).not.toHaveTextContent('Sources:');
+    expect(card).not.toHaveTextContent('AI-generated content');
+    expect(card).not.toHaveTextContent('Understood as');
+  });
+
+  it('keeps the reasons disclosure free of warning styling', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    fireEvent.click(screen.getByRole('button', { name: /show reasons/i }));
+    const reasons = screen.getByTestId('result-reasons');
+    expect(reasons).toHaveTextContent('matches query');
+    expect(reasons.parentElement).not.toHaveClass('ol-warnings');
+  });
+});
+
+describe('ResultCard disclosures', () => {
+  it.each([
+    [/show score breakdown/i, 'result-breakdown'],
+    [/show reasons/i, 'result-reasons'],
+    [/show warnings/i, 'result-warnings'],
+  ] as const)('exposes %s as a keyboard-operable disclosure for %s', (name, testId) => {
+    render(<ResultCard result={RICH_RESULT} />);
+    const toggle = screen.getByRole('button', { name });
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    const controls = toggle.getAttribute('aria-controls');
+    expect(controls).not.toBeNull();
+
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId(testId)).toHaveAttribute('id', controls);
+  });
+});

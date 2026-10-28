@@ -48,6 +48,20 @@
   --ol-radius-m: 6px;
   --ol-radius-l: 8px;
   --ol-shadow: 0 1px 2px rgb(28 39 51 / 0.08);
+
+  /* Glass (frosted chrome: sticky header, hero, sidebar, rail only) */
+  --ol-glass-wash: rgb(255 255 255 / 0.72);
+  --ol-glass-wash-strong: rgb(255 255 255 / 0.88);
+  --ol-glass-wash-well: rgb(241 245 249 / 0.66);
+  --ol-glass-fallback: #f8fafc;
+  --ol-glass-fallback-strong: #ffffff;
+  --ol-glass-fallback-well: #eef2f7;
+  --ol-glass-blur-s: 8px;
+  --ol-glass-blur-m: 12px;
+  --ol-glass-blur-l: 20px;
+  --ol-glass-border: rgb(148 163 184 / 0.45);
+  --ol-glass-shadow: 0 1px 2px rgb(28 39 51 / 0.08), 0 8px 24px rgb(28 39 51 / 0.08);
+  --ol-glass-shadow-l: 0 2px 6px rgb(28 39 51 / 0.1), 0 16px 40px rgb(28 39 51 / 0.12);
 }
 
 *,
@@ -64,6 +78,27 @@ body {
   background: var(--ol-paper);
 }
 
+/* ---- Backdrop wash (makes the frosted chrome read as glass) ----
+ * Frosted panels are near-white translucency; over a flat white page
+ * the blur has nothing to refract and the glass looks painted on.
+ * This fixed wash lays desaturated slate/teal tints behind the content
+ * so panel edges refract visible variation. Static by construction
+ * (no animation, hence reduced-motion safe), pointer-transparent, and
+ * kept behind content via isolation on the shell. Text-bearing glass
+ * washes stay near-white so AA pairs are unaffected.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(52rem 30rem at 12% -6%, rgb(15 118 110 / 0.1), transparent 62%),
+    radial-gradient(46rem 28rem at 88% 4%, rgb(51 65 85 / 0.12), transparent 60%),
+    radial-gradient(60rem 36rem at 50% 108%, rgb(15 118 110 / 0.07), transparent 65%);
+}
+
 /* Visible keyboard focus everywhere; never remove without replacement. */
 :focus-visible {
   outline: 2px solid var(--ol-accent);
@@ -76,6 +111,7 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  isolation: isolate;
 }
 
 .ol-header {
@@ -427,5 +463,187 @@ body {
   .ol-search-form {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* ---- Frosted glass chrome (selective: header, hero, sidebar, rail) ----
+ * Solid fallback washes render by default; translucency + blur apply only
+ * where backdrop-filter is supported. Result bodies stay solid.
+ */
+
+.ol-glass {
+  background: var(--ol-glass-fallback);
+  border: 1px solid var(--ol-line);
+  box-shadow: var(--ol-shadow);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass {
+    background: var(--ol-glass-wash);
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-m));
+    backdrop-filter: blur(var(--ol-glass-blur-m));
+    border-color: var(--ol-glass-border);
+    box-shadow: var(--ol-glass-shadow);
+  }
+}
+
+.ol-glass-hero {
+  border-radius: var(--ol-radius-l);
+  padding: var(--ol-space-l) var(--ol-space-xl);
+  background: var(--ol-glass-fallback-strong);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass-hero {
+    background: var(--ol-glass-wash-strong);
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-l));
+    backdrop-filter: blur(var(--ol-glass-blur-l));
+    box-shadow: var(--ol-glass-shadow-l);
+  }
+}
+
+.ol-glass-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass-header {
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-s));
+    backdrop-filter: blur(var(--ol-glass-blur-s));
+  }
+}
+
+.ol-glass-sidebar {
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-m);
+}
+
+.ol-glass-rail {
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-m) var(--ol-space-l);
+  background: var(--ol-glass-fallback-well);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass-rail {
+    background: var(--ol-glass-wash-well);
+  }
+}
+
+/* ---- Workspace shell grid (sidebar / results / rail) ----
+ * Base is the 360px single column; 768px adds the sidebar column and
+ * drops the rail below; 1280px opens the full three-column workspace.
+ */
+
+.ol-app-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'sidebar'
+    'results'
+    'rail';
+  gap: var(--ol-space-m);
+  align-items: start;
+  width: 100%;
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: var(--ol-space-l);
+}
+
+.ol-shell-sidebar {
+  grid-area: sidebar;
+  min-width: 0;
+}
+
+.ol-shell-results {
+  grid-area: results;
+  min-width: 0;
+}
+
+.ol-shell-rail {
+  grid-area: rail;
+  min-width: 0;
+}
+
+.ol-app-shell-collapsed {
+  grid-template-areas:
+    'results'
+    'rail';
+}
+
+.ol-app-shell-collapsed > .ol-shell-sidebar {
+  display: none;
+}
+
+@media (max-width: 22.5rem) {
+  .ol-app-shell {
+    padding: var(--ol-space-m);
+    gap: var(--ol-space-s);
+  }
+
+  .ol-glass-hero {
+    padding: var(--ol-space-m);
+  }
+
+  .ol-glass-rail {
+    padding: var(--ol-space-m);
+  }
+}
+
+@media (min-width: 48rem) {
+  .ol-app-shell {
+    grid-template-columns: 14rem minmax(0, 1fr);
+    grid-template-areas:
+      'sidebar results'
+      'rail rail';
+    max-width: 72rem;
+  }
+
+  .ol-app-shell-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'results'
+      'rail';
+  }
+}
+
+@media (min-width: 80rem) {
+  .ol-app-shell {
+    grid-template-columns: 15rem minmax(0, 1fr) 19rem;
+    grid-template-areas: 'sidebar results rail';
+    max-width: 80rem;
+  }
+
+  .ol-app-shell-collapsed {
+    grid-template-columns: minmax(0, 1fr) 19rem;
+    grid-template-areas: 'results rail';
+  }
+}
+
+/* ---- Short disclosure transitions ----
+ * No transitions by default: reduced-motion users get instant state
+ * changes. Only brief fades on disclosure + rail surfaces otherwise.
+ */
+
+@media (prefers-reduced-motion: no-preference) {
+  .ol-transition-fade {
+    transition: opacity 150ms ease;
+  }
+
+  .ol-transition-panel {
+    transition:
+      opacity 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease;
+  }
+
+  .ol-transition-rail {
+    transition: opacity 180ms ease;
   }
 }

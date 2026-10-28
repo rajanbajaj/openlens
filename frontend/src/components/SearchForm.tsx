@@ -13,11 +13,15 @@ export interface SearchFormProps {
   externalError?: string | null;
   /** Disables the input and submit button while a search is in flight. */
   disabled?: boolean;
+  /** Extra class merged onto the form for hero vs compact-header contexts. */
+  className?: string;
 }
 
 /**
  * Query input with client-side validation (non-blank, ≤1000 chars).
  * Validation failures render inline and never reach `onSubmit`.
+ * Mounted once per page — either in the empty-state hero or in the
+ * post-search sticky header — so its input/error ids stay unique.
  */
 export default function SearchForm({
   value,
@@ -25,6 +29,7 @@ export default function SearchForm({
   onSubmit,
   externalError = null,
   disabled = false,
+  className,
 }: SearchFormProps) {
   const validationError = validateQuery(value);
   const error = (value.length === 0 ? null : validationError) ?? externalError;
@@ -41,7 +46,7 @@ export default function SearchForm({
     <form
       role="search"
       aria-label="OpenLens search"
-      className="ol-search-form"
+      className={className ? `ol-search-form ${className}` : 'ol-search-form'}
       onSubmit={handleSubmit}
       noValidate
     >

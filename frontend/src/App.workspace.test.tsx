@@ -51,6 +51,10 @@ async function submitQuery() {
   fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
 }
 
+function mockPagedEnvelope() {
+  return mockFetchEnvelope({ ...BASE_ENVELOPE, total: 25 });
+}
+
 describe('search workspace', () => {
   it('sends advanced panel filters and offers removable chips', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
@@ -154,4 +158,80 @@ describe('search workspace', () => {
     expect(screen.queryByTestId('diagnostics-request-id')).not.toBeInTheDocument();
     expect(screen.queryByTestId('diagnostics-query')).not.toBeInTheDocument();
   });
+
+  it('mounts the shell grid: sidebar filters, results column, lazy rail', async () => {
+    mockFetchEnvelope(BASE_ENVELOPE);
+    render(<App />);
+    // Sidebar mount is labelled and present before the first search.
+    const sidebar = screen.getByTestId('sidebar-mount');
+    expect(sidebar).toHaveAttribute('aria-label', 'Search filters');
+    expect(sidebar.tagName).toBe('ASIDE');
+    await submitQueryRerun();
+    expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
+    expect(screen.getByLabelText(/search results/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
+    expect(screen.getByTestId('diagnostics-panel')).toBeInTheDocument();
+  });
+
+  it('paginates server-side with limit-bound offsets', async () => {
+    const fetchStub = mockPagedEnvelope();
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 1 of 3');
+    expect(screen.getByRole('button', { name: /^previous$/i })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^next$/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 2 of 3');
+    });
+    const [, nextInit] = fetchStub.mock.calls[1] as [string, RequestInit];
+    const nextBody = JSON.parse(nextInit.body as string) as Record<string, unknown>;
+    expect(nextBody.offset).toBe(10);
+    expect(nextBody.limit).toBe(10);
+    expect(screen.getByTestId('result-announcer')).toHaveTextContent(
+      '25 results for “wireless headphones”',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^previous$/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 1 of 3');
+    });
+    const [, prevInit] = fetchStub.mock.calls[2] as [string, RequestInit];
+    const prevBody = JSON.parse(prevInit.body as string) as Record<string, unknown>;
+    expect(prevBody.offset).toBe(0);
+  });
+
+  it('leaves focus on a live node (never a detached one) across result updates', async () => {
+    mockPagedEnvelope();
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+    });
+    const next = screen.getByRole('button', { name: /^next$/i });
+    next.focus();
+    fireEvent.click(next);
+    await waitFor(() => {
+      expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 2 of 3');
+    });
+    // The paged-out button unmounts mid-load; focus must land on the
+    // document (or another mounted node), never on the removed button.
+    expect(document.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(next);
+    expect(screen.getByTestId('result-announcer')).toHaveTextContent(
+      '25 results for “wireless headphones”',
+    );
+  });
 });
+
+/** Fill the hero form and submit — used when the shell needs pre-search asserts first. */
+async function submitQueryRerun() {
+  fireEvent.change(screen.getByLabelText(/search query/i), {
+    target: { value: 'wireless headphones' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
+  await waitFor(() => {
+    expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+  });
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resultAiDigest } from './enrichments.ts';
-import { isErrorEnvelope, isSearchResponse } from './guard.ts';
+import { isCacheStatus, isDiagnostics, isErrorEnvelope, isSearchResponse } from './guard.ts';
 import type { SearchResponse } from './types.ts';
 
 /**
@@ -207,6 +207,44 @@ describe('real backend response envelope fixture', () => {
   it('parses a real error envelope via the error guard, not the success guard', () => {
     expect(isErrorEnvelope(REAL_ERROR_ENVELOPE)).toBe(true);
     expect(isSearchResponse(REAL_ERROR_ENVELOPE)).toBe(false);
+  });
+
+  it('accepts cache hit/miss/error, empty, and absent cache diagnostics', () => {
+    const base = REAL_BACKEND_ENVELOPE as unknown as Record<string, unknown>;
+    const diagnostics = base['diagnostics'] as Record<string, unknown>;
+    for (const cache of [
+      { status: 'hit' },
+      { status: 'miss' },
+      { status: 'error' },
+      {},
+      undefined,
+    ]) {
+      expect(isDiagnostics({ ...diagnostics, cache })).toBe(true);
+      expect(
+        isSearchResponse(
+          cache === undefined ? base : { ...base, diagnostics: { ...diagnostics, cache } },
+        ),
+      ).toBe(true);
+    }
+    // The rail badge reads `diagnostics.cache.status` only after this guard.
+    const hit: unknown = { ...base, diagnostics: { ...diagnostics, cache: { status: 'hit' } } };
+    expect(isSearchResponse(hit)).toBe(true);
+    if (!isSearchResponse(hit)) return;
+    expect(hit.diagnostics.cache?.status).toBe('hit');
+  });
+
+  it('validates the cache-status guard against malformed values', () => {
+    expect(isCacheStatus({ status: 'hit' })).toBe(true);
+    expect(isCacheStatus({ status: 'miss' })).toBe(true);
+    expect(isCacheStatus({ status: 'error' })).toBe(true);
+    expect(isCacheStatus({})).toBe(true);
+    expect(isCacheStatus({ status: 42 })).toBe(false);
+    expect(isCacheStatus('hit')).toBe(false);
+    expect(isCacheStatus(null)).toBe(false);
+    const base = REAL_BACKEND_ENVELOPE as unknown as Record<string, unknown>;
+    const diagnostics = base['diagnostics'] as Record<string, unknown>;
+    expect(isDiagnostics({ ...diagnostics, cache: { status: 42 } })).toBe(false);
+    expect(isDiagnostics({ ...diagnostics, cache: 'hit' })).toBe(false);
   });
 
   it('rejects malformed payloads on both guards', () => {

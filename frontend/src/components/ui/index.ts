@@ -8,6 +8,8 @@ export { Chip } from './Chip.tsx';
 export type { ChipProps } from './Chip.tsx';
 export { Drawer } from './Drawer.tsx';
 export type { DrawerProps } from './Drawer.tsx';
+export { GlassPanel } from './GlassPanel.tsx';
+export type { GlassPanelProps, GlassPanelVariant } from './GlassPanel.tsx';
 export { Select } from './Select.tsx';
 export type { SelectOption, SelectProps } from './Select.tsx';
 export { Skeleton } from './Skeleton.tsx';

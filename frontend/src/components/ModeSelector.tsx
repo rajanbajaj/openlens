@@ -11,6 +11,8 @@ export interface ModeSelectorProps {
   onChange: (mode: SearchMode) => void;
   /** Disables the selector while a search is in flight. */
   disabled?: boolean;
+  /** Extra class on the wrapper for hero vs compact-header contexts. */
+  className?: string;
 }
 
 function isSearchMode(value: string): value is SearchMode {
@@ -20,18 +22,27 @@ function isSearchMode(value: string): value is SearchMode {
 /**
  * Mode selector for the search request (`default`, `child-safe`,
  * `news`, `shopping`, `travel`). Controlled by the parent, which
- * forwards the selection as `mode` in the request body.
+ * forwards the selection as `mode` in the request body. Mounted once
+ * per page — either in the empty-state hero or in the post-search
+ * sticky header, reusing the same component.
  */
-export default function ModeSelector({ mode, onChange, disabled = false }: ModeSelectorProps) {
+export default function ModeSelector({
+  mode,
+  onChange,
+  disabled = false,
+  className,
+}: ModeSelectorProps) {
   return (
-    <Select
-      label="Search mode"
-      value={mode}
-      disabled={disabled}
-      options={SEARCH_MODES.map((option) => ({ value: option, label: option }))}
-      onChange={(value) => {
-        if (isSearchMode(value)) onChange(value);
-      }}
-    />
+    <div className={className}>
+      <Select
+        label="Search mode"
+        value={mode}
+        disabled={disabled}
+        options={SEARCH_MODES.map((option) => ({ value: option, label: option }))}
+        onChange={(value) => {
+          if (isSearchMode(value)) onChange(value);
+        }}
+      />
+    </div>
   );
 }

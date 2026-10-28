@@ -23,6 +23,7 @@ function parseList(raw: string): string[] {
  * Federation preferences (T13): include/exclude sets plus an optional
  * primary provider. Suggestions come only from providers the backend
  * has actually reported — the UI never invents provider names.
+ * Rendered as a sidebar section; labels and the datalist id are stable.
  */
 export function ProviderPrefsControl({
   value,

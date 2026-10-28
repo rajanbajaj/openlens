@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isSearchResponse, isSearchResult } from './guard.ts';
 import {
   resultAiCitations,
   resultAiDigest,
@@ -123,6 +124,46 @@ describe('enrichment readers', () => {
       { id: 'r1', title: 'Kept', url: null },
       { id: 'r2', title: 'Blank Url', url: null },
     ]);
+  });
+
+  it('reads fixtures that pass guard.ts validation end to end', () => {
+    const result: unknown = {
+      id: 'r1',
+      title: 'Acme Headphones',
+      snippet: 'Great sound',
+      original_score: 0.9,
+      final_score: 0.95,
+      url: 'https://example.com/h',
+      provider: 'mock',
+      reasons: ['matches query'],
+      warnings: [],
+      metadata: RICH_METADATA,
+    };
+    expect(isSearchResult(result)).toBe(true);
+    if (!isSearchResult(result)) return;
+    expect(resultSignals(result.metadata)).toEqual([
+      ['relevance', 1],
+      ['trust', 0.55],
+      ['freshness', 0.5],
+    ]);
+    expect(resultStoryId(result.metadata)).toBe('story-2');
+    expect(resultAiDigest(result.metadata)?.model).toBe('rule-based');
+
+    const envelope: unknown = {
+      query: 'wireless headphones',
+      mode: 'shopping',
+      results: [result],
+      total: 1,
+      applied_filters: ['user-restrictions'],
+      diagnostics: {
+        fallback_used: false,
+        provider_latencies_ms: { mock: 12.5 },
+        plugin_executions: [],
+        errors: [],
+        cache: { status: 'miss' },
+      },
+    };
+    expect(isSearchResponse(envelope)).toBe(true);
   });
 
   it('summarizes plugin executions with unknown-tolerant fallbacks', () => {

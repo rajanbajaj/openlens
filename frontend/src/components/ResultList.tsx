@@ -40,7 +40,11 @@ export function groupByStory(results: SearchResult[]): StoryGroup[] {
   return groups;
 }
 
-/** Ordered result list with story-group headers and a pre-pagination total. */
+/**
+ * Ordered result list with a pre-pagination total and story-group
+ * headers for multi-hit stories. Single hits render as plain cards —
+ * no group chrome — and group order follows first appearance.
+ */
 export function ResultList({ results, total }: ResultListProps) {
   if (results.length === 0) {
     return <EmptyResults />;

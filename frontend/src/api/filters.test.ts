@@ -70,6 +70,32 @@ describe('user filter mapper', () => {
     expect(filters).toEqual({ must_not_terms: ['sponsored', 'advertisement'] });
   });
 
+  it('emits only known backend keys on a fully populated state', () => {
+    const filters = buildFilters({
+      ...EMPTY_FILTER_STATE,
+      excludeSponsored: true,
+      maxPrice: '250',
+      location: 'Berlin',
+      facilities: 'wifi, pool',
+      preferSuffix: 'trust',
+      blockedDomain: 'example.com',
+      allowedDomain: 'trusted.example',
+      mustNotTerm: 'advertisement',
+    });
+    expect(filters).toEqual({
+      max_price: 250,
+      location: 'Berlin',
+      facilities: 'wifi, pool',
+      prefer_trust: true,
+      blocked_domains: ['example.com'],
+      allowed_domains: ['trusted.example'],
+      must_not_terms: ['sponsored', 'advertisement'],
+    });
+    for (const key of Object.keys(filters)) {
+      expect(isKnownFilterKey(key)).toBe(true);
+    }
+  });
+
   it('recognizes every owned and reserved backend key', () => {
     for (const key of [...OWNED_FILTER_KEYS, ...RESERVED_FILTER_KEYS, 'prefer_trust']) {
       expect(isKnownFilterKey(key)).toBe(true);

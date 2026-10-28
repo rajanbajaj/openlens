@@ -11,10 +11,11 @@ export interface FilterToggleProps {
  * Single filter toggle. The parent maps the state into the request
  * `filters` dict via `buildFilters` (`api/filters.ts`), which emits
  * only backend-owned keys — the toggle itself knows no wire keys.
+ * Renders as one sidebar row; the accessible name stays stable.
  */
 export default function FilterToggle({ checked, onChange, disabled = false }: FilterToggleProps) {
   return (
-    <label>
+    <label className="ol-filter-toggle">
       <input
         type="checkbox"
         aria-label="Exclude sponsored"
