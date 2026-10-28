@@ -340,6 +340,26 @@ def test_providers_health_build_failure_is_nonzero(
     assert "Traceback" not in capsys.readouterr().err
 
 
+def test_cache_purge_clears_configured_backend(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli, "load_app_config", lambda path=None: {"cache": {"backend": "memory"}}
+    )
+    assert cli.main(["cache", "purge"]) == 0
+    assert "purged 0 cached entries" in capsys.readouterr().out
+
+
+def test_cache_purge_reports_disabled_cache(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli, "load_app_config", lambda path=None: {"cache": {"enabled": False}}
+    )
+    assert cli.main(["cache", "purge"]) == 0
+    assert "nothing to purge" in capsys.readouterr().out
+
+
 def test_module_entrypoint_help_exits_zero() -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "openlens.cli", "--help"],

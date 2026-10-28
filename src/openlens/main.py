@@ -23,12 +23,18 @@ from fastapi.responses import PlainTextResponse, Response
 
 from openlens.api.errors import register_exception_handlers
 from openlens.api.routes import router as search_router
+from openlens.cache.factory import (
+    DEFAULT_TTL_S,
+    build_cache_provider,
+    validate_cache_section,
+)
 from openlens.config import load_config
 from openlens.core.context import SearchContext
 from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import (
     ConfigError,
     Engine,
+    ProviderError,
     SearchRequest,
     SearchResponse,
 )
@@ -348,7 +354,35 @@ def build_engine(config: dict[str, Any]) -> SearchEngine:
             effective = {**config, "models": section}
     manager = ProviderManager.from_config(_manager_section(effective))
     entries = _plugin_entries(effective)
-    engine = SearchEngine.from_manager(manager, plugins=[])
+    cache_section = validate_cache_section(effective.get("cache", None))
+    cache_ttl_s = cache_section.get("ttl_s", DEFAULT_TTL_S)
+    cache_provider = None
+    if cache_section.get("enabled", True):
+        if cache_section.get("backend", "memory") == "sqlite":
+            sqlite_cfg = cache_section.get("sqlite", {})
+            if isinstance(sqlite_cfg, dict):
+                cache_path = sqlite_cfg.get("path")
+                if (
+                    isinstance(cache_path, str)
+                    and cache_path
+                    and cache_path != ":memory:"
+                ):
+                    _ensure_parent_dir(cache_path)
+        try:
+            # Absent section means memory defaults (cache on). Malformed
+            # values raise ConfigError here via the factory validators.
+            cache_provider = build_cache_provider(cache_section or None)
+        except ProviderError as exc:
+            if exc.code == ProviderError.UNAVAILABLE:
+                stdlib_logging.getLogger("openlens.cache").warning(
+                    "cache backend unavailable (%s); continuing uncached", exc
+                )
+                cache_provider = None
+            else:
+                raise
+    engine = SearchEngine.from_manager(
+        manager, plugins=[], cache=cache_provider, cache_ttl_s=cache_ttl_s
+    )
     engine_config: dict[str, Any] = {
         "plugins": entries,
         "ranking": _ranking_config(effective),

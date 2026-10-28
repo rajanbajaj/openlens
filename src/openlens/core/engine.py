@@ -6,6 +6,15 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from openlens.cache.base import (
+    BACKEND_ERROR,
+    HIT,
+    MISS,
+    CacheProvider,
+    build_cache_key,
+    restore_cached_page,
+    serialize_cached_page,
+)
 from openlens.core.context import SearchContext
 from openlens.core.interfaces import (
     ConfigError,
@@ -113,6 +122,8 @@ class SearchEngine(Engine):
         ranker: Ranker | None = None,
         manager: ProviderManager | None = None,
         model_manager: ModelManager | None = None,
+        cache: CacheProvider | None = None,
+        cache_ttl_s: int = 120,
     ) -> None:
         if manager is not None and providers:
             raise ConfigError(
@@ -120,6 +131,9 @@ class SearchEngine(Engine):
             )
         self._manager = manager
         self._model_manager = model_manager
+        self._cache = cache
+        self._cache_ttl_s = cache_ttl_s
+        self._ranking_profile = "default"
         self._providers = list(providers)
         plugin_list = list(plugins)
         if self._model_manager is not None:
@@ -138,10 +152,17 @@ class SearchEngine(Engine):
         plugins: list[Any] | tuple[Any, ...] = (),
         ranker: Ranker | None = None,
         model_manager: ModelManager | None = None,
+        cache: CacheProvider | None = None,
+        cache_ttl_s: int = 120,
     ) -> "SearchEngine":
         """Build an engine that delegates provider selection to ``manager``."""
         return cls(
-            plugins=plugins, ranker=ranker, manager=manager, model_manager=model_manager
+            plugins=plugins,
+            ranker=ranker,
+            manager=manager,
+            model_manager=model_manager,
+            cache=cache,
+            cache_ttl_s=cache_ttl_s,
         )
 
     @property
@@ -212,6 +233,7 @@ class SearchEngine(Engine):
             effective_entries, model_manager=self._model_manager
         )
         self._pipeline = Pipeline(plugins)
+        self._ranking_profile = default_profile
         self._ranker = Ranker({"profile": default_profile}, profiles=profiles)
         # Standalone pre-retrieval stage: absent ``query:`` section means
         # code defaults. Raises ConfigError on a malformed section.
@@ -355,6 +377,61 @@ class SearchEngine(Engine):
             merged = merged[:limit]
         return merged
 
+    def invalidate_cache(self) -> None:
+        """Drop every cached entry; backend failures are swallowed (fail open)."""
+        if self._cache is None:
+            return
+        try:
+            self._cache.clear()
+        except Exception:  # noqa: BLE001 — cache must never fail requests
+            return
+
+    def _provider_names(self) -> list[str]:
+        if self._manager is not None:
+            return list(self._manager.provider_names)
+        return sorted({provider.name for provider in self._providers})
+
+    def _cache_lookup(self, key: str, context: SearchContext) -> bool:
+        """Serve a cached page into ``context``; True on usable hit.
+
+        Every backend failure degrades to a miss and is recorded, never
+        raised: the cache fails open by construction.
+        """
+        if self._cache is None:
+            return False
+        try:
+            raw = self._cache.get(key)
+        except Exception:  # noqa: BLE001 — cache must never fail requests
+            context.metadata["cache"] = {"status": BACKEND_ERROR}
+            return False
+        if raw is None:
+            context.metadata["cache"] = {"status": MISS}
+            return False
+        restored = restore_cached_page(raw)
+        if restored is None:
+            context.metadata["cache"] = {"status": MISS}
+            return False
+        results, total, applied_filters = restored
+        context.results = results
+        context.applied_filters = applied_filters
+        context.metadata["cache"] = {"status": HIT}
+        context.metadata["cache_total"] = total
+        return True
+
+    def _cache_store(self, key: str, context: SearchContext, total: int) -> None:
+        if self._cache is None:
+            return
+        try:
+            self._cache.set(
+                key,
+                serialize_cached_page(
+                    list(context.results), total, list(context.applied_filters)
+                ),
+                self._cache_ttl_s,
+            )
+        except Exception:  # noqa: BLE001 — cache must never fail requests
+            context.metadata["cache"] = {"status": BACKEND_ERROR}
+
     def search(self, request: SearchRequest) -> SearchResponse:
         # Pre-retrieval query stage: normalize -> intent -> expand ahead of
         # provider selection. Explicit mode always wins (the processor
@@ -377,21 +454,53 @@ class SearchEngine(Engine):
         )
         context = SearchContext(request=provider_request)
         context.metadata["query"] = _query_entry(processed)
-        hits = self._retrieve(fetch_request, context)
-        hits = self._merge_expansion_hits(fetch_request, context, processed, hits)
-        # Defensive: providers must init final_score to original_score, but
-        # never let a zero final_score wipe out a real provider signal.
-        for hit in hits:
-            if hit.final_score == 0.0 and hit.original_score != 0.0:
-                hit.final_score = hit.original_score
-        context.results = list(hits)
+        # Post-filter cache hook (the single hook point): the cached value
+        # is the final post-explanation ranked list, so cached entries can
+        # never bypass mandatory filtering. The key carries the normalized
+        # query, effective mode, restriction filters, provider prefs and
+        # set, ranking profile, and fetch depth.
+        cache_key: str | None = None
+        cache_hit = False
+        if self._cache is not None:
+            prefs = request.provider_prefs
+            cache_key = build_cache_key(
+                normalized_query=processed.normalized,
+                mode=processed.effective_mode,
+                filters=dict(request.filters),
+                provider_prefs=(
+                    {
+                        "include": list(prefs.include),
+                        "exclude": list(prefs.exclude),
+                        "primary": prefs.primary,
+                    }
+                    if prefs is not None
+                    else None
+                ),
+                provider_names=self._provider_names(),
+                ranking_profile=self._ranking_profile,
+                fetch_limit=fetch_request.limit,
+            )
+            cache_hit = self._cache_lookup(cache_key, context)
+        if cache_hit:
+            total = int(context.metadata.get("cache_total", len(context.results)))
+        else:
+            hits = self._retrieve(fetch_request, context)
+            hits = self._merge_expansion_hits(fetch_request, context, processed, hits)
+            # Defensive: providers must init final_score to original_score, but
+            # never let a zero final_score wipe out a real provider signal.
+            for hit in hits:
+                if hit.final_score == 0.0 and hit.original_score != 0.0:
+                    hit.final_score = hit.original_score
+            context.results = list(hits)
 
-        # Mandatory-plugin failures propagate: fail closed, never leak
-        # unfiltered results.
-        context = self._pipeline.run(context)
-        context = self._ranker.run(context)
-        context = assemble_explanations(context)
-        total = len(context.results)
+            # Mandatory-plugin failures propagate: fail closed, never leak
+            # unfiltered results.
+            context = self._pipeline.run(context)
+            context = self._ranker.run(context)
+            context = assemble_explanations(context)
+            total = len(context.results)
+            if cache_key is not None and self._cache is not None:
+                self._cache_store(cache_key, context, total)
         page = context.results[
             provider_request.offset : provider_request.offset + provider_request.limit
         ]

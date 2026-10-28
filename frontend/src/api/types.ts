@@ -80,6 +80,14 @@ export interface Diagnostics {
   query?: QueryProvenance;
   /** Opaque request id for log correlation (T15); empty when unset. */
   request_id?: string;
+  /** Cache lookup outcome (T21: "hit" | "miss" | "error"); absent when uncached. */
+  cache?: CacheStatus;
+}
+
+/** Cache lookup outcome reported in diagnostics (T21). */
+export interface CacheStatus {
+  /** "hit" | "miss" | "error"; absent on uncached responses (`cache: {}`). */
+  status?: string;
 }
 
 /** POST /api/v1/search response body. */

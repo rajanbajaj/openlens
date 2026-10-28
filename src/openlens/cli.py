@@ -111,6 +111,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_sub.set_defaults(func=_cmd_config_validate)
 
+    cache_cmd = commands.add_parser("cache", help="Manage the search-result cache.")
+    cache_sub = cache_cmd.add_subparsers(dest="cache_command", required=True)
+    purge_sub = cache_sub.add_parser(
+        "purge",
+        help=(
+            "Drop every cached entry from the configured backend. "
+            "In-process memory caches of running servers are unaffected "
+            "(restart or wait out the TTL); sqlite/redis backends purge "
+            "for every process."
+        ),
+    )
+    purge_sub.set_defaults(func=_cmd_cache_purge)
+
     providers_cmd = commands.add_parser(
         "providers", help="Inspect configured search providers."
     )
@@ -263,6 +276,34 @@ def _cmd_config_validate(args: argparse.Namespace) -> int:
         print(f"error: invalid config '{label}': {exc}", file=sys.stderr)
         return FAILURE_EXIT
     print(f"config OK: {label}")
+    return 0
+
+
+def _cmd_cache_purge(args: argparse.Namespace) -> int:  # noqa: ARG001
+    from openlens.cache.factory import build_cache_provider, validate_cache_section
+
+    try:
+        config = load_app_config()
+    except Exception as exc:
+        print(f"error: cannot load config: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    try:
+        section = validate_cache_section(config.get("cache", None))
+        provider = build_cache_provider(section or None)
+    except Exception as exc:
+        print(f"error: cannot build cache backend: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    if provider is None:
+        print("cache disabled (cache.enabled: false); nothing to purge")
+        return 0
+    try:
+        removed = provider.clear()
+    except Exception as exc:
+        print(f"error: cache purge failed: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    finally:
+        provider.close()
+    print(f"purged {removed} cached entr{'y' if removed == 1 else 'ies'}")
     return 0
 
 

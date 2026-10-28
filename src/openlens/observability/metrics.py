@@ -48,6 +48,7 @@ _PROVIDER_ERRORS_METRIC = "openlens_provider_errors_total"
 _PLUGIN_LATENCY_SUM_METRIC = "openlens_plugin_latency_ms_sum"
 _PLUGIN_LATENCY_COUNT_METRIC = "openlens_plugin_latency_ms_count"
 _PLUGIN_STATUS_METRIC = "openlens_plugin_executions_total"
+_CACHE_METRIC = "openlens_cache_total"
 
 
 def escape_label_value(value: str) -> str:
@@ -111,6 +112,7 @@ class MetricsRegistry:
         self._plugin_latency_sum: dict[tuple[str, str], float] = {}
         self._plugin_latency_count: dict[tuple[str, str], int] = {}
         self._plugin_status: dict[tuple[str, str, str], int] = {}
+        self._cache: dict[str, int] = {}
 
     @property
     def enabled(self) -> bool:
@@ -139,6 +141,7 @@ class MetricsRegistry:
             self._plugin_latency_sum = {}
             self._plugin_latency_count = {}
             self._plugin_status = {}
+            self._cache = {}
 
     def observe(self, diagnostics: dict[str, Any]) -> None:
         """Record one search from a ``SearchResponse.diagnostics`` payload.
@@ -227,6 +230,11 @@ class MetricsRegistry:
         self._requests_total[status_label] = (
             self._requests_total.get(status_label, 0) + 1
         )
+        cache_entry = diagnostics.get("cache", {})
+        if isinstance(cache_entry, dict):
+            outcome = cache_entry.get("status")
+            if outcome in ("hit", "miss", "error"):
+                self._cache[outcome] = self._cache.get(outcome, 0) + 1
         for provider in providers:
             if provider not in self._provider_errors:
                 self._provider_errors.setdefault(provider, 0)
@@ -252,6 +260,7 @@ class MetricsRegistry:
                 dict(self._plugin_latency_sum),
                 dict(self._plugin_latency_count),
                 dict(self._plugin_status),
+                dict(self._cache),
             )
         (
             requests_total,
@@ -262,6 +271,7 @@ class MetricsRegistry:
             plugin_sum,
             plugin_count,
             plugin_status,
+            cache,
         ) = snapshot
         if (
             not requests_total
@@ -269,6 +279,7 @@ class MetricsRegistry:
             and not plugin_sum
             and not plugin_status
             and not provider_errors
+            and not cache
         ):
             return ""
         lines: list[str] = []
@@ -359,6 +370,17 @@ class MetricsRegistry:
                     f"{_PLUGIN_STATUS_METRIC}"
                     f"{format_labels({'plugin': plugin, 'stage': stage, 'status': status})} "  # noqa: E501
                     f"{plugin_status[(plugin, stage, status)]}"
+                )
+        if cache:
+            lines.append(
+                f"# HELP {_CACHE_METRIC} "
+                "Cache lookups by outcome (hit, miss, or backend error)."
+            )
+            lines.append(f"# TYPE {_CACHE_METRIC} counter")
+            for outcome in sorted(cache):
+                lines.append(
+                    f"{_CACHE_METRIC}{format_labels({'status': outcome})} "
+                    f"{cache[outcome]}"
                 )
         return "\n".join(lines) + "\n"
 

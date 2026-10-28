@@ -119,4 +119,7 @@ class SearchContext:
         query_entry = self.metadata.get("query")
         if isinstance(query_entry, dict):
             payload["query"] = _bounded_query_entry(query_entry)
+        cache_entry = self.metadata.get("cache")
+        if isinstance(cache_entry, dict):
+            payload["cache"] = {"status": str(cache_entry.get("status", "miss"))}
         return payload

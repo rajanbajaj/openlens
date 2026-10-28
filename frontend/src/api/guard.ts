@@ -5,6 +5,7 @@
  */
 
 import type {
+  CacheStatus,
   Diagnostics,
   ErrorEnvelope,
   ProviderPrefs,
@@ -76,8 +77,14 @@ export function isDiagnostics(value: unknown): value is Diagnostics {
     isOptionalNumberRecord(value.provider_result_counts) &&
     isOptionalNumberRecord(value.provider_costs_estimated) &&
     (value.query === undefined || isQueryProvenance(value.query)) &&
-    (value.request_id === undefined || typeof value.request_id === 'string')
+    (value.request_id === undefined || typeof value.request_id === 'string') &&
+    (value.cache === undefined || isCacheStatus(value.cache))
   );
+}
+
+export function isCacheStatus(value: unknown): value is CacheStatus {
+  if (!isRecord(value)) return false;
+  return value.status === undefined || typeof value.status === 'string';
 }
 
 export function isProviderPrefs(value: unknown): value is ProviderPrefs {

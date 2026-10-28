@@ -14,6 +14,11 @@ dependencies = [
   "opensearch-py>=2",
 ]
 
+[project.optional-dependencies]
+# Cache backends (task 21). Drivers stay lazy: a default install imports
+# neither. Task 19 adds the mysql/postgres storage extras alongside this.
+redis = ["redis>=5"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

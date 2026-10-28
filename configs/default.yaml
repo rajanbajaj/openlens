@@ -176,6 +176,23 @@ indexing:
   user_agent: "OpenLensBot/1.0"
   respect_robots: true
 
+# Search-result cache (caching-audit plan). `cache.backend` is the single
+# switch (`memory` | `sqlite` | `redis`, default `memory`); `enabled: false`
+# turns caching off. Exactly one pipeline hook caches the final ranked
+# list post-filtering, so safety can never be bypassed; TTL bounds
+# staleness (cross-process index writes rely on TTL expiry), `cache purge`
+# drops everything manually. Missing/unreachable drivers warn and run
+# uncached, never crash boot.
+cache:
+  enabled: true
+  backend: memory
+  ttl_s: 120
+  max_entries: 1000
+  sqlite:
+    path: "data/openlens-cache.db"
+  redis:
+    url: "${OPENLENS_REDIS_URL:-redis://localhost:6379/0}"
+
 # Observability (observability-cli plan, step 4). Consumed by
 # `openlens.main.create_app`: `logging.level` selects the stdlib level
 # for the per-request JSON search log (default INFO; the raw query text
