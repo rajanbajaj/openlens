@@ -1,0 +1,42 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1243_db-connectors_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t17-base",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t17-base",
+          "owns": "src/openlens/storage/base.py, src/openlens/storage/repository.py, tests/unit/test_storage_base.py",
+          "task": "Implement db-connectors plan Step 1 only. FIRST read docs/workflow/tasks/tasks_status.md row 8 (Done): T8 already landed delete/content_hash/URL-hash indexes/500-chunking on SQLite — PORT that implementation into the contract, never re-implement it. Write NEW src/openlens/storage/base.py: ABC (match core/interfaces.py ABC style, not Protocol) with exactly the SQLite signatures — add_document/add_documents (chunked, default 500 per transaction, total returned, no cross-chunk atomicity promised), delete(doc_id)->bool (True iff removed, missing is not an error), get, search(fts_query, limit=10, offset=0)->(hits, total), count, close. Make SQLite DocumentRepository the reference implementation: keep FTS5 -bm25 ranking byte-identical, add WAL mode (PRAGMA journal_mode=WAL) + bounded busy_timeout at schema init (T17 solely owns WAL/pools per D1; the lock stays), keep transactions short. Document.metadata round-trips as parsed dicts (JSON text column). Write tests/unit/test_storage_base.py conformance suite (add/upsert/get/search-page+total/count/delete/close; delete removes documents+FTS rows, missing->False, upsert-overwrite visible exactly once). Adapt existing repository callers' tests only if the interface requires it (no behavior change). No MySQL/Postgres modules, no config selection, no provider wiring.",
+          "done": "base.py ABC + SQLite reference (WAL on, delete ported) + conformance suite green."
+        }
+      ]
+    },
+    {
+      "name": "t17-connectors",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t17-mysql",
+          "owns": "src/openlens/storage/mysql_backend.py, tests/integration/test_storage_mysql.py",
+          "task": "Implement db-connectors plan Step 2 only, reading the landed src/openlens/storage/base.py first (implement the ABC exactly, do not reshape it). NEW src/openlens/storage/mysql_backend.py: same contract over MySQL. Schema setup creates PK + FULLTEXT index on title/content (assert via SHOW INDEX in review, not just behavior). Config-driven connection (host/port/db/user/password via env through load_config conventions); driver LAZY-imported inside the constructor path so the module imports cleanly without the driver installed (instantiation without driver raises ProviderError UNAVAILABLE, never ImportError/raw driver exceptions); connection failure at construction -> ProviderError(UNAVAILABLE). Bounded pool or per-operation connections with explicit limits — do NOT copy SQLite's single-connection+global-lock; close() releases everything. Lossy FTS translation documented in the module docstring (MySQL MATCH..AGAINST semantics). Tests in NEW tests/integration/test_storage_mysql.py: the Step-1 conformance suite against MySQL when OPENLENS_TEST_MYSQL_DSN is set, clean skip with reason otherwise; isolated store (temp schema/database), seed:false equivalent (no fixture seeding through this path); lazy-import assertion (module imports without driver); connection-failure ProviderError mapping. No base.py changes, no config-file wiring, no provider changes.",
+          "done": "mysql_backend.py + env-gated conformance green-or-clean-skip; lazy import proven."
+        },
+        {
+          "label": "t17-pg",
+          "owns": "src/openlens/storage/postgres_backend.py, tests/integration/test_storage_postgres.py",
+          "task": "Implement db-connectors plan Step 3 only, reading the landed src/openlens/storage/base.py first (implement the ABC exactly, do not reshape it). NEW src/openlens/storage/postgres_backend.py: same contract over Postgres. Schema setup creates PK + tsvector column + GIN index (assert via EXPLAIN/pg_indexes in review, not just behavior). Config-driven connection via env through load_config; driver LAZY-imported (module imports cleanly without driver; instantiation without driver -> ProviderError UNAVAILABLE); connection failure at construction -> ProviderError(UNAVAILABLE). Bounded pool or per-operation connections — no single-connection+global-lock copy; close() releases everything. Metadata as JSONB (or text with parsed-dict conformance). Lossy to_tsquery translation documented in the module docstring. Tests in NEW tests/integration/test_storage_postgres.py: Step-1 conformance when OPENLENS_TEST_PG_DSN is set, clean skip otherwise; isolated store; lazy-import + error-mapping assertions. No base.py changes, no config-file wiring, no provider changes.",
+          "done": "postgres_backend.py + env-gated conformance green-or-clean-skip."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t17-integrate",
+    "owns": "src/openlens/providers/custom_index.py, src/openlens/main.py, configs/default.yaml, tests/unit/test_storage_config.py",
+    "task": "Implement db-connectors plan Step 4: backend selection + lifecycle. Add top-level storage: section (storage.backend: sqlite|mysql|postgres default sqlite + per-backend connection fields) to configs/default.yaml; storage.backend is the single switch and provider-entry db_path becomes the SQLite backend's field (back-compat: default boots with no storage: section at all). Wire selection into CustomIndexProvider (src/openlens/providers/custom_index.py) so configure closes the previous repository before opening the new backend (fixes the leaked connection in the plan baseline); main.py parent-dir pre-creation follows the new section. Tests in NEW tests/unit/test_storage_config.py: unknown backend -> ConfigError; unreachable-but-configured -> ProviderError UNAVAILABLE at construction; unconfigured-backend driver never imported (sys.modules assertion); SQLite default boots with no storage: section. Manual proof (offline): storage.backend at sqlite with a temp db_path, index the fixture corpus (seed:false, isolated store), run identical queries and confirm document id sets; uv run python -c imports of both backend modules succeed without drivers installed. List (do not make) the contracts-owner requests: pyproject optional extras (mysql, postgres) + CI MySQL/Postgres service containers + README config-table edit. Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/unit/test_storage_base.py tests/unit/test_storage_config.py tests/integration/test_storage_mysql.py tests/integration/test_storage_postgres.py -q (BOTH modes: DSNs unset -> clean skips + no driver import; and note server-backend runs need reachable DBs), then UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src, UV_CACHE_DIR=/tmp/uv-cache uv run pip-audit --progress-spinner=off.",
+    "done": "storage.backend switch wired with lifecycle fix; config tests green; full suite + ruff + mypy + pip-audit clean; manual id-set proof done on sqlite."
+  }
+}

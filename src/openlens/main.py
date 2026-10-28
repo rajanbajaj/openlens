@@ -47,6 +47,57 @@ DEFAULT_MODELS_PATH = DEFAULT_CONFIG_PATH.parent / "models.yaml"
 _PROVIDER_RESERVED = ("strategy", "primary", "fallback", "enabled")
 
 
+def _storage_section(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the normalized top-level `storage:` section ({} when absent).
+
+    The `storage.backend` key is the single backend switch
+    (`sqlite` | `mysql` | `postgres`, default `sqlite`); per-backend
+    connection fields live under `storage.sqlite` / `storage.mysql` /
+    `storage.postgres`. Raises ConfigError on malformed sections or
+    unknown backend names so boot fails loudly at startup.
+    """
+    from openlens.providers.custom_index import SUPPORTED_BACKENDS
+
+    section = config.get("storage", None)
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ConfigError("Config section 'storage' must be a mapping.")
+    backend = section.get("backend", "sqlite")
+    if not isinstance(backend, str) or backend not in SUPPORTED_BACKENDS:
+        raise ConfigError(
+            f"Unknown storage backend {backend!r}. "
+            f"Supported: {sorted(SUPPORTED_BACKENDS)}. Startup validation failed."
+        )
+    for key in ("sqlite", "mysql", "postgres"):
+        subsection = section.get(key, None)
+        if subsection is not None and not isinstance(subsection, dict):
+            raise ConfigError(
+                f"Config section 'storage.{key}' must be a mapping. "
+                "Startup validation failed."
+            )
+    return dict(section)
+
+
+def _sqlite_db_path(storage: dict[str, Any]) -> str | None:
+    """Resolve the SQLite file path from `storage.sqlite` (or None)."""
+    if storage.get("backend", "sqlite") != "sqlite":
+        return None
+    sqlite_cfg = storage.get("sqlite", {})
+    if not isinstance(sqlite_cfg, dict):
+        return None
+    db_path = sqlite_cfg.get("db_path")
+    if isinstance(db_path, str) and db_path and db_path != ":memory:":
+        return db_path
+    return None
+
+
+def _ensure_parent_dir(db_path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
 def _candidate_config_paths(path: str | Path | None) -> list[Path]:
     """Ordered config locations: explicit path, $OPENLENS_CONFIG, source tree, CWD.
 
@@ -146,6 +197,10 @@ def _manager_section(config: dict[str, Any]) -> dict[str, Any]:
     names: list[str] | None = None
     if isinstance(enabled_list, list):
         names = [str(n) for n in enabled_list]
+    # The top-level `storage:` section is the single backend switch for
+    # custom_index providers: forward it into each such entry (an entry
+    # that already carries its own `storage:` mapping keeps it).
+    storage = config.get("storage", None)
     normalized: dict[str, Any] = {}
     for key, value in section.items():
         if key in STRATEGY_SECTION_KEYS:
@@ -156,6 +211,12 @@ def _manager_section(config: dict[str, Any]) -> dict[str, Any]:
             entry = dict(value)
             if names is not None:
                 entry.setdefault("enabled", key in names)
+            if (
+                storage is not None
+                and "storage" not in entry
+                and entry.get("type", key) == "custom_index"
+            ):
+                entry["storage"] = storage
             normalized[key] = entry
         else:
             raise ConfigError(
@@ -263,18 +324,23 @@ def build_engine(config: dict[str, Any]) -> SearchEngine:
     """
     if not isinstance(config, dict) or not config:
         raise ConfigError("Cannot build engine: config is empty or not a mapping.")
+    # Validate the `storage:` section first so an unknown backend or a
+    # malformed section fails loudly at startup, before any provider boots.
+    storage = _storage_section(config)
     # SQLite file backends need their directory to exist before the provider
     # constructs its store; create it here so boot never fails on a fresh
-    # checkout (data/ is gitignored by design).
+    # checkout (data/ is gitignored by design). The `storage.sqlite.db_path`
+    # field is honored first, then the legacy provider-entry `db_path`.
+    sqlite_path = _sqlite_db_path(storage)
+    if sqlite_path is not None:
+        _ensure_parent_dir(sqlite_path)
     section = config.get("providers", {})
     if isinstance(section, dict):
         for entry in section.values():
             if isinstance(entry, dict):
                 db_path = entry.get("db_path")
                 if isinstance(db_path, str) and db_path not in (":memory:", ""):
-                    parent = os.path.dirname(os.path.abspath(db_path))
-                    if parent:
-                        os.makedirs(parent, exist_ok=True)
+                    _ensure_parent_dir(db_path)
     effective = config
     if "models" not in effective:
         section = _load_models_section(DEFAULT_CONFIG_PATH)

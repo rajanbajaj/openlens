@@ -37,6 +37,34 @@ providers:
     timeout_s: 5
     verify_certs: true
 
+# Document store backend selection (db-connectors plan, step 4).
+# `storage.backend` is the single switch (`sqlite` | `mysql` |
+# `postgres`, default `sqlite`); the provider-entry `db_path` above keeps
+# working as the SQLite backend's field, so a config with no `storage:`
+# section at all still boots SQLite. Connection fields resolve
+# `${ENV_VAR}` / `${VAR:-default}` via `load_config`. Server backends
+# need their optional extras (`pip install openlens[mysql]` /
+# `openlens[postgres]`); drivers lazy-import, so unconfigured backends
+# add no import-time dependency.
+storage:
+  backend: sqlite
+  sqlite:
+    db_path: "data/openlens.db"
+  mysql:
+    host: "${OPENLENS_MYSQL_HOST:-localhost}"
+    port: "${OPENLENS_MYSQL_PORT:-3306}"
+    database: "${OPENLENS_MYSQL_DATABASE:-openlens}"
+    user: "${OPENLENS_MYSQL_USER:-root}"
+    password: "${OPENLENS_MYSQL_PASSWORD:-}"
+    table: "documents"
+  postgres:
+    host: "${OPENLENS_PG_HOST:-localhost}"
+    port: "${OPENLENS_PG_PORT:-5432}"
+    dbname: "${OPENLENS_PG_DBNAME:-openlens}"
+    user: "${OPENLENS_PG_USER:-postgres}"
+    password: "${OPENLENS_PG_PASSWORD:-}"
+    table: "documents"
+
 # Pipeline plugins, toggled without core edits. Entries are
 # `{name, enabled, config?}` resolved via the plugin registry.
 # The three mandatory FILTERING plugins run in the mandated order

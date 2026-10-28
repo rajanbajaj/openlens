@@ -13,8 +13,12 @@ import threading
 from typing import Any, Optional
 
 from openlens.core.interfaces import Document, ProviderError
+from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
 
 _PROVIDER_NAME = "custom_index"
+
+#: Bounded wait for the SQLite write lock before surfacing UNAVAILABLE.
+_BUSY_TIMEOUT_MS = 5000
 
 
 def content_hash_of(content: str) -> str:
@@ -35,8 +39,11 @@ def normalize_url(url: Optional[str]) -> Optional[str]:
     return url.strip().lower().rstrip("/")
 
 
-class DocumentRepository:
-    """Persist and search documents via SQLite FTS5."""
+class DocumentRepository(DocumentStore):
+    """Persist and search documents via SQLite FTS5.
+
+    Reference implementation of ``storage/base.py::DocumentStore``.
+    """
 
     def __init__(self, db_path: str = ":memory:") -> None:
         # check_same_thread=False + a lock: the API serves requests from a
@@ -44,6 +51,7 @@ class DocumentRepository:
         # startup. All access is serialized through the lock, which is the
         # documented safe pattern for sqlite3.
         self._lock = threading.Lock()
+        self._closed = False
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -57,6 +65,17 @@ class DocumentRepository:
 
     def _init_schema(self) -> None:
         with self._lock:
+            # WAL mode so readers don't block the single writer; the lock
+            # stays (it is the documented safe pattern for a shared
+            # sqlite3 handle) but is held for milliseconds, not batch
+            # durations. PRAGMAs run before any transaction opens.
+            # (On :memory: databases journal_mode stays "memory": harmless.)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            # S608 is a false positive here: the only interpolated value
+            # is the integer module constant above, never user input.
+            self._conn.execute(  # noqa: S608
+                f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}"
+            )
             self._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS documents (
@@ -114,43 +133,58 @@ class DocumentRepository:
     def add_document(self, doc: Document) -> None:
         self.add_documents([doc])
 
-    def add_documents(self, docs: list[Document]) -> int:
-        try:
-            with self._lock, self._conn:
-                for doc in docs:
-                    metadata = json.dumps(doc.metadata or {})
-                    # S608 is a false positive here: every value below is a
-                    # bound ? parameter; no user input is interpolated.
-                    self._conn.execute(
-                        "INSERT OR REPLACE INTO documents "  # noqa: S608
-                        + "(id, title, content, url, metadata,"
-                        " content_hash, url_norm)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            doc.id,
-                            doc.title,
-                            doc.content,
-                            doc.url,
-                            metadata,
-                            content_hash_of(doc.content),
-                            normalize_url(doc.url),
-                        ),
-                    )
-                    self._conn.execute(
-                        "DELETE FROM documents_fts WHERE doc_id = ?", (doc.id,)
-                    )
-                    self._conn.execute(
-                        "INSERT INTO documents_fts (doc_id, title, content)"
-                        " VALUES (?, ?, ?)",
-                        (doc.id, doc.title, doc.content),
-                    )
-        except sqlite3.Error as exc:
-            raise ProviderError(
-                f"failed to index documents: {exc}",
-                provider_name=_PROVIDER_NAME,
-                code=ProviderError.UNAVAILABLE,
-            ) from exc
-        return len(docs)
+    def add_documents(
+        self, docs: list[Document], chunk_size: int = DEFAULT_CHUNK_SIZE
+    ) -> int:
+        """Index documents, one transaction per ``chunk_size`` chunk.
+
+        Returns the total indexed. Each chunk commits independently; no
+        cross-chunk atomicity is promised.
+        """
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        total = 0
+        for start in range(0, len(docs), chunk_size):
+            chunk = docs[start : start + chunk_size]
+            try:
+                with self._lock, self._conn:
+                    for doc in chunk:
+                        metadata = json.dumps(doc.metadata or {})
+                        # S608 is a false positive here: every value below
+                        # is a bound ? parameter; no user input is
+                        # interpolated.
+                        self._conn.execute(
+                            "INSERT OR REPLACE INTO documents "  # noqa: S608
+                            + "(id, title, content, url, metadata,"
+                            " content_hash, url_norm)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                doc.id,
+                                doc.title,
+                                doc.content,
+                                doc.url,
+                                metadata,
+                                content_hash_of(doc.content),
+                                normalize_url(doc.url),
+                            ),
+                        )
+                        self._conn.execute(
+                            "DELETE FROM documents_fts WHERE doc_id = ?",
+                            (doc.id,),
+                        )
+                        self._conn.execute(
+                            "INSERT INTO documents_fts (doc_id, title, content)"
+                            " VALUES (?, ?, ?)",
+                            (doc.id, doc.title, doc.content),
+                        )
+            except sqlite3.Error as exc:
+                raise ProviderError(
+                    f"failed to index documents: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+            total += len(chunk)
+        return total
 
     def update_document(self, doc: Document) -> bool:
         """Rewrite a document (and its FTS row) by id. False when missing."""
@@ -189,7 +223,7 @@ class DocumentRepository:
             ) from exc
         return True
 
-    def delete_document(self, doc_id: str) -> bool:
+    def delete(self, doc_id: str) -> bool:
         """Remove a document and its FTS row. False when missing."""
         try:
             with self._lock, self._conn:
@@ -208,6 +242,10 @@ class DocumentRepository:
                 code=ProviderError.UNAVAILABLE,
             ) from exc
         return True
+
+    def delete_document(self, doc_id: str) -> bool:
+        """Alias of :meth:`delete` (kept for the indexing flows)."""
+        return self.delete(doc_id)
 
     def get_hash(self, doc_id: str) -> Optional[str]:
         """Return the stored content hash, or None when missing/unmigrated."""
@@ -302,6 +340,9 @@ class DocumentRepository:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()
 
 
