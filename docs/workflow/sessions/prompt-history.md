@@ -123,3 +123,27 @@ oldest first. Source: session JSONL logs; see `sessions/README.md`.
 2. read docs to build your context. We want to continue with todo list in tasks_status.md. Every task you will give a brief and ask for approval before implementing anything
 3. approved
 4. commit and next brief
+5. approved
+6. let's do the caching audit first after commiting. give me brief.
+7. approved
+8. commit
+9. brief
+10. use workflow.js flow to implement
+11. have we implemented citations?
+12. yes add this to a todo plan
+13. implement it using workflow
+14. commit
+15. update license.md according to meta models use and meta ai developer hackathon policies.
+16. commit
+17. delete LISCENSE.md approved
+18. list pending tasks
+19. E + []
+20. Run set -o pipefail
+21. Run set -o pipefail
+22. let's skip this forever. mark as skipped
+23. commit. what's next in list?
+24. mark 19 as skipped and review if 5 is already implemented then ci is green for this
+25. let's implement task 5 first
+26. approve
+27. commit
+28. i am about to close this session. let's do the worklow work pre-shutdown to log session and chat histroy

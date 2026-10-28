@@ -28,6 +28,26 @@ curl -X POST http://127.0.0.1:8000/api/v1/search \
   -d '{"query": "red shoes", "mode": "shopping", "limit": 10}'
 ```
 
+## Frontend
+
+Requires Node.js 20 and npm. From `frontend/`:
+
+```bash
+npm ci
+npm run dev
+```
+
+The dev server talks to the backend at `VITE_OPENLENS_API_URL`
+(default `http://localhost:8000`, so boot the API first); production
+builds use same-origin `/api/` instead:
+
+```bash
+VITE_OPENLENS_API_URL=http://127.0.0.1:8000 npm run dev
+```
+
+Other commands (all from `frontend/`): `npm test` (vitest),
+`npm run lint`, `npm run format:check`, `npm run build` (`tsc` + vite).
+
 ## Run the tests
 
 ```bash
