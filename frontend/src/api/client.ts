@@ -7,7 +7,7 @@
  */
 
 import { isErrorEnvelope, isSearchResponse } from './guard.ts';
-import type { SearchRequest, SearchResponse } from './types.ts';
+import type { ProviderPrefs, SearchRequest, SearchResponse } from './types.ts';
 
 /**
  * Dev fallback when `VITE_OPENLENS_API_URL` is unset and the app runs
@@ -35,6 +35,7 @@ export interface SearchOptions {
   limit?: number;
   offset?: number;
   filters?: Record<string, unknown>;
+  providerPrefs?: ProviderPrefs | null;
 }
 
 /**
@@ -56,13 +57,17 @@ export function validateQuery(query: string): string | null {
  * `offset: 0`, `filters: {}`) for omitted fields.
  */
 export function buildSearchBody(options: SearchOptions): SearchRequest {
-  return {
+  const body: SearchRequest = {
     query: options.query,
     mode: options.mode ?? 'default',
     limit: options.limit ?? DEFAULT_LIMIT,
     offset: options.offset ?? 0,
     filters: options.filters ?? {},
   };
+  if (options.providerPrefs !== undefined && options.providerPrefs !== null) {
+    body.provider_prefs = options.providerPrefs;
+  }
+  return body;
 }
 
 /** Machine-readable API failure raised by {@link searchLens}. */

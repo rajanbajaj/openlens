@@ -1,14 +1,431 @@
+/* OpenLens design tokens + application styles (Task 18, step 1).
+ *
+ * Light enterprise theme: white workspace, slate ink, deep teal accent.
+ * Every surface below consumes the --ol-* tokens; no hardcoded palette
+ * values outside :root.
+ */
+
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+
+  /* Ink + paper */
+  --ol-paper: #ffffff;
+  --ol-well: #f1f5f9;
+  --ol-ink: #1c2733;
+  --ol-ink-soft: #3d4c5e;
+  --ol-line: #cbd5e1;
+
+  /* Accent (deep teal): white-on-accent clears WCAG AA at normal sizes. */
+  --ol-accent: #0f766e;
+  --ol-accent-strong: #0b5f59;
+  --ol-on-accent: #ffffff;
+  --ol-accent-wash: #e6f4f1;
+
+  /* Status */
+  --ol-error: #b91c1c;
+  --ol-error-wash: #fdecec;
+  --ol-warn: #92600a;
+  --ol-warn-wash: #fdf3e0;
+  --ol-ok: #166534;
+  --ol-ok-wash: #e8f5ec;
+
+  /* Type */
+  --ol-font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ol-font-size-s: 0.8125rem;
+  --ol-font-size-m: 1rem;
+  --ol-font-size-l: 1.25rem;
+  --ol-font-size-xl: 1.5rem;
+
+  /* Space */
+  --ol-space-xs: 0.25rem;
+  --ol-space-s: 0.5rem;
+  --ol-space-m: 1rem;
+  --ol-space-l: 1.5rem;
+  --ol-space-xl: 2.5rem;
+
+  /* Shape + elevation */
+  --ol-radius-s: 4px;
+  --ol-radius-m: 6px;
+  --ol-radius-l: 8px;
+  --ol-shadow: 0 1px 2px rgb(28 39 51 / 0.08);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
+  font-family: var(--ol-font);
+  font-size: var(--ol-font-size-m);
+  color: var(--ol-ink);
+  background: var(--ol-paper);
 }
 
-main {
-  max-width: 48rem;
+/* Visible keyboard focus everywhere; never remove without replacement. */
+:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
+/* ---- App shell ---- */
+
+.ol-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.ol-header {
+  border-bottom: 1px solid var(--ol-line);
+  background: var(--ol-paper);
+}
+
+.ol-header-inner {
+  max-width: 64rem;
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: var(--ol-space-m) var(--ol-space-l);
+  display: flex;
+  align-items: baseline;
+  gap: var(--ol-space-m);
+}
+
+.ol-brand {
+  margin: 0;
+  font-size: var(--ol-font-size-xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.ol-brand-sub {
+  margin: 0;
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-workspace {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: var(--ol-space-l);
+  width: 100%;
+}
+
+/* ---- Search form ---- */
+
+.ol-search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ol-space-s);
+  align-items: flex-end;
+}
+
+.ol-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-xs);
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+}
+
+.ol-field-grow {
+  flex: 1 1 16rem;
+}
+
+.ol-input,
+.ol-select {
+  font: inherit;
+  font-weight: 400;
+  color: var(--ol-ink);
+  background: var(--ol-paper);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-s);
+  padding: var(--ol-space-s) var(--ol-space-m);
+}
+
+.ol-input:disabled,
+.ol-select:disabled {
+  background: var(--ol-well);
+  color: var(--ol-ink-soft);
+}
+
+.ol-field-error {
+  margin: var(--ol-space-xs) 0 0;
+  font-size: var(--ol-font-size-s);
+  font-weight: 400;
+  color: var(--ol-error);
+}
+
+/* ---- Buttons ---- */
+
+.ol-button {
+  font: inherit;
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  border-radius: var(--ol-radius-s);
+  border: 1px solid transparent;
+  padding: var(--ol-space-s) var(--ol-space-m);
+  cursor: pointer;
+}
+
+.ol-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ol-button-primary {
+  background: var(--ol-accent);
+  color: var(--ol-on-accent);
+}
+
+.ol-button-primary:hover:not(:disabled) {
+  background: var(--ol-accent-strong);
+}
+
+.ol-button-secondary {
+  background: var(--ol-paper);
+  border-color: var(--ol-line);
+  color: var(--ol-ink);
+}
+
+.ol-button-secondary:hover:not(:disabled) {
+  background: var(--ol-well);
+}
+
+.ol-button-ghost {
+  background: transparent;
+  color: var(--ol-accent-strong);
+  padding-left: var(--ol-space-xs);
+  padding-right: var(--ol-space-xs);
+  text-decoration: underline;
+}
+
+/* ---- Results ---- */
+
+.ol-result-count {
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-result-list {
+  list-style: none;
+  margin: var(--ol-space-m) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-m);
+}
+
+.ol-card {
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-m);
+  box-shadow: var(--ol-shadow);
+  background: var(--ol-paper);
+  padding: var(--ol-space-m) var(--ol-space-l);
+}
+
+.ol-card h3 {
+  margin: 0 0 var(--ol-space-xs);
+  font-size: var(--ol-font-size-l);
+}
+
+.ol-card a {
+  color: var(--ol-accent-strong);
+}
+
+.ol-result-meta {
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+/* ---- Badges + chips ---- */
+
+.ol-badge,
+.ol-chip {
+  display: inline-block;
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  border-radius: var(--ol-radius-s);
+  padding: 0 var(--ol-space-s);
+  line-height: 1.6;
+}
+
+.ol-badge {
+  background: var(--ol-well);
+  border: 1px solid var(--ol-line);
+  color: var(--ol-ink-soft);
+}
+
+.ol-chip {
+  background: var(--ol-accent-wash);
+  border: 1px solid var(--ol-accent);
+  color: var(--ol-accent-strong);
+  margin-right: var(--ol-space-xs);
+}
+
+.ol-chip button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0 0 0 var(--ol-space-xs);
+  text-decoration: underline;
+}
+
+/* ---- Diagnostics drawer ---- */
+
+.ol-drawer {
+  margin-top: var(--ol-space-l);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-l);
+  background: var(--ol-well);
+  padding: var(--ol-space-m) var(--ol-space-l);
+}
+
+.ol-drawer dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ol-space-xs) var(--ol-space-m);
+  margin: 0;
+}
+
+.ol-drawer pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--ol-font-size-s);
+}
+
+/* ---- Skeleton loading ---- */
+
+.ol-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-s);
+  margin: var(--ol-space-m) 0;
+}
+
+.ol-skeleton-bar {
+  height: 0.9rem;
+  border-radius: var(--ol-radius-s);
+  background: var(--ol-line);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ol-skeleton-bar {
+    animation: ol-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes ol-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ---- Toasts ---- */
+
+.ol-toasts {
+  position: fixed;
+  bottom: var(--ol-space-l);
+  right: var(--ol-space-l);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-s);
+  max-width: min(24rem, calc(100vw - 2 * var(--ol-space-l)));
+}
+
+.ol-toast {
+  background: var(--ol-ink);
+  color: var(--ol-paper);
+  border-radius: var(--ol-radius-m);
+  box-shadow: var(--ol-shadow);
+  padding: var(--ol-space-s) var(--ol-space-m);
+  font-size: var(--ol-font-size-s);
+}
+
+/* ---- Score signal bars ---- */
+
+.ol-signal-bar {
+  display: inline-block;
+  width: 6rem;
+  height: 0.5rem;
+  vertical-align: middle;
+  background: var(--ol-well);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-s);
+  overflow: hidden;
+}
+
+.ol-signal-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--ol-accent);
+}
+
+/* ---- Trust-distinct warnings ---- */
+
+.ol-warnings {
+  border: 1px solid var(--ol-warn);
+  border-radius: var(--ol-radius-s);
+  background: var(--ol-warn-wash);
+  padding: var(--ol-space-s) var(--ol-space-m);
+  margin-top: var(--ol-space-s);
+}
+
+/* ---- Story groups ---- */
+
+.ol-story-group {
+  border-top: 2px solid var(--ol-ink);
+  padding-top: var(--ol-space-s);
+}
+
+.ol-story-group > h2 {
+  font-size: var(--ol-font-size-m);
+  margin: 0 0 var(--ol-space-s);
+}
+
+/* ---- Screen-reader-only live announcements ---- */
+
+.ol-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Pagination ---- */
+
+.ol-pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--ol-space-m);
+  margin-top: var(--ol-space-m);
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 48rem) {
+  .ol-workspace {
+    padding: var(--ol-space-m);
+  }
+
+  .ol-header-inner {
+    padding: var(--ol-space-s) var(--ol-space-m);
+  }
+
+  .ol-search-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }

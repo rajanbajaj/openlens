@@ -122,3 +122,4 @@ oldest first. Source: session JSONL logs; see `sessions/README.md`.
 1. read docs to build your context. We want to continue with todo list in tasks_status.md. Every task you will give a brief and ask for approval before implementing anything
 2. read docs to build your context. We want to continue with todo list in tasks_status.md. Every task you will give a brief and ask for approval before implementing anything
 3. approved
+4. commit and next brief

@@ -36,5 +36,24 @@ describe.runIf(!!SMOKE_URL)('live backend smoke', () => {
     expect(payload.mode).toBe('shopping');
     expect(Array.isArray(payload.applied_filters)).toBe(true);
     expect(typeof payload.diagnostics).toBe('object');
+    // New surfaces (T9–T15) are asserted only when the backend provides
+    // them: the UI degrades gracefully when they are absent.
+    const { diagnostics } = payload;
+    if (diagnostics.request_id !== undefined) {
+      expect(typeof diagnostics.request_id).toBe('string');
+    }
+    if (diagnostics.query !== undefined) {
+      expect(typeof diagnostics.query.intent).toBe('string');
+      expect(typeof diagnostics.query.effective_mode).toBe('string');
+    }
+    if (diagnostics.provider_result_counts !== undefined) {
+      expect(typeof diagnostics.provider_result_counts).toBe('object');
+    }
+    for (const result of payload.results) {
+      const signals = result.metadata['signals'];
+      if (signals !== undefined) {
+        expect(typeof signals).toBe('object');
+      }
+    }
   }, 30000);
 });

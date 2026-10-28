@@ -25,7 +25,7 @@ const SHOPPING_ENVELOPE = {
     },
   ],
   total: 1,
-  applied_filters: ['exclude_sponsored'],
+  applied_filters: ['user-restrictions', 'safety-filter', 'privacy-filter'],
   diagnostics: {
     fallback_used: false,
     provider_latencies_ms: { mock: 12.5 },
@@ -63,22 +63,24 @@ describe('App wiring', () => {
     });
     expect(screen.getByText(/showing 1 of 1 result/i)).toBeInTheDocument();
     expect(screen.getByTestId('applied-filters')).toHaveTextContent(
-      'Applied filters: exclude_sponsored',
+      'Applied filters: user-restrictions, safety-filter, privacy-filter',
     );
 
-    // Request shaping: shopping mode + exclude_sponsored filter + page 1 offset.
+    // Request shaping: shopping mode + backend-owned term filter + page 1 offset.
+    // `exclude_sponsored` is a UI concept only — the wire must carry the
+    // user-restrictions owned key (the backend 500s unknown filter keys).
     const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.mode).toBe('shopping');
-    expect(body.filters).toEqual({ exclude_sponsored: true });
+    expect(body.filters).toEqual({ must_not_terms: ['sponsored'] });
     expect(body.offset).toBe(0);
 
     // Reasons expand and diagnostics drawer render.
     fireEvent.click(screen.getByRole('button', { name: /show reasons/i }));
     expect(screen.getByText('matches query')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /show diagnostics/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
     expect(screen.getByTestId('diagnostics-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('diagnostics-fallback')).toHaveTextContent('no');
+    expect(screen.getByTestId('diagnostics-fallback')).toHaveTextContent('Live');
   });
 
   it('renders the error envelope instead of crashing when the backend fails', async () => {

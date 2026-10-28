@@ -1,67 +1,140 @@
 import { useState } from 'react';
 import type { Diagnostics } from '../api/types';
+import { summarizePluginExecution } from '../api/enrichments.ts';
+import { Badge } from './ui/Badge.tsx';
+import { Button } from './ui/Button.tsx';
+import { Drawer } from './ui/Drawer.tsx';
 
 export interface DiagnosticsDrawerProps {
   diagnostics: Diagnostics;
 }
 
-/** Collapsible dev panel rendering the response diagnostics block. */
+/** Copy text to the clipboard; false when the API is unavailable. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    const clipboard = (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+    if (!clipboard) return false;
+    await clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Diagnostics rail: request id (copyable), provider latency / result /
+ * cost timeline, plugin executions with stage/status/latency, fallback
+ * indicator, query provenance, and errors. Raw metadata stays behind an
+ * explicit developer-details disclosure; every optional key degrades
+ * gracefully when the backend omits it.
+ */
 export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
   const [open, setOpen] = useState(false);
-  const latencies = Object.entries(diagnostics.provider_latencies_ms);
+  const [copied, setCopied] = useState(false);
+  const providers = Object.keys(diagnostics.provider_latencies_ms).sort();
+  const executions = diagnostics.plugin_executions.map(summarizePluginExecution);
+  const requestId = diagnostics.request_id?.trim() ? diagnostics.request_id : null;
+  const provenance = diagnostics.query;
+
+  async function handleCopy() {
+    if (!requestId) return;
+    setCopied(await copyText(requestId));
+  }
 
   return (
-    <section aria-label="Diagnostics">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="diagnostics-panel"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {open ? 'Hide diagnostics' : 'Show diagnostics'}
-      </button>
-      {open ? (
-        <div id="diagnostics-panel" data-testid="diagnostics-panel">
-          <p data-testid="diagnostics-fallback">
-            Fallback used: {diagnostics.fallback_used ? 'yes' : 'no'}
-          </p>
-          <h4>Provider latencies</h4>
-          {latencies.length === 0 ? (
-            <p>No provider latencies reported</p>
-          ) : (
-            <dl data-testid="diagnostics-latencies">
-              {latencies.map(([provider, ms]) => (
-                <div key={provider}>
-                  <dt>{provider}</dt>
-                  <dd>{ms} ms</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-          <h4>Plugin executions ({diagnostics.plugin_executions.length})</h4>
-          {diagnostics.plugin_executions.length === 0 ? (
-            <p>No plugin executions</p>
-          ) : (
-            <ul data-testid="diagnostics-plugins">
-              {diagnostics.plugin_executions.map((execution, index) => (
-                <li key={index}>
-                  <pre>{JSON.stringify(execution)}</pre>
-                </li>
-              ))}
-            </ul>
-          )}
-          <h4>Errors ({diagnostics.errors.length})</h4>
-          {diagnostics.errors.length === 0 ? (
-            <p>No errors</p>
-          ) : (
-            <ul data-testid="diagnostics-errors">
-              {diagnostics.errors.map((error) => (
-                <li key={error}>{error}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+    <Drawer
+      triggerLabel={open ? 'Hide diagnostics' : 'Show diagnostics'}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+      panelId="diagnostics-panel"
+      panelTestId="diagnostics-panel"
+    >
+      <p data-testid="diagnostics-fallback">
+        {diagnostics.fallback_used ? <Badge>Degraded: fallback used</Badge> : <Badge>Live</Badge>}
+      </p>
+      {requestId ? (
+        <p data-testid="diagnostics-request-id">
+          Request <code>{requestId}</code>{' '}
+          <Button variant="ghost" onClick={() => void handleCopy()}>
+            {copied ? 'Copied' : 'Copy'}
+          </Button>
+        </p>
       ) : null}
-    </section>
+      <h4>Providers</h4>
+      {providers.length === 0 ? (
+        <p>No provider latencies reported</p>
+      ) : (
+        <dl data-testid="diagnostics-latencies">
+          {providers.map((provider) => (
+            <div key={provider}>
+              <dt>{provider}</dt>
+              <dd>
+                {diagnostics.provider_latencies_ms[provider]} ms
+                {diagnostics.provider_result_counts?.[provider] !== undefined
+                  ? ` · ${diagnostics.provider_result_counts[provider]} results`
+                  : null}
+                {diagnostics.provider_costs_estimated?.[provider] !== undefined
+                  ? ` · est. cost ${diagnostics.provider_costs_estimated[provider]}`
+                  : null}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <h4>Pipeline ({executions.length})</h4>
+      {executions.length === 0 ? (
+        <p>No plugin executions</p>
+      ) : (
+        <ol data-testid="diagnostics-plugins">
+          {executions.map((execution, index) => (
+            <li key={`${execution.plugin}-${index}`}>
+              <Badge>{execution.stage}</Badge> {execution.plugin} · {execution.status}
+              {execution.latencyMs !== null ? ` · ${execution.latencyMs} ms` : null}
+              {execution.error ? ` · error: ${execution.error}` : null}
+            </li>
+          ))}
+        </ol>
+      )}
+      {provenance ? (
+        <>
+          <h4>Query</h4>
+          <dl data-testid="diagnostics-query">
+            <div>
+              <dt>Intent</dt>
+              <dd>{provenance.intent}</dd>
+            </div>
+            <div>
+              <dt>Mode</dt>
+              <dd>
+                {provenance.effective_mode}
+                {provenance.suggested_mode !== provenance.effective_mode
+                  ? ` (suggested ${provenance.suggested_mode})`
+                  : null}
+              </dd>
+            </div>
+            {provenance.added_terms.length > 0 ? (
+              <div>
+                <dt>Expanded with</dt>
+                <dd>{provenance.added_terms.join(', ')}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </>
+      ) : null}
+      <h4>Errors ({diagnostics.errors.length})</h4>
+      {diagnostics.errors.length === 0 ? (
+        <p>No errors</p>
+      ) : (
+        <ul data-testid="diagnostics-errors">
+          {diagnostics.errors.map((error) => (
+            <li key={error}>{error}</li>
+          ))}
+        </ul>
+      )}
+      <details data-testid="diagnostics-developer">
+        <summary>Developer details</summary>
+        <pre>{JSON.stringify(diagnostics, null, 2)}</pre>
+      </details>
+    </Drawer>
   );
 }

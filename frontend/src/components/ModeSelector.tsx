@@ -1,4 +1,5 @@
 import type { SearchMode } from '../api/types.ts';
+import { Select } from './ui/Select.tsx';
 
 /** Modes offered by the selector, in display order. `default` first. */
 export const SEARCH_MODES: SearchMode[] = ['default', 'child-safe', 'news', 'shopping', 'travel'];
@@ -23,22 +24,14 @@ function isSearchMode(value: string): value is SearchMode {
  */
 export default function ModeSelector({ mode, onChange, disabled = false }: ModeSelectorProps) {
   return (
-    <label>
-      Search mode
-      <select
-        aria-label="Search mode"
-        value={mode}
-        disabled={disabled}
-        onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
-          if (isSearchMode(event.target.value)) onChange(event.target.value);
-        }}
-      >
-        {SEARCH_MODES.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select
+      label="Search mode"
+      value={mode}
+      disabled={disabled}
+      options={SEARCH_MODES.map((option) => ({ value: option, label: option }))}
+      onChange={(value) => {
+        if (isSearchMode(value)) onChange(value);
+      }}
+    />
   );
 }

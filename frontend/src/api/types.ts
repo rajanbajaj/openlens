@@ -9,6 +9,13 @@
 /** Supported search modes (plan contract; backend validates non-blank). */
 export type SearchMode = 'default' | 'child-safe' | 'news' | 'shopping' | 'travel';
 
+/** Per-query provider preferences for federated selection (T13). */
+export interface ProviderPrefs {
+  include: string[];
+  exclude: string[];
+  primary: string | null;
+}
+
 /** POST /api/v1/search request body. */
 export interface SearchRequest {
   /** 1-1000 chars, must not be blank. */
@@ -21,6 +28,8 @@ export interface SearchRequest {
   offset: number;
   /** Opaque filter mapping forwarded to the backend. */
   filters: Record<string, unknown>;
+  /** Federated provider hints; omitted when the user sets none. */
+  provider_prefs?: ProviderPrefs | null;
 }
 
 /** One normalized search hit on the wire. */
@@ -40,12 +49,37 @@ export interface SearchResult {
 /** One plugin-execution record inside diagnostics (opaque entries). */
 export type PluginExecution = Record<string, unknown>;
 
+/**
+ * Bounded query provenance entry (T9): normalization, intent, expansion,
+ * and the mode suggestion. Explicit mode always wins over `suggested_mode`.
+ */
+export interface QueryProvenance {
+  normalized: string;
+  truncated: boolean;
+  intent: string;
+  suggested_mode: string;
+  explicit_mode: string;
+  effective_mode: string;
+  base_terms: string[];
+  added_terms: string[];
+  provenance: Record<string, string>;
+  reasons: string[];
+}
+
 /** Per-request diagnostics embedded in the search response. */
 export interface Diagnostics {
   fallback_used: boolean;
   provider_latencies_ms: Record<string, number>;
+  /** Result counts per provider (T13); absent on older envelopes. */
+  provider_result_counts?: Record<string, number>;
+  /** Estimated cost per provider (T13); absent on older envelopes. */
+  provider_costs_estimated?: Record<string, number>;
   plugin_executions: PluginExecution[];
   errors: string[];
+  /** Query provenance (T9); absent when the backend predates it. */
+  query?: QueryProvenance;
+  /** Opaque request id for log correlation (T15); empty when unset. */
+  request_id?: string;
 }
 
 /** POST /api/v1/search response body. */

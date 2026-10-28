@@ -1,4 +1,6 @@
 import { MAX_QUERY_LENGTH, validateQuery } from '../api/client.ts';
+import { Button } from './ui/Button.tsx';
+import { TextInput } from './ui/TextInput.tsx';
 
 export interface SearchFormProps {
   /** Current raw query text (controlled by the parent). */
@@ -36,9 +38,15 @@ export default function SearchForm({
   };
 
   return (
-    <form role="search" aria-label="OpenLens search" onSubmit={handleSubmit} noValidate>
-      <label htmlFor="openlens-query">Search query</label>
-      <input
+    <form
+      role="search"
+      aria-label="OpenLens search"
+      className="ol-search-form"
+      onSubmit={handleSubmit}
+      noValidate
+    >
+      <TextInput
+        label="Search query"
         id="openlens-query"
         name="query"
         type="search"
@@ -51,11 +59,11 @@ export default function SearchForm({
         }}
         disabled={disabled}
       />
-      <button type="submit" disabled={disabled}>
+      <Button variant="primary" type="submit" disabled={disabled}>
         Search
-      </button>
+      </Button>
       {invalid && (
-        <p id="openlens-query-error" role="alert">
+        <p id="openlens-query-error" role="alert" className="ol-field-error">
           {error}
         </p>
       )}

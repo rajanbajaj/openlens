@@ -1,6 +1,3 @@
-/** `filters`-dict key toggled by {@link FilterToggle}. */
-export const EXCLUDE_SPONSORED_FILTER_KEY = 'exclude_sponsored';
-
 export interface FilterToggleProps {
   /** Whether the filter is currently applied. */
   checked: boolean;
@@ -11,23 +8,9 @@ export interface FilterToggleProps {
 }
 
 /**
- * Map the "exclude sponsored" toggle into the request `filters` dict:
- * on → `{ [key]: true }` merged over existing filters; off → the key
- * removed, every other entry preserved.
- */
-export function applyExcludeSponsoredFilter(
-  filters: Record<string, unknown>,
-  checked: boolean,
-): Record<string, unknown> {
-  if (checked) return { ...filters, [EXCLUDE_SPONSORED_FILTER_KEY]: true };
-  const next = { ...filters };
-  delete next[EXCLUDE_SPONSORED_FILTER_KEY];
-  return next;
-}
-
-/**
- * Single filter toggle wired by the parent into the search request
- * `filters` dict via {@link applyExcludeSponsoredFilter}.
+ * Single filter toggle. The parent maps the state into the request
+ * `filters` dict via `buildFilters` (`api/filters.ts`), which emits
+ * only backend-owned keys — the toggle itself knows no wire keys.
  */
 export default function FilterToggle({ checked, onChange, disabled = false }: FilterToggleProps) {
   return (

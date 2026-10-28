@@ -1,69 +1,178 @@
 import { useState } from 'react';
 import type { SearchResult } from '../api/types';
+import {
+  resultAiDigest,
+  resultAlsoFrom,
+  resultCommerce,
+  resultSignals,
+  resultUnderstanding,
+} from '../api/enrichments.ts';
+import { Badge } from './ui/Badge.tsx';
+import { Button } from './ui/Button.tsx';
+import { Card } from './ui/Card.tsx';
 
 export interface ResultCardProps {
   result: SearchResult;
 }
 
-/** One search hit: title link, snippet, final score, expandable reasons/warnings. */
+function formatPrice(price: number | null, currency: string | null): string | null {
+  if (price === null) return null;
+  return currency ? `${price.toFixed(2)} ${currency}` : price.toFixed(2);
+}
+
+/**
+ * One search hit: title link, snippet, provider + federation badges,
+ * final score with an expandable score breakdown (original vs final,
+ * T11 signals), commerce attributes, the labelled AI block (rendered
+ * only when the backend produced one), and reasons/warnings —
+ * trust warnings visually distinct.
+ */
 export function ResultCard({ result }: ResultCardProps) {
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const [showReasons, setShowReasons] = useState(false);
   const [showWarnings, setShowWarnings] = useState(false);
 
+  const signals = resultSignals(result.metadata);
+  const alsoFrom = resultAlsoFrom(result.metadata);
+  const commerce = resultCommerce(result.metadata);
+  const digest = resultAiDigest(result.metadata);
+  const understanding = resultUnderstanding(result.metadata);
+  const price = formatPrice(commerce.price, commerce.currency);
+  const attributes: string[] = [];
+  if (price) attributes.push(price);
+  if (commerce.location) attributes.push(commerce.location);
+  if (commerce.facilities.length > 0) attributes.push(commerce.facilities.join(', '));
+  if (commerce.published) attributes.push(commerce.published);
+
   return (
-    <article data-testid="result-card" aria-label={result.title}>
-      <h3>
-        {result.url ? (
-          <a href={result.url} target="_blank" rel="noopener noreferrer">
-            {result.title}
-          </a>
-        ) : (
-          <span>{result.title}</span>
-        )}
-      </h3>
-      <p data-testid="result-snippet">{result.snippet}</p>
-      <p data-testid="result-meta">
-        <span>Score: {result.final_score}</span>
-        {result.provider ? <span> · {result.provider}</span> : null}
-      </p>
-      {result.reasons.length > 0 ? (
+    <Card>
+      <article aria-label={result.title} data-testid="result-card">
+        <h3>
+          {result.url ? (
+            <a href={result.url} target="_blank" rel="noopener noreferrer">
+              {result.title}
+            </a>
+          ) : (
+            <span>{result.title}</span>
+          )}
+        </h3>
+        <p>
+          <Badge>{result.provider}</Badge>{' '}
+          {alsoFrom.map((provider) => (
+            <Badge key={provider}>also from {provider}</Badge>
+          ))}
+        </p>
+        <p data-testid="result-snippet">{result.snippet}</p>
+        {attributes.length > 0 ? (
+          <p data-testid="result-attributes">{attributes.join(' · ')}</p>
+        ) : null}
+        {understanding ? (
+          <p data-testid="result-understanding">
+            Understood as {understanding.intent}
+            {understanding.entities.length > 0
+              ? ` (${understanding.entities.join(', ')})`
+              : ''} · {understanding.model === 'rule-based' ? 'rule-based' : understanding.model}
+          </p>
+        ) : null}
+        <p data-testid="result-meta" className="ol-result-meta">
+          <span>Score: {result.final_score}</span>
+        </p>
         <div>
-          <button
-            type="button"
-            aria-expanded={showReasons}
-            aria-controls={`reasons-${result.id}`}
-            onClick={() => setShowReasons((v) => !v)}
+          <Button
+            variant="ghost"
+            aria-expanded={showBreakdown}
+            aria-controls={`breakdown-${result.id}`}
+            onClick={() => setShowBreakdown((v) => !v)}
           >
-            {showReasons ? 'Hide reasons' : `Show reasons (${result.reasons.length})`}
-          </button>
-          {showReasons ? (
-            <ul id={`reasons-${result.id}`} data-testid="result-reasons">
-              {result.reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
+            {showBreakdown ? 'Hide score breakdown' : 'Show score breakdown'}
+          </Button>
+          {showBreakdown ? (
+            <dl id={`breakdown-${result.id}`} data-testid="result-breakdown">
+              <div>
+                <dt>Provider score</dt>
+                <dd>{result.original_score}</dd>
+              </div>
+              <div>
+                <dt>Final score</dt>
+                <dd>{result.final_score}</dd>
+              </div>
+              {signals.map(([name, score]) => (
+                <div key={name}>
+                  <dt>{name}</dt>
+                  <dd>
+                    <span
+                      className="ol-signal-bar"
+                      role="img"
+                      aria-label={`${name} signal ${score}`}
+                    >
+                      <span style={{ width: `${Math.round(score * 100)}%` }} />
+                    </span>{' '}
+                    {score}
+                  </dd>
+                </div>
               ))}
-            </ul>
+              {signals.length === 0 ? (
+                <div>
+                  <dt>Signals</dt>
+                  <dd>No scoring signals reported</dd>
+                </div>
+              ) : null}
+            </dl>
           ) : null}
         </div>
-      ) : null}
-      {result.warnings.length > 0 ? (
-        <div>
-          <button
-            type="button"
-            aria-expanded={showWarnings}
-            aria-controls={`warnings-${result.id}`}
-            onClick={() => setShowWarnings((v) => !v)}
-          >
-            {showWarnings ? 'Hide warnings' : `Show warnings (${result.warnings.length})`}
-          </button>
-          {showWarnings ? (
-            <ul id={`warnings-${result.id}`} data-testid="result-warnings">
-              {result.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      ) : null}
-    </article>
+        {digest ? (
+          <section aria-label="AI summary" data-testid="result-ai">
+            <h4>AI summary</h4>
+            <p>{digest.summary}</p>
+            {digest.perspectives.length > 0 ? (
+              <ul>
+                {digest.perspectives.map((perspective) => (
+                  <li key={perspective}>{perspective}</li>
+                ))}
+              </ul>
+            ) : null}
+            <p className="ol-result-meta">Generated by {digest.model} · AI-generated content</p>
+          </section>
+        ) : null}
+        {result.reasons.length > 0 ? (
+          <div>
+            <Button
+              variant="ghost"
+              aria-expanded={showReasons}
+              aria-controls={`reasons-${result.id}`}
+              onClick={() => setShowReasons((v) => !v)}
+            >
+              {showReasons ? 'Hide reasons' : `Show reasons (${result.reasons.length})`}
+            </Button>
+            {showReasons ? (
+              <ul id={`reasons-${result.id}`} data-testid="result-reasons">
+                {result.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+        {result.warnings.length > 0 ? (
+          <div className="ol-warnings" data-testid="result-warnings-block">
+            <Button
+              variant="ghost"
+              aria-expanded={showWarnings}
+              aria-controls={`warnings-${result.id}`}
+              onClick={() => setShowWarnings((v) => !v)}
+            >
+              {showWarnings ? 'Hide warnings' : `Show warnings (${result.warnings.length})`}
+            </Button>
+            {showWarnings ? (
+              <ul id={`warnings-${result.id}`} data-testid="result-warnings">
+                {result.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </article>
+    </Card>
   );
 }

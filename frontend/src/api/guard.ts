@@ -4,7 +4,14 @@
  * every unknown is narrowed before use).
  */
 
-import type { Diagnostics, ErrorEnvelope, SearchResponse, SearchResult } from './types.ts';
+import type {
+  Diagnostics,
+  ErrorEnvelope,
+  ProviderPrefs,
+  QueryProvenance,
+  SearchResponse,
+  SearchResult,
+} from './types.ts';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -34,6 +41,30 @@ export function isSearchResult(value: unknown): value is SearchResult {
   );
 }
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((item) => typeof item === 'string');
+}
+
+export function isQueryProvenance(value: unknown): value is QueryProvenance {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.normalized === 'string' &&
+    typeof value.truncated === 'boolean' &&
+    typeof value.intent === 'string' &&
+    typeof value.suggested_mode === 'string' &&
+    typeof value.explicit_mode === 'string' &&
+    typeof value.effective_mode === 'string' &&
+    isStringArray(value.base_terms) &&
+    isStringArray(value.added_terms) &&
+    isStringRecord(value.provenance) &&
+    isStringArray(value.reasons)
+  );
+}
+
+function isOptionalNumberRecord(value: unknown): boolean {
+  return value === undefined || isNumberRecord(value);
+}
+
 export function isDiagnostics(value: unknown): value is Diagnostics {
   if (!isRecord(value)) return false;
   return (
@@ -41,7 +72,20 @@ export function isDiagnostics(value: unknown): value is Diagnostics {
     isNumberRecord(value.provider_latencies_ms) &&
     Array.isArray(value.plugin_executions) &&
     value.plugin_executions.every(isRecord) &&
-    isStringArray(value.errors)
+    isStringArray(value.errors) &&
+    isOptionalNumberRecord(value.provider_result_counts) &&
+    isOptionalNumberRecord(value.provider_costs_estimated) &&
+    (value.query === undefined || isQueryProvenance(value.query)) &&
+    (value.request_id === undefined || typeof value.request_id === 'string')
+  );
+}
+
+export function isProviderPrefs(value: unknown): value is ProviderPrefs {
+  if (!isRecord(value)) return false;
+  return (
+    isStringArray(value.include) &&
+    isStringArray(value.exclude) &&
+    (typeof value.primary === 'string' || value.primary === null)
   );
 }
 

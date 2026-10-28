@@ -1,0 +1,143 @@
+/**
+ * Defensive readers for backend enrichment metadata (T11–T14).
+ *
+ * `SearchResult.metadata` stays free-form on the wire; these helpers
+ * extract the documented keys (`signals`, `story_id`, `also_from`,
+ * commerce attributes, AI labels/digests) with graceful fallbacks so
+ * the UI never crashes on absent or malformed optional keys.
+ */
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Display order for known scoring signals; unknown signals sort last. */
+export const SIGNAL_ORDER: readonly string[] = [
+  'relevance',
+  'trust',
+  'freshness',
+  'preference',
+  'diversity',
+  'perspective',
+  'commerce',
+];
+
+/** Finite-number entries of `metadata.signals`, display-ordered. */
+export function resultSignals(metadata: Record<string, unknown>): Array<[string, number]> {
+  const raw = metadata['signals'];
+  if (!isRecord(raw)) return [];
+  const entries: Array<[string, number]> = [];
+  for (const [name, value] of Object.entries(raw)) {
+    const score = asFiniteNumber(value);
+    if (score !== null) entries.push([name, score]);
+  }
+  const rank = (name: string) => {
+    const index = SIGNAL_ORDER.indexOf(name);
+    return index === -1 ? SIGNAL_ORDER.length : index;
+  };
+  return entries.sort((a, b) => rank(a[0]) - rank(b[0]));
+}
+
+/** `metadata.story_id` (T12 news grouping) or null. */
+export function resultStoryId(metadata: Record<string, unknown>): string | null {
+  const storyId = metadata['story_id'];
+  return typeof storyId === 'string' && storyId !== '' ? storyId : null;
+}
+
+/** `metadata.also_from`: co-providers that returned this hit (T13 fusion). */
+export function resultAlsoFrom(metadata: Record<string, unknown>): string[] {
+  return asStringArray(metadata['also_from']);
+}
+
+export interface CommerceAttributes {
+  price: number | null;
+  currency: string | null;
+  location: string | null;
+  facilities: string[];
+  published: string | null;
+}
+
+/** Normalized commerce/article attributes (T12 attribute enricher). */
+export function resultCommerce(metadata: Record<string, unknown>): CommerceAttributes {
+  const rawFacilities = metadata['facilities'];
+  const facilities =
+    typeof rawFacilities === 'string' ? [rawFacilities] : asStringArray(rawFacilities);
+  const stringOrNull = (value: unknown): string | null =>
+    typeof value === 'string' && value !== '' ? value : null;
+  return {
+    price: asFiniteNumber(metadata['price']),
+    currency: stringOrNull(metadata['currency']),
+    location: stringOrNull(metadata['location']),
+    facilities,
+    published: stringOrNull(metadata['published']),
+  };
+}
+
+export interface AiDigest {
+  summary: string;
+  perspectives: string[];
+  model: string;
+}
+
+/**
+ * AI summary block (T14), labelled with its generating model. Null when
+ * the backend produced no summary — AI chrome must not render then.
+ */
+export function resultAiDigest(metadata: Record<string, unknown>): AiDigest | null {
+  const summary = metadata['ai_summary'];
+  if (typeof summary !== 'string' || summary === '') return null;
+  const model = metadata['ai_model'];
+  return {
+    summary,
+    perspectives: asStringArray(metadata['ai_perspectives']),
+    model: typeof model === 'string' && model !== '' ? model : 'unknown',
+  };
+}
+
+export interface AiUnderstanding {
+  intent: string;
+  entities: string[];
+  model: string;
+}
+
+/** Rule-or-model understanding labels attached to each hit (T14). */
+export function resultUnderstanding(metadata: Record<string, unknown>): AiUnderstanding | null {
+  const intent = metadata['ai_intent'];
+  if (typeof intent !== 'string' || intent === '') return null;
+  const model = metadata['ai_model'];
+  return {
+    intent,
+    entities: asStringArray(metadata['ai_entities']),
+    model: typeof model === 'string' && model !== '' ? model : 'unknown',
+  };
+}
+
+export interface PluginSummary {
+  plugin: string;
+  stage: string;
+  status: string;
+  latencyMs: number | null;
+  error: string | null;
+}
+
+/** Human-readable projection of one opaque plugin-execution record. */
+export function summarizePluginExecution(execution: Record<string, unknown>): PluginSummary {
+  const text = (value: unknown): string =>
+    typeof value === 'string' && value !== '' ? value : 'unknown';
+  return {
+    plugin: text(execution['plugin']),
+    stage: text(execution['stage']),
+    status: text(execution['status']),
+    latencyMs: asFiniteNumber(execution['latency_ms']),
+    error: typeof execution['error'] === 'string' ? execution['error'] : null,
+  };
+}
