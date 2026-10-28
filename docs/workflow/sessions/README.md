@@ -28,7 +28,28 @@ tight — facts and file paths, no deliberation logs.
 
 1. `git status --short` + `git log --oneline -5` for tree state.
 2. Write the file. Slug = 2–4 words on the session's main work.
-3. Add/refresh it in the same commit as any other session-end commit, or
-   leave it uncommitted and say so in the final reply.
-4. The final reply names the summary file and the single most important
+3. Update `prompt-history.md` (Task 20) with the session's user prompts:
+
+   ```bash
+   UV_CACHE_DIR=/tmp/uv-cache uv run python docs/workflow/sessions/update-prompt-history.py \
+     --session-id <session-id> --slug <summary-basename-without-.md>
+   ```
+
+   Rules the script enforces (see its docstring): only sessions whose
+   log records this repo as workspace root are included; a section
+   header is set once from the oldest summary naming the session id
+   (or `--slug` for a session with no summary yet) and never renamed —
+   the session id in parentheses is the dedupe key, so re-running on
+   an already-recorded session changes zero bytes; secrets are scrubbed
+   with the search-log scrubber rules before writing.
+4. Add/refresh the summary, `prompt-history.md`, and the updater script
+   in the same commit as any other session-end commit, or leave them
+   uncommitted and say so in the final reply.
+5. The final reply names the summary file and the single most important
    open thread, if any.
+
+First-time or repair backfill across every session log (oldest first):
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python docs/workflow/sessions/update-prompt-history.py
+```
