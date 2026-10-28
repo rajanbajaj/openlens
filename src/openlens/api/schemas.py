@@ -98,6 +98,7 @@ class DiagnosticsSchema(BaseModel):
     plugin_executions: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     query: dict[str, Any] = Field(default_factory=dict)
+    request_id: str = ""
 
     @classmethod
     def from_core(cls, diagnostics: dict[str, Any]) -> "DiagnosticsSchema":
@@ -112,6 +113,7 @@ class DiagnosticsSchema(BaseModel):
             plugin_executions=list(diagnostics.get("plugin_executions", [])),
             errors=list(diagnostics.get("errors", [])),
             query=dict(query_entry) if isinstance(query_entry, dict) else {},
+            request_id=str(diagnostics.get("request_id", "")),
         )
 
 

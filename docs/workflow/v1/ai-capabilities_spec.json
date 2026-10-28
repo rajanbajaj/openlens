@@ -1,0 +1,54 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_ai-capabilities_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t14-wiring",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t14-wiring",
+          "owns": "src/openlens/core/registry.py, src/openlens/core/engine.py, src/openlens/main.py, tests/unit/test_ai_wiring.py",
+          "task": "Implement AI-capabilities plan Step 1 only, with the two SETTLED gates already recorded in the plan (do not re-decide): seam = manager-primary (engine builds ONE ModelManager and injects its primary into AI plugins; per-plugin model: alone is rejected, but do not break AISummaryPlugin's existing constructor injection used by tests), and models source = load configs/models.yaml as a second file alongside configs/default.yaml in main.py (load_config resolves ${VAR} per-file identically). Build the manager only when >=1 backend is enabled; zero-enabled boots with model_manager=None (catch the zero-enabled ConfigError from ModelManager.from_config at the wiring boundary; do NOT relax from_config itself). Register AI plugins in BUILTIN_PLUGINS (src/openlens/core/registry.py): ai-summary plus the ai-understanding and ai-classification short names the sibling wave will create (plugins/ai_understanding.py AIUnderstandingPlugin, plugins/ai_classification.py AIClassificationPlugin — register names now pointing at those classes). Tests in NEW tests/unit/test_ai_wiring.py: all-disabled boots and searches fine (results identical minus AI fields, ordering unchanged); fake-enabled routes through primary; unknown primary fails startup with ConfigError; disabled backends never instantiated (reuse the Boom pattern from tests/unit/test_ai_seams.py). No understanding/classification plugin bodies, no summary changes, no backends changes.",
+          "done": "optional manager wiring + boot tests green; zero-AI boots."
+        }
+      ]
+    },
+    {
+      "name": "t14-plugins",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t14-understanding",
+          "owns": "src/openlens/plugins/ai_understanding.py, tests/unit/test_ai_understanding.py",
+          "task": "Implement AI-capabilities plan Step 2 only: NEW src/openlens/plugins/ai_understanding.py AIUnderstandingPlugin (QUERY_PARSING or QUERY_REWRITE stage, optional). V1 is post-retrieval intent/entity LABELING only (docstring must state it does not influence retrieval; the shared pre-retrieval hook from query-intelligence seam S1 is a declared dependency, not claimed here). Uses the injected model when available; falls back to rule-based keyword/pattern heuristics labeled ai_model: rule-based (vs backend name for model output). Model raising ProviderError mid-query -> rule fallback, request still succeeds (optional plugin isolation), diagnostics records the fallback. Tests in NEW tests/unit/test_ai_understanding.py: fake-backend labels intent/entities with backend name; disabled/no-backend returns rule-based output labeled rule-based; raising model falls back without request failure. No registry/engine/config changes.",
+          "done": "ai_understanding.py + both-path tests green."
+        },
+        {
+          "label": "t14-classify",
+          "owns": "src/openlens/plugins/ai_classification.py, tests/unit/test_ai_classification.py",
+          "task": "Implement AI-capabilities plan Step 3 only: NEW src/openlens/plugins/ai_classification.py AIClassificationPlugin (FILTERING stage, mandatory=False, ADVISORY ONLY). Writes labels into result.metadata/result.warnings only; NEVER excludes and NEVER mutates context.results; never imports or calls SafetyFilter (data-only seam). Model outage or no backend means no advisory labels, never an opened gate. Tests in NEW tests/unit/test_ai_classification.py: labels land in metadata/warnings only; context.results length unchanged by the plugin alone; hits excluded by SafetyFilter stay excluded in all three modes (model disabled, model enabled returning 'safe', model raising ProviderError); plugin mandatory is False and stage is FILTERING (asserted). No registry/engine/config changes.",
+          "done": "ai_classification.py advisory-only with three-mode exclusion tests green."
+        },
+        {
+          "label": "t14-enrich",
+          "owns": "src/openlens/plugins/ai_summary.py, tests/unit/test_ai_enrichment.py",
+          "task": "Implement AI-capabilities plan Step 4 only: EXTEND src/openlens/plugins/ai_summary.py (AISummaryPlugin): per-result ai_summary AND ai_perspectives metadata, each labeled with the generating backend name (ai_model); ONE shared model-call helper serves both prompts (not two independent loops); enrich_top_k config (default 5, validated [0,20]; 0 yields no AI fields but a successful response) applied after filtering/scoring so K counts surviving results; results beyond K have no ai_summary/ai_perspectives keys at all (not empty strings); respect existing max_chars truncation (do not re-truncate); per-call timeout_s enforced once in the helper. Tests in NEW tests/unit/test_ai_enrichment.py: labels with backend name; cap enforced; enrich_top_k: 0 case; timeout enforced (hanging stub -> ProviderError TIMEOUT, request still succeeds minus AI fields via diagnostics). No registry/engine/config changes.",
+          "done": "ai_summary.py extended with capped labeled enrichment + tests green."
+        },
+        {
+          "label": "t14-local",
+          "owns": "src/openlens/models/backends.py, tests/unit/test_model_local_client.py",
+          "task": "Implement AI-capabilities plan Step 5 only: replace the LocalModelProvider stub in src/openlens/models/backends.py with a real local client (same class name, name == 'local', same configure validation: endpoint required, model default 'default', ConfigError on missing endpoint). Implement complete/embed/classify over httpx with timeout_s enforced via native httpx timeout (mirror src/openlens/providers/http.py:_fetch pattern; lazy import httpx inside methods so importing backends never requires network config). Errors wrapped via BaseModelProvider.wrap_error (timeout -> TIMEOUT retryable, 401/403 -> AUTH, 429 -> RATE_LIMIT, 5xx/conn -> UNAVAILABLE); never leak raw client exceptions or any endpoint credential into messages/logs; health_check never raises (False when unreachable); claude/muse stubs keep raising UNAVAILABLE. Tests in NEW tests/unit/test_model_local_client.py using a loopback stub HTTP server (skip when loopback bind unavailable, matching tests/unit/test_crawler.py pattern) or httpx mock transport: endpoint validation, timeout enforced (elapsed < 2x timeout_s, code TIMEOUT), error-code mapping, health_check False on dead endpoint. No engine/registry/plugin changes.",
+          "done": "local client live with offline tests green; stubs unchanged."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t14-integrate",
+    "owns": "tests/integration/test_secret_leak.py",
+    "task": "Extend tests/integration/test_secret_leak.py to cover model keys/endpoints in logs/errors/diagnostics (secret-leak extension is part of done, not optional): fake model config with sentinel api_key/endpoint secrets, drive searches with AI plugins enabled, assert the sentinels never appear in responses, diagnostics, errors, or logs (follow the file's existing patterns). Fix cross-wave fallout only within your owned file; report out-of-scope fallout explicitly instead of editing sibling files. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/unit/test_ai_wiring.py tests/unit/test_ai_understanding.py tests/unit/test_ai_classification.py tests/unit/test_ai_enrichment.py tests/unit/test_model_local_client.py tests/unit/test_ai_seams.py tests/integration/test_secret_leak.py -q, then UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "secret-leak extended for model secrets; AI focused suite + full suite + ruff + mypy clean."
+  }
+}

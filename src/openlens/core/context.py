@@ -58,6 +58,7 @@ class SearchContext:
     errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     fallback_used: bool = False
+    request_id: str = ""
 
     def record_provider_latency(self, provider_name: str, latency_ms: float) -> None:
         self.provider_latencies_ms[provider_name] = latency_ms
@@ -113,6 +114,7 @@ class SearchContext:
                 for e in self.plugin_executions
             ],
             "errors": list(self.errors),
+            "request_id": self.request_id,
         }
         query_entry = self.metadata.get("query")
         if isinstance(query_entry, dict):

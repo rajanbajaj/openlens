@@ -17,7 +17,8 @@ from openlens.core.interfaces import (
 )
 from openlens.providers.manager import ProviderManager
 from openlens.core.pipeline import Pipeline, assemble_explanations
-from openlens.core.registry import PluginRegistry
+from openlens.core.registry import AI_PLUGIN_NAMES, PluginRegistry, inject_model
+from openlens.models.manager import ModelManager
 from openlens.ranking.profiles import (
     BUILTIN_PROFILES,
     RankingProfile,
@@ -48,6 +49,27 @@ def _query_entry(processed: ProcessedQuery) -> dict[str, Any]:
         },
         "reasons": list(processed.reasons[:QUERY_ENTRY_CAP]),
     }
+
+
+def _build_model_manager(models_cfg: Any) -> ModelManager | None:
+    """Build the optional manager; zero enabled backends yields ``None``.
+
+    Only the zero-enabled ``ConfigError`` from ``ModelManager.from_config``
+    is caught here; unknown primaries and other validation errors propagate.
+    """
+    if models_cfg is None:
+        return None
+    if not isinstance(models_cfg, dict):
+        raise ConfigError("Engine config 'models' must be a mapping.")
+    arg: dict[str, Any] = (
+        models_cfg if "models" in models_cfg else {"models": models_cfg}
+    )
+    try:
+        return ModelManager.from_config(arg)
+    except ConfigError as exc:
+        if "No enabled model backends" in str(exc):
+            return None
+        raise
 
 
 def _coerce_profiles(raw: Any) -> dict[str, RankingProfile] | None:
@@ -90,14 +112,22 @@ class SearchEngine(Engine):
         plugins: list[Any] | tuple[Any, ...] = (),
         ranker: Ranker | None = None,
         manager: ProviderManager | None = None,
+        model_manager: ModelManager | None = None,
     ) -> None:
         if manager is not None and providers:
             raise ConfigError(
                 "SearchEngine takes either 'manager' or 'providers', not both."
             )
         self._manager = manager
+        self._model_manager = model_manager
         self._providers = list(providers)
-        self._pipeline = Pipeline(list(plugins))
+        plugin_list = list(plugins)
+        if self._model_manager is not None:
+            primary = self._model_manager.get(self._model_manager.primary)
+            for plugin in plugin_list:
+                if getattr(plugin, "name", None) in AI_PLUGIN_NAMES:
+                    inject_model(plugin, primary)
+        self._pipeline = Pipeline(plugin_list)
         self._ranker = ranker or Ranker()
         self._query_processor = QueryProcessor()
 
@@ -107,9 +137,20 @@ class SearchEngine(Engine):
         manager: ProviderManager,
         plugins: list[Any] | tuple[Any, ...] = (),
         ranker: Ranker | None = None,
+        model_manager: ModelManager | None = None,
     ) -> "SearchEngine":
         """Build an engine that delegates provider selection to ``manager``."""
-        return cls(plugins=plugins, ranker=ranker, manager=manager)
+        return cls(
+            plugins=plugins, ranker=ranker, manager=manager, model_manager=model_manager
+        )
+
+    @property
+    def model_manager(self) -> ModelManager | None:
+        return self._model_manager
+
+    @model_manager.setter
+    def model_manager(self, value: ModelManager | None) -> None:
+        self._model_manager = value
 
     @property
     def pipeline(self) -> Pipeline:
@@ -147,7 +188,29 @@ class SearchEngine(Engine):
                 f"Unknown ranking profile '{default_profile}'. "
                 f"Known: {', '.join(sorted(effective))}."
             )
-        plugins = PluginRegistry().build(plugin_entries)
+        if "model_manager" in config:
+            direct = config.get("model_manager")
+            if direct is not None and not isinstance(direct, ModelManager):
+                raise ConfigError(
+                    "Engine config 'model_manager' must be a ModelManager."
+                )
+            self._model_manager = direct
+        elif "models" in config:
+            self._model_manager = _build_model_manager(config.get("models"))
+        # Manager-primary seam: with no enabled backend there is no AI, so
+        # AI plugins are omitted rather than falling back to a dummy model.
+        effective_entries = plugin_entries
+        if self._model_manager is None:
+            effective_entries = [
+                entry
+                for entry in plugin_entries
+                if not (
+                    isinstance(entry, dict) and entry.get("name") in AI_PLUGIN_NAMES
+                )
+            ]
+        plugins = PluginRegistry().build(
+            effective_entries, model_manager=self._model_manager
+        )
         self._pipeline = Pipeline(plugins)
         self._ranker = Ranker({"profile": default_profile}, profiles=profiles)
         # Standalone pre-retrieval stage: absent ``query:`` section means

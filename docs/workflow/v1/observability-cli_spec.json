@@ -1,0 +1,42 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_observability-cli_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t15-instrument",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t15-logging",
+          "owns": "src/openlens/observability/logging.py, src/openlens/observability/request_id.py, src/openlens/core/context.py, src/openlens/api/schemas.py, tests/unit/test_logging.py",
+          "task": "Implement observability plan Step 1 only. NEW src/openlens/observability/logging.py: request-scoped stdlib logging + JSON formatter (one handler, no third-party formatter); one JSON INFO record per request (request_id, query mode/limit, provider latencies, plugin executions, errors, result count — NEVER the raw query string at INFO; raw query only at DEBUG, level-gated, off by default); log-level config (logging.level, default INFO). NEW src/openlens/observability/request_id.py: request-id middleware/dependency (X-Request-Id accepted if supplied, else uuid4 hex). Extend SearchContext.diagnostics() AND DiagnosticsSchema.from_core with request_id in the same change (both whitelists move together; src/openlens/core/context.py + src/openlens/api/schemas.py). Tests in NEW tests/unit/test_logging.py: one search emits exactly one JSON INFO record with request_id/mode/limit/latencies/count; raw query never at INFO; api_key-shaped values + secret-leak sentinels never in the record; logging.level WARNING suppresses INFO; supplied X-Request-Id echoed, absent one generated. No main.py route/CORS changes (wiring deferred to integrate), no metrics, no CLI.",
+          "done": "logging + request-id modules with DiagnosticsSchema pass-through; tests green."
+        },
+        {
+          "label": "t15-metrics",
+          "owns": "src/openlens/observability/metrics.py, tests/unit/test_metrics.py, tests/integration/test_metrics.py",
+          "task": "Implement observability plan Step 2 only: NEW src/openlens/observability/metrics.py in-process Prometheus-text registry (no new dependency). Fixed label set enforced by construction (provider, plugin, stage, status only — registry rejects unknown label names); counters: per-provider latency sum/count (+ fixed-bucket histogram counts), per-provider errors, per-plugin timings and exclusion counts, request totals. Exposes observe(diagnostics: dict) fed from a SearchResponse.diagnostics payload (single feed point contract — the API route calls it; the registry never hooks providers/plugins directly), snapshot-under-threading.Lock with text rendered after releasing the lock, Prometheus label escaping. Tests in NEW tests/unit/test_metrics.py + tests/integration/test_metrics.py: disabled (default) behavior contract (registry inert, no series); enabled scrape-after-searches shows request/provider/plugin series with only fixed label names; threaded concurrent searches do not lose counts; fuzz test with adversarial query text (quotes, newlines, label-like substrings) proves it never becomes a label name or value. No main.py route registration, no config-file changes (wiring deferred to integrate).",
+          "done": "metrics registry with fixed labels, lock safety, and fuzz test green (registry-level; route wiring deferred)."
+        }
+      ]
+    },
+    {
+      "name": "t15-cli",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t15-cli",
+          "owns": "src/openlens/cli.py, tests/unit/test_cli.py",
+          "task": "Implement observability plan Step 3 only: NEW src/openlens/cli.py with def main(argv=None) -> int, stdlib argparse only. Commands: search \"query\" [--mode --limit --json|--pretty] with --provider forwarded via T13 provider_prefs (landed — the flag must reach SearchRequest.provider_prefs, never parsed-and-ignored); index (add|update|reindex|list) <files-or-urls> delegating to the T8 indexer entry point src/openlens/indexing.run_index (landed — both the success delegation and the explicit not-available nonzero path tested via injected seams, no direct SQLite manipulation, no stub that silently succeeds); config validate [--config PATH] (validates via load_config + manager/provider construction without serving; exit 0 on configs/default.yaml; nonzero + human-readable stderr + no traceback on a malformed tmp_path config; asserts no server boot and no new data/ side effects beyond build_engine's own); providers health (offline reachability table via health_check, no network). Reuses load_app_config/build_engine from main.py — never a second boot path. Do NOT add a committed configs/bad.yaml. Tests in NEW tests/unit/test_cli.py via direct main(argv) calls (subprocess only for exit-code assertions where needed). No main.py, logging, metrics, registry, or config changes.",
+          "done": "cli.py with all four command groups and tests green offline."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t15-integrate",
+    "owns": "src/openlens/main.py, configs/default.yaml, README.md, tests/integration/test_secret_leak.py",
+    "task": "Wire observability into the app (plan Step 4 + leftover wiring). (a) main.py: register request-id middleware, add X-Request-Id to CORS allow_headers (currently Content-Type, Authorization) so browser clients can send/read it, add logging.level config (default INFO) consumed by the logging module, conditionally register GET /metrics (Prometheus text from the metrics registry + no-store headers) ONLY when metrics.enabled is true (default false -> route 404s; registered conditionally in create_app, not registered-then-erroring), feeding the registry from exactly one point — the search API route after engine.search returns, reading SearchResponse.diagnostics. (b) configs/default.yaml: add logging: {level: INFO} and metrics: {enabled: false} keys consumed by the wiring. (c) README.md operations section (run, observe, troubleshoot) with the exact validation commands, the metrics.enabled toggle, one annotated example log line + /metrics excerpt. (d) Extend tests/integration/test_secret_leak.py to the new log output and metric labels (sentinel pattern SENTINEL_KEY/SENTINEL_PASSWORD + _assert_no_secrets): run searches with AI plugins and sentinel secrets in config, assert sentinels appear in no response body, diagnostics payload, captured log record, or /metrics text. Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/unit/test_logging.py tests/unit/test_metrics.py tests/integration/test_metrics.py tests/unit/test_cli.py tests/integration/test_secret_leak.py -q, then UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src, UV_CACHE_DIR=/tmp/uv-cache uv run pip-audit --progress-spinner=off.",
+    "done": "middleware + metrics route + CORS + config + README + secret-leak extended; focused + full suites + ruff + mypy + pip-audit clean."
+  }
+}

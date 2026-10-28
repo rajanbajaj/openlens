@@ -13,7 +13,14 @@ from typing import Any
 
 from openlens.core.interfaces import ConfigError, SearchPlugin
 
+AI_PLUGIN_NAMES: frozenset[str] = frozenset(
+    {"ai-summary", "ai-understanding", "ai-classification"}
+)
+
 BUILTIN_PLUGINS: dict[str, str] = {
+    "ai-summary": "openlens.plugins.ai_summary:AISummaryPlugin",
+    "ai-understanding": "openlens.plugins.ai_understanding:AIUnderstandingPlugin",
+    "ai-classification": "openlens.plugins.ai_classification:AIClassificationPlugin",
     "safety-filter": "openlens.plugins.safety_filter:SafetyFilter",
     "privacy-filter": "openlens.plugins.privacy_filter:PrivacyFilter",
     "user-restrictions": "openlens.plugins.user_restrictions:UserRestrictionsFilter",
@@ -88,6 +95,21 @@ def _with_dependencies(
     # reclassing the live instance is safe and preserves its state.
     plugin.__class__ = ordered_cls  # type: ignore[misc]
     return plugin
+
+
+def inject_model(plugin: SearchPlugin, model: Any) -> None:
+    """Inject ``model`` as ``plugin``'s backend (manager-primary seam)."""
+    setter = getattr(plugin, "set_model", None)
+    if callable(setter):
+        setter(model)
+        return
+    if hasattr(plugin, "_model"):
+        plugin._model = model  # type: ignore[attr-defined]
+        return
+    try:
+        plugin.model = model  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
 
 
 def _class_plugin_name(plugin_cls: type[SearchPlugin]) -> str | None:
@@ -171,15 +193,34 @@ class PluginRegistry:
         name: str,
         ref: str | None = None,
         config: dict[str, Any] | None = None,
+        model: Any = None,
     ) -> SearchPlugin:
-        """Instantiate and configure one plugin. Raises ConfigError."""
+        """Instantiate and configure one plugin. Raises ConfigError.
+
+        ``model`` is the manager-primary backend; it is injected into AI
+        plugins after ``configure`` so the manager seam wins over any
+        per-plugin ``model:`` config.
+        """
         plugin_cls = self.resolve(ref or name)
-        try:
-            plugin = plugin_cls()
-        except Exception as exc:
-            raise ConfigError(
-                f"Cannot instantiate plugin '{name}': {exc}. Startup validation failed."
-            ) from exc
+        plugin: SearchPlugin | None = None
+        if model is not None:
+            try:
+                plugin = plugin_cls(model=model)  # type: ignore[call-arg]
+            except TypeError:
+                plugin = None
+            except Exception as exc:
+                raise ConfigError(
+                    f"Cannot instantiate plugin '{name}': {exc}. "
+                    "Startup validation failed."
+                ) from exc
+        if plugin is None:
+            try:
+                plugin = plugin_cls()
+            except Exception as exc:
+                raise ConfigError(
+                    f"Cannot instantiate plugin '{name}': {exc}. "
+                    "Startup validation failed."
+                ) from exc
         try:
             plugin.configure(dict(config or {}))
         except ConfigError:
@@ -188,14 +229,29 @@ class PluginRegistry:
             raise ConfigError(
                 f"Invalid config for plugin '{name}': {exc}. Startup validation failed."
             ) from exc
+        if model is not None and plugin.name in AI_PLUGIN_NAMES:
+            inject_model(plugin, model)
         return plugin
 
-    def build(self, entries: list[dict[str, Any]]) -> list[SearchPlugin]:
+    def build(
+        self,
+        entries: list[dict[str, Any]],
+        model: Any = None,
+        model_manager: Any = None,
+    ) -> list[SearchPlugin]:
         """Build plugins from config entries.
 
         Each entry: ``{name, class?, enabled?, config?}``. Disabled entries are
         skipped. Raises ConfigError on missing names or bad entries.
         """
+        primary_model = model
+        if primary_model is None and model_manager is not None:
+            get_primary = getattr(model_manager, "get", None)
+            primary_name = getattr(model_manager, "primary", None)
+            if callable(get_primary) and isinstance(primary_name, str):
+                primary_model = get_primary(primary_name)
+            else:  # a bare provider was passed as the manager
+                primary_model = model_manager
         plugins: list[SearchPlugin] = []
         for entry in entries:
             if not isinstance(entry, dict) or "name" not in entry:
@@ -209,11 +265,13 @@ class PluginRegistry:
                     f"Invalid config for plugin '{entry['name']}': "
                     + "'config' must be a mapping."
                 )
+            is_ai = entry["name"] in AI_PLUGIN_NAMES
             plugins.append(
                 self.create(
                     name=entry["name"],
                     ref=entry.get("class"),
                     config=entry.get("config"),
+                    model=primary_model if is_ai else None,
                 )
             )
         return self._apply_filter_pack_order(plugins)

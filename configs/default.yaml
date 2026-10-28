@@ -147,3 +147,13 @@ indexing:
   deny_domains: []
   user_agent: "OpenLensBot/1.0"
   respect_robots: true
+
+# Observability (observability-cli plan, step 4). Consumed by
+# `openlens.main.create_app`: `logging.level` selects the stdlib level
+# for the per-request JSON search log (default INFO; the raw query text
+# is logged at DEBUG only); `metrics.enabled` gates `GET /metrics`
+# (default false — the route 404s unless enabled).
+logging:
+  level: INFO
+metrics:
+  enabled: false
