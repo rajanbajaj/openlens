@@ -147,3 +147,8 @@ oldest first. Source: session JSONL logs; see `sessions/README.md`.
 26. approve
 27. commit
 28. i am about to close this session. let's do the worklow work pre-shutdown to log session and chat histroy
+29. update root/README.md i dont see frontend setup instructions
+30. commit
+31. postgress storage confirmation failed in ci. skipp it as well
+32. commit
+33. wrapup and exit
