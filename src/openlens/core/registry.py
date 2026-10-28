@@ -15,10 +15,72 @@ from openlens.core.interfaces import ConfigError, SearchPlugin
 
 BUILTIN_PLUGINS: dict[str, str] = {
     "safety-filter": "openlens.plugins.safety_filter:SafetyFilter",
+    "privacy-filter": "openlens.plugins.privacy_filter:PrivacyFilter",
+    "user-restrictions": "openlens.plugins.user_restrictions:UserRestrictionsFilter",
     "trust-enricher": "openlens.plugins.trust_enricher:TrustEnricher",
     "baseline-scorer": "openlens.plugins.relevance_scorer:BaselineRelevanceScorer",
     "ranker": "openlens.ranking.ranker:Ranker",
 }
+
+#: Mandated FILTERING order for the mandatory filter pack (filter-pack
+#: plan Step 4): user restrictions run first, then the blocklist/allowlist
+#: safety filter, then the privacy filter. ``PluginRegistry.build`` turns
+#: this chain into ``dependencies`` declarations on the built instances
+#: (each filter depends on its predecessor *when that predecessor is also
+#: built*), so the pipeline's topological sort — not config declaration
+#: order — enforces the execution order. Restricting dependencies to
+#: built predecessors keeps single-filter pipelines constructible: the
+#: pipeline rejects unknown dependency names at startup.
+FILTER_PACK_ORDER: tuple[str, ...] = (
+    "user-restrictions",
+    "safety-filter",
+    "privacy-filter",
+)
+
+_FILTER_PACK_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    name: (FILTER_PACK_ORDER[index - 1],)
+    for index, name in enumerate(FILTER_PACK_ORDER)
+    if index
+}
+
+_ORDERED_CLASS_CACHE: dict[
+    tuple[type[SearchPlugin], tuple[str, ...]], type[SearchPlugin]
+] = {}
+
+
+def _with_dependencies(
+    plugin: SearchPlugin, dependencies: tuple[str, ...]
+) -> SearchPlugin:
+    """Return ``plugin`` reclassed so ``dependencies`` reports the chain.
+
+    The filter classes deliberately declare no dependencies of their own
+    (each must stay usable standalone in a pipeline), so the registry —
+    the one place that knows which pack members are being built together
+    — stamps the mandated chain onto the built instances. Reclassing to a
+    generated subclass keeps ``isinstance`` checks, ``name``, config, and
+    ``run`` behavior identical; only ``dependencies`` is overridden.
+    """
+    if not dependencies or tuple(plugin.dependencies) == dependencies:
+        return plugin
+    key = (type(plugin), dependencies)
+    ordered_cls = _ORDERED_CLASS_CACHE.get(key)
+    if ordered_cls is None:
+
+        def _get_dependencies(
+            _self: SearchPlugin, _deps: tuple[str, ...] = dependencies
+        ) -> tuple[str, ...]:
+            return _deps
+
+        ordered_cls = type(
+            f"Ordered{type(plugin).__name__}",
+            (type(plugin),),
+            {"dependencies": property(_get_dependencies)},
+        )
+        _ORDERED_CLASS_CACHE[key] = ordered_cls
+    # Same layout as the original class (subclass adds no fields), so
+    # reclassing the live instance is safe and preserves its state.
+    plugin.__class__ = ordered_cls  # type: ignore[misc]
+    return plugin
 
 
 def _class_plugin_name(plugin_cls: type[SearchPlugin]) -> str | None:
@@ -147,4 +209,24 @@ class PluginRegistry:
                     config=entry.get("config"),
                 )
             )
-        return plugins
+        return self._apply_filter_pack_order(plugins)
+
+    @staticmethod
+    def _apply_filter_pack_order(plugins: list[SearchPlugin]) -> list[SearchPlugin]:
+        """Stamp the mandated FILTERING chain onto built filter instances.
+
+        Each filter-pack member declares a dependency on its immediate
+        predecessor in ``FILTER_PACK_ORDER`` when that predecessor is in
+        the same build; members built without their predecessor stay
+        dependency-free so standalone pipelines still validate.
+        """
+        built_names = {plugin.name for plugin in plugins}
+        ordered: list[SearchPlugin] = []
+        for plugin in plugins:
+            dependencies = tuple(
+                dep
+                for dep in _FILTER_PACK_DEPENDENCIES.get(plugin.name, ())
+                if dep in built_names
+            )
+            ordered.append(_with_dependencies(plugin, dependencies))
+        return ordered

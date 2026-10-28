@@ -1,0 +1,36 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_filter-pack_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t10-filters",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t10-privacy",
+          "owns": "src/openlens/plugins/privacy_filter.py, tests/unit/test_filter_pack.py",
+          "task": "Implement filter-pack plan Scope/Step 1 only: NEW src/openlens/plugins/privacy_filter.py PrivacyFilter (FILTER plugin, FILTERING stage, mandatory=True, fail-closed PluginError(mandatory=True), simulate_outage hook matching safety_filter.py patterns). PII classes (email, phone, government IDs, street addresses) scanned over title/snippet/metadata only (no content field exists); per-class config chooses exclusion vs redaction; pattern sets pinned in config (explicit regex list per class, street addresses only from config patterns, no invented address grammar); one compiled alternation per class built at configure() (pattern count/length caps vs ReDoS); redaction appends a reason and never writes original_score/final_score (asserted in isolation). Records applied_filters entry + removed-count context metadata (safety-filter-removed shape). Tests in NEW tests/unit/test_filter_pack.py: each PII class x {redact, exclude}, redaction-leaves-score-fields-untouched (isolation), no-PII passthrough, simulate_outage fail-closed. No safety_filter, registry, or config changes.",
+          "done": "privacy_filter.py + PII tests green; outage raises with no partial hits."
+        },
+        {
+          "label": "t10-safety-ext",
+          "owns": "src/openlens/plugins/safety_filter.py, tests/unit/test_plugin_contract.py",
+          "task": "Implement filter-pack Scope/Step 2 only: EXTEND src/openlens/plugins/safety_filter.py in place (never a second blocklist owner). Fix host matching: parse via urlparse().hostname (not substring 'domain in url', not urlparse().netloc) so evil-example.com and example.com.evil.test do NOT match a block on example.com; port/userinfo URLs parse to the bare host. Add URL-pattern lists (glob/regex from config, compiled once at configure(), ran after the host-set check; pattern caps vs ReDoS) and allowlist mode default-deny ONLY when context.request.mode == 'child-safe' (no other mode implies it). Keep existing safety-filter tests green (tests in tests/unit/test_plugin_contract.py extend it with: allowlist unlisted-excluded/listed-passes, the two substring false-positive regressions, host-parsing cases, glob+regex patterns). No other plugin/registry/config changes.",
+          "done": "safety_filter.py matcher fixed + allowlist/patterns landed; extended contract tests green incl. prior safety behavior."
+        },
+        {
+          "label": "t10-user-rules",
+          "owns": "src/openlens/plugins/user_restrictions.py, tests/unit/test_user_restrictions.py",
+          "task": "Implement filter-pack Scope/Step 3 only: NEW src/openlens/plugins/user_restrictions.py UserRestrictionsFilter (FILTER plugin, FILTERING stage, mandatory=True, fail-closed). Owns the SearchRequest.filters schema: user restriction keys are must/must-not terms + domain rules; user terms are literals escaped before any regex use (per-request input never a raw regex); expressions compiled once per request into a predicate. Raise sites pinned: malformed CONFIG lists raise ConfigError at configure() (500 config_error); malformed per-request filters raise PluginError(mandatory=True) from the applier (fail-closed 500 plugin_error). D4 carve-out: unknown-key rejection MUST accept-and-pass-through reserved consumer keys without consuming or rejecting them: any prefer_* key, max_price, location, AND facilities (rerank pack consumer; facilities is part of the reservation); only keys outside the owned schema and that reservation are rejected. Tests in NEW tests/unit/test_user_restrictions.py: each operator, invalid-expression rejection per raise site, unknown-key rejection, and reserved-key pass-through incl. an explicit facilities pass-through assertion. No other plugin/registry/config changes.",
+          "done": "user_restrictions.py + tests green incl. facilities pass-through and both raise sites."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t10-integrate",
+    "owns": "src/openlens/core/registry.py, configs/default.yaml, tests/integration/test_filter_pack_flow.py",
+    "task": "Wire the three filters (plan Step 4): register privacy-filter and user-restrictions short names in BUILTIN_PLUGINS (src/openlens/core/registry.py), add the plugin entries to configs/default.yaml, and declare the mandated FILTERING order via plugin dependencies (user restrictions -> blocklist/allowlist -> privacy) so the topological sort enforces it. Write tests/integration/test_filter_pack_flow.py proving: order asserted via plugin_executions (not declaration order alone); fixture hit-list with one PII hit per class, one hit per blocked domain/pattern, and user-expression violators reduces to exactly the compliant subset with each removal attributed in applied_filters; per-filter simulate_outage -> request raises with no partial result list; removed-counts evidence asserted on applied_filters + context.metadata in-process (API surfacing deferred); leave the Wave-2F conformance handoff note (stage/isolation/explanation) as a comment in the integration test file. Fix cross-wave fallout. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "All three filters ordered and green end-to-end (compliant subset + attribution + outage raises); full suite + ruff + mypy clean."
+  }
+}

@@ -39,10 +39,27 @@ providers:
 
 # Pipeline plugins, toggled without core edits. Entries are
 # `{name, enabled, config?}` resolved via the plugin registry.
+# The three mandatory FILTERING plugins run in the mandated order
+# user-restrictions -> safety-filter -> privacy-filter; the registry
+# declares that chain via plugin dependencies, so the pipeline's
+# topological sort enforces it regardless of entry order here.
 plugins:
+  - name: user-restrictions
+    enabled: true
+    config: {}
   - name: safety-filter
     enabled: true
     config: {}
+  - name: privacy-filter
+    enabled: true
+    config:
+      # Street addresses match only config-supplied patterns (no
+      # invented address grammar); email/phone/government_id use the
+      # filter's built-in pinned patterns. All classes default to
+      # exclusion.
+      patterns:
+        street_address:
+          - '\b\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:Street|Avenue|Road|Lane|Drive)\b'
   - name: baseline-scorer
     enabled: true
     config: {}
