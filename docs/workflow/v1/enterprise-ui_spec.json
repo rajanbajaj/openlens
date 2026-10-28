@@ -1,0 +1,48 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1316_enterprise-ui_plan.md",
+  "context_path": "docs/workflow/v1/frontend_context.md",
+  "waves": [
+    {
+      "name": "contracts-design",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "wave0-design",
+          "owns": "frontend/src/index.css, frontend/src/components/ui/*, frontend/src/App.tsx, frontend/src/api/types.ts, frontend/src/api/guard.ts, frontend/tests/fixtures/enterprise/*",
+          "task": "Enterprise UI foundation (plan steps 1+6, contracts half). Read the enterprise plan, frontend_context.md, and src/openlens/api/schemas.py. (a) Design tokens in index.css (color, spacing, typography, radius, elevation; light theme; responsive breakpoints; visible focus states; contrast-checked; prefers-reduced-motion respected) + shared primitives under components/ui/ (button, input, select, chip, card, drawer, badge, skeleton, toast); migrate App.tsx shell onto primitives without behavior change. (b) Extend types.ts/guard.ts with every new backend field the plan's surfaces need (T9 intent/mode suggestion, T10 filter schema keys incl. prefer_*/max_price/location/facilities + applied_filters attribution, T11 signals + original/final scores, T12 story_id/commerce attributes, T13 provider_prefs/also_from/costs, T14 AI summary + ai_model, T15 request_id/latencies/plugin executions/fallback/errors) — mirror schemas.py, never ahead of it. Add fixture responses under frontend/tests/fixtures/enterprise/ (full-envelope, AI-absent, malformed-diagnostics). Visual-design constraint (binding): avoid AI-slop defaults — no purple/indigo/violet accents or gradients, no gradient headline text, no cream page background, no aurora blobs or glowing shadows, no single font/weight/size throughout, no tracked all-caps micro-kickers, no 3-card icon grids, no bento grid, no identical radius everywhere, no glassmorphism on every surface, no hover:scale lifts, no emoji icons, no left-border accent cards, no scroll-triggered fade-ups everywhere. A restrained, professional enterprise look; user requests and the plan win over this constraint where they conflict. No src/ (backend) edits.",
+          "done": "Primitives render-tested; existing App tests green; types.ts covers all new fields with guard validation; fixtures parse through guard clean."
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "wave1a-workspace",
+          "owns": "frontend/src/components/SearchForm.tsx, frontend/src/components/ModeSelector.tsx, frontend/src/components/FilterToggle.tsx, frontend/src/components/FilterPanel.tsx, frontend/src/components/Pagination.tsx, frontend/src/api/filterSchema.ts",
+          "task": "Search workspace (plan step 3). Query input with validation, mode selector, T9 intent/mode suggestion chip (explicit mode always wins), advanced-filters panel driven by a typed filter-schema module (frontend/src/api/filterSchema.ts mirroring T10 keys incl. prefer_*, max_price, location, facilities; block/allow indicators), applied-filter chips with per-filter attribution, server-side pagination bound to limit/offset/total. Consume wave0 types/guard/fixtures (read-only). Same visual-design constraint as wave0 (no AI-slop defaults; restrained enterprise look). No src/ edits; no fetch outside client.ts (use the existing client; request-body assertions via client mock).",
+          "done": "Component tests green with mocked client: set/clear filters shape the request body, suggestion chip defers to explicit mode, pagination math correct."
+        },
+        {
+          "label": "wave1b-transparency",
+          "owns": "frontend/src/components/ResultCard.tsx, frontend/src/components/ResultList.tsx, frontend/src/components/AppliedFilters.tsx, frontend/src/components/StoryGroup.tsx, frontend/src/components/AISummary.tsx, frontend/src/components/States.tsx",
+          "task": "Result transparency (plan step 4). Result cards: title/snippet/url, provider badge, final_score with expandable score breakdown (original vs final, T11 signals bars/labels), reasons + visually distinct trust warnings, T12 story-group headers (StoryGroup.tsx by story_id) and commerce attributes (price, facilities), T14 AI summary/perspectives block (AISummary.tsx) clearly labelled with ai_model and marked AI-generated — renders nothing when AI is absent (prove with the AI-absent fixture). Loading skeletons, empty, and error-envelope states (plain language, never raw JSON). Consume wave0 types/guard/fixtures (read-only). Same visual-design constraint as wave0. No src/ edits.",
+          "done": "Component tests green with fixture props per backend shape; AI-absent fixture renders no AI chrome; error envelope maps to plain-language states."
+        },
+        {
+          "label": "wave1c-federation",
+          "owns": "frontend/src/components/DiagnosticsDrawer.tsx, frontend/src/components/ProviderPrefs.tsx, frontend/src/api/client.ts",
+          "task": "Federation + diagnostics (plan step 5). Provider-preference control (ProviderPrefs.tsx; T13 provider_prefs, only enabled providers offered), per-result also_from badges (rendered inside existing ResultCard via props — do not edit ResultCard.tsx; export a small AlsoFrom component from ProviderPrefs.tsx for the integrate wave to wire in), diagnostics drawer upgraded to a timeline: copyable T15 request_id, provider latencies + result counts/estimated costs, plugin executions with stage/status/latency, fallback indicator, error list. Raw metadata behind an explicit developer-details disclosure only. Extend client.ts to send provider_prefs in the request body. Unknown/missing diagnostics keys degrade gracefully (guard rejects malformed; UI never crashes on absent optional keys). Consume wave0 types/guard/fixtures (read-only). Same visual-design constraint as wave0. No src/ edits.",
+          "done": "Component tests green: prefs shape the request, timeline renders full + sparse diagnostics without crashing, malformed payloads rejected by guard."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "wave2-integrate",
+    "owns": "wiring and fixes anywhere under frontend/ (no new features, no src/ edits)",
+    "task": "Wire the workspace, transparency, and federation surfaces into the app (incl. AlsoFrom badges into ResultCard); add axe-core (dev-only) checks in Vitest for the search flow (zero critical violations), keyboard-navigation tests (tab order, Enter/Escape in drawer/panel), aria-live result announcements, focus management on result updates, contrast verification of tokens; extend the OPENLENS_SMOKE_URL live smoke test to the new surfaces and the backend-stopped error path; bundle-budget check (lazy-load the diagnostics rail) + responsive pass at 360/768/1280px + error-envelope mapping for every backend code to plain language; run npm run lint, npm run format:check, npm test, npm run build, npm audit --omit=dev until all green, fixing fallout; Docker stack check via /api/ proxy. Report the enterprise plan's Definition-of-Done checklist with pass/fail per item and the exact command evidencing each pass.",
+    "done": "All five frontend gates green, axe zero-critical, smoke observed live + stopped, summary carries the DoD checklist with per-item evidence."
+  }
+}
