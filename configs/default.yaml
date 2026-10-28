@@ -49,3 +49,21 @@ plugins:
 
 ranking:
   default_profile: "default"
+
+# Ingestion policies for the polite crawler + incremental indexer
+# (crawler-index plan, step 4). Consumed by `PoliteCrawler.configure()`
+# (and the future indexer `configure()`): unknown keys are rejected
+# loudly there because `load_config` itself is permissive. Policies
+# only — no URLs are fetched unless explicitly configured.
+indexing:
+  timeout_s: 5
+  crawl_delay_s: 0.5
+  max_pages: 100
+  max_bytes: 1000000
+  max_queued_urls: 10000
+  max_tracked_domains: 1000
+  allowed_content_types: ["text/html", "text/plain"]
+  allow_domains: []
+  deny_domains: []
+  user_agent: "OpenLensBot/1.0"
+  respect_robots: true

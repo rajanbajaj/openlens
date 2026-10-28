@@ -6,14 +6,33 @@ with a companion FTS5 index for full-text retrieval.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
-from typing import Any
+from typing import Any, Optional
 
 from openlens.core.interfaces import Document, ProviderError
 
 _PROVIDER_NAME = "custom_index"
+
+
+def content_hash_of(content: str) -> str:
+    """Canonical content hash: sha256 over the stored content bytes."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def normalize_url(url: Optional[str]) -> Optional[str]:
+    """Ingest-time URL normalization.
+
+    Uses exactly the query-time rule from
+    `retrieval/deduplicator.py::dedupe_key` (`url.strip().lower().rstrip("/")`)
+    so ingest-time dedup can never disagree with query-time dedup.
+    `None` stays `None` (SQLite UNIQUE indexes admit multiple NULLs).
+    """
+    if url is None:
+        return None
+    return url.strip().lower().rstrip("/")
 
 
 class DocumentRepository:
@@ -45,14 +64,52 @@ class DocumentRepository:
                     title TEXT NOT NULL,
                     content TEXT NOT NULL,
                     url TEXT,
-                    metadata TEXT NOT NULL DEFAULT '{}'
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT,
+                    url_norm TEXT
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     doc_id UNINDEXED, title, content
                 );
                 """
             )
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Idempotent migration: content_hash/url_norm columns, backfill, indexes.
+
+        Safe on a fresh DB (columns already exist, nothing to backfill), on a
+        pre-hash DB (ALTER TABLE adds the columns, existing rows are backfilled
+        with the canonical hash/normalization), and on a second run (columns
+        exist, only still-NULL rows are touched, indexes use IF NOT EXISTS).
+        Must be called with the lock held.
+        """
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "content_hash" not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        if "url_norm" not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN url_norm TEXT")
+        rows = self._conn.execute(
+            "SELECT id, content, url FROM documents "
+            "WHERE content_hash IS NULL OR (url_norm IS NULL AND url IS NOT NULL)"
+        ).fetchall()
+        for row in rows:
+            self._conn.execute(
+                "UPDATE documents SET content_hash = ?, url_norm = ? WHERE id = ?",
+                (content_hash_of(row["content"]), normalize_url(row["url"]), row["id"]),
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_url_norm "
+            "ON documents(url_norm)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_content_hash "
+            "ON documents(content_hash)"
+        )
 
     def add_document(self, doc: Document) -> None:
         self.add_documents([doc])
@@ -66,9 +123,18 @@ class DocumentRepository:
                     # bound ? parameter; no user input is interpolated.
                     self._conn.execute(
                         "INSERT OR REPLACE INTO documents "  # noqa: S608
-                        + "(id, title, content, url, metadata)"
-                        " VALUES (?, ?, ?, ?, ?)",
-                        (doc.id, doc.title, doc.content, doc.url, metadata),
+                        + "(id, title, content, url, metadata,"
+                        " content_hash, url_norm)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            doc.id,
+                            doc.title,
+                            doc.content,
+                            doc.url,
+                            metadata,
+                            content_hash_of(doc.content),
+                            normalize_url(doc.url),
+                        ),
                     )
                     self._conn.execute(
                         "DELETE FROM documents_fts WHERE doc_id = ?", (doc.id,)
@@ -85,6 +151,98 @@ class DocumentRepository:
                 code=ProviderError.UNAVAILABLE,
             ) from exc
         return len(docs)
+
+    def update_document(self, doc: Document) -> bool:
+        """Rewrite a document (and its FTS row) by id. False when missing."""
+        try:
+            with self._lock, self._conn:
+                metadata = json.dumps(doc.metadata or {})
+                cursor = self._conn.execute(
+                    "UPDATE documents SET title = ?, content = ?, url = ?,"
+                    " metadata = ?, content_hash = ?, url_norm = ?"
+                    " WHERE id = ?",
+                    (
+                        doc.title,
+                        doc.content,
+                        doc.url,
+                        metadata,
+                        content_hash_of(doc.content),
+                        normalize_url(doc.url),
+                        doc.id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    return False
+                self._conn.execute(
+                    "DELETE FROM documents_fts WHERE doc_id = ?", (doc.id,)
+                )
+                self._conn.execute(
+                    "INSERT INTO documents_fts (doc_id, title, content)"
+                    " VALUES (?, ?, ?)",
+                    (doc.id, doc.title, doc.content),
+                )
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to update document: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return True
+
+    def delete_document(self, doc_id: str) -> bool:
+        """Remove a document and its FTS row. False when missing."""
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "DELETE FROM documents_fts WHERE doc_id = ?", (doc_id,)
+                )
+                cursor = self._conn.execute(
+                    "DELETE FROM documents WHERE id = ?", (doc_id,)
+                )
+                if cursor.rowcount == 0:
+                    return False
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to delete document: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return True
+
+    def get_hash(self, doc_id: str) -> Optional[str]:
+        """Return the stored content hash, or None when missing/unmigrated."""
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT content_hash FROM documents WHERE id = ?",
+                    (doc_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to fetch document hash: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        if row is None:
+            return None
+        value: Any = row["content_hash"]
+        return str(value) if value is not None else None
+
+    def hash_exists(self, content_hash: str) -> bool:
+        """True when any document carries this content hash."""
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT 1 AS found FROM documents WHERE content_hash = ? LIMIT 1",
+                    (content_hash,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to look up content hash: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return row is not None
 
     def get(self, doc_id: str) -> Document | None:
         try:

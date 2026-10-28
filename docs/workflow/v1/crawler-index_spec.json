@@ -1,0 +1,42 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1237_crawler-index_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t8-repo",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t8-repo",
+          "owns": "src/openlens/storage/repository.py, tests/unit/test_crawler_index.py",
+          "task": "Implement crawler-index plan Step 1 only: repository primitives on SQLite. Add update_document / delete_document (both keep documents_fts rows in sync), get_hash(doc_id) / hash_exists(hash), content_hash TEXT column via idempotent migration (ALTER TABLE + sha256(content.encode('utf-8')) backfill; safe on fresh, pre-hash, and second-run DBs), UNIQUE index on normalized URL (reuse the dedupe_key normalization rule from retrieval/deduplicator.py, do not invent a second one) and index on content_hash. Write tests/unit/test_crawler_index.py covering: FTS rows follow document rows on update and delete; migration on fresh DB, pre-hash DB, and run-twice (same hashes, same row counts). Keep existing repository tests green. No crawler, no indexer-flow, no config changes.",
+          "done": "repository.py has update/delete/hash primitives + migration + indexes; tests/unit/test_crawler_index.py passes with the migration cases; existing storage tests still green."
+        }
+      ]
+    },
+    {
+      "name": "t8-ingest",
+      "mode": "parallel",
+      "agents": [
+        {
+          "label": "t8-indexer",
+          "owns": "src/openlens/indexing/indexer.py, tests/unit/test_crawler_index.py",
+          "task": "Implement crawler-index plan Step 2 only: indexer update/reindex/incremental flows on top of the Step-1 repository primitives (already landed; read their final signatures before coding). Ingest dedup reconciled with query-time retrieval/deduplicator.py via one shared normalization (same URL + same hash -> skip write; same URL + new hash -> update; new URL + known hash -> skip as duplicate with a counter). Chunked commits: one add_documents call per 500-doc chunk so the repository lock is released between chunks. Preserve ranking-critical stored fields on reindex (stable id, verbatim title/content, stored trusted/recency_score metadata). Extend tests/unit/test_crawler_index.py with incremental/dupe/chunk cases. Do not touch repository.py, crawler.py, or configs.",
+          "done": "indexer.py supports add/update/delete/incremental/reindex with the dedup rule + chunking; extended unit tests pass."
+        },
+        {
+          "label": "t8-crawler",
+          "owns": "src/openlens/indexing/crawler.py, tests/unit/test_crawler.py",
+          "task": "Implement crawler-index plan Step 3 only: NEW indexing/crawler.py polite fetcher producing raw documents for the indexer. httpx with enforced timeout_s (mirror providers/base.py run_bounded/timeout pattern, never an unbounded client). Politeness: robots.txt respected with a bounded per-host cache (one fetch per host per crawl), crawl-delay honored, max pages + streaming max-bytes cap, content-type allowlist, domain allow/deny lists. Bounded frontier (on-disk queue, max queued URLs, evict-oldest with counter) and bounded LRU per-domain politeness state. Tests in NEW tests/unit/test_crawler.py use only a local stub HTTP server (http.server in a thread, no network): robots respected, delay honored (elapsed >= delay), caps enforced, allow/deny enforced, robots fetched once per host (assert stub hit count), oversized body aborted by max-bytes. Unknown indexing-config keys rejected via ConfigError from crawler configure(). Do not touch repository.py, indexer.py, or configs.",
+          "done": "crawler.py + tests/unit/test_crawler.py pass offline against a stub server; no network in tests."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t8-integrate",
+    "owns": "configs/default.yaml, tests/integration/test_crawl_index_e2e.py",
+    "task": "Wire and prove the full T8 ingestion path (plan Step 4 + config). Add the indexing: section to configs/default.yaml (policies only: delays, timeouts, caps, domain lists; no URLs fetched unless configured) consumed by crawler/indexer configure(); expose the indexer entry point the future CLI will delegate to (owned by T8 per review seam S7). Write tests/integration/test_crawl_index_e2e.py (stub HTTP server only): crawl N pages -> count()==N; re-crawl unchanged -> same count and zero rewrites; one page edited -> incremental run rewrites exactly that row; deleted page -> search() no longer returns it after explicit delete. Fix fallout across waves, keep everything else green. Then run and report: UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q, UV_CACHE_DIR=/tmp/uv-cache uv run ruff check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run ruff format --check src tests, UV_CACHE_DIR=/tmp/uv-cache uv run mypy src.",
+    "done": "indexing: config section present; e2e test passes offline; full suite + ruff + mypy clean; Definition-of-Done checklist: stub-site crawl indexes N docs, unchanged re-crawl changes zero rows, one-page edit rewrites exactly that row."
+  }
+}
