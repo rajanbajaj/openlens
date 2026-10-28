@@ -1,7 +1,8 @@
 """Model-type registry: type name -> AIModelProvider subclass.
 
 Mirrors ``providers/registry.py``: the registry maps *type* names (``fake``,
-``claude``, ``muse``, ``local``) to classes, never to instances. The manager
+``claude``, ``muse``, ``local``, ``openai_compat``) to classes, never to
+instances. The manager
 instantiates one object per *enabled* config entry. Builtins register lazily
 via :func:`register_builtin_models` to keep optional client libraries out of
 the import path until actually used.
@@ -79,9 +80,11 @@ def register_builtin_models(*, force: bool = False) -> None:
         MuseModelProvider,
     )
     from openlens.models.fake import FakeModelProvider
+    from openlens.models.openai_compat import OpenAICompatModelProvider
 
     register("fake", FakeModelProvider)
     register("claude", ClaudeModelProvider)
     register("muse", MuseModelProvider)
     register("local", LocalModelProvider)
+    register("openai_compat", OpenAICompatModelProvider)
     _BUILTINS_REGISTERED = True

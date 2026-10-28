@@ -14,6 +14,7 @@ from openlens.models.backends import (
 from openlens.models.fake import FakeModelProvider
 from openlens.models.interfaces import AIModelProvider
 from openlens.models.manager import ModelManager
+from openlens.models.openai_compat import OpenAICompatModelProvider
 
 __all__ = [
     "AIModelProvider",
@@ -22,4 +23,5 @@ __all__ = [
     "LocalModelProvider",
     "ModelManager",
     "MuseModelProvider",
+    "OpenAICompatModelProvider",
 ]

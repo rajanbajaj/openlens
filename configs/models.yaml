@@ -7,9 +7,15 @@
 #
 # Per-entry keys:
 #   type:      model-type name resolved via the model registry
-#              (defaults to the entry name): fake | claude | muse | local.
+#              (defaults to the entry name):
+#              fake | claude | muse | local | openai_compat.
 #   enabled:   instantiate this backend at startup (default false).
 #   timeout_s: bounded per-call timeout in seconds (default 10).
+#
+# `openai_compat` is the neutral OpenAI-compatible chat-completions
+# transport (OpenAI, Meta developer API, Ollama, vLLM, ...): no vendor
+# SDK, key via ${MODEL_API_KEY}. Enable it and point `primary` at it
+# for live summaries; the default below stays offline-safe.
 #
 # The `fake` backend is the deterministic offline stand-in used by tests and
 # the AI plugin stub. Real backends (claude/muse/local) validate their own
@@ -44,4 +50,12 @@ models:
     type: local
     endpoint: ${LOCAL_MODEL_ENDPOINT:-http://localhost:11434}
     model: default
+    timeout_s: 10
+
+  openai_compat:
+    enabled: false
+    type: openai_compat
+    base_url: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
+    api_key: ${MODEL_API_KEY:-}
+    model: muse-spark-1.3
     timeout_s: 10
