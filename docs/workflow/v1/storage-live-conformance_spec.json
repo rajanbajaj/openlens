@@ -1,0 +1,48 @@
+{
+  "plan_path": "docs/workflow/tasks/2026-10-28-1618_storage-live-conformance_plan.md",
+  "context_path": "docs/workflow/v1/context.md",
+  "waves": [
+    {
+      "name": "t19-packaging",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t19-packaging",
+          "owns": "pyproject.toml, uv.lock",
+          "task": "Implement storage-live-conformance plan Scope item 1 only. FIRST read docs/workflow/tasks/2026-10-28-1618_storage-live-conformance_plan.md and the repo test files tests/integration/test_storage_mysql.py (imports pymysql) and tests/integration/test_storage_postgres.py (imports psycopg v3) to pin the exact driver packages. Add [project.optional-dependencies] with mysql (pymysql) and postgres (psycopg v3, binary wheels preferred for CI) driver-only extras, slotting beside the existing redis extra — no hard dependencies change, SQLite stays zero-dep. Then refresh uv.lock (uv lock) and prove both proofs from the plan DoD: (a) installing with --extra mysql/--extra postgres brings the driver without touching the default lock, (b) a default install imports neither driver (python -c 'import pymysql' and 'import psycopg' both fail). Verify lazy imports + ProviderError(UNAVAILABLE) behavior is untouched by running the driver-absence unit tests. No src/, config, CI, or README changes.",
+          "done": "mysql/postgres extras in pyproject.toml, uv.lock refreshed, default install driver-free proven, driver-absence tests green."
+        }
+      ]
+    },
+    {
+      "name": "t19-ci",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t19-ci",
+          "owns": ".github/workflows/ci.yml",
+          "task": "Implement storage-live-conformance plan Scope item 2 only. FIRST read .github/workflows/ci.yml (backend job: uv sync --group dev, ruff, mypy, pytest, pip-audit) and the plan. Add MySQL + Postgres service containers to the backend job (pinned versions, health checks, root passwords via job env, mapped ports), install the matching extra for each service run, set OPENLENS_TEST_MYSQL_DSN / OPENLENS_TEST_PG_DSN from the service outputs, and run the env-gated suites tests/integration/test_storage_mysql.py and tests/integration/test_storage_postgres.py with zero skips expected. Keep every existing gate step untouched and passing (ruff, format check, mypy, full pytest, pip-audit, frontend job, gitleaks job). Validate YAML syntax (python -c yaml.safe_load) and, if a docker daemon is reachable in this environment, prove the service definitions boot (docker run --rm with the same image/env) — otherwise report CI-first-run as the proof path. No src/, pyproject, test, or README changes.",
+          "done": "CI backend job runs both storage suites live against service containers with zero skips; YAML valid; existing gates untouched."
+        }
+      ]
+    },
+    {
+      "name": "t19-readme",
+      "mode": "solo",
+      "agents": [
+        {
+          "label": "t19-readme",
+          "owns": "README.md",
+          "task": "Implement storage-live-conformance plan Scope item 5 only. FIRST read the plan and the landed storage code (src/openlens/storage/base.py docstring, src/openlens/storage/mysql_backend.py + postgres_backend.py lossy-translation notes, src/openlens/main.py _storage_section/_sqlite_db_path for field names and env-var conventions). Document the top-level storage: section in README (backend switch sqlite|mysql|postgres, sqlite/mysql/postgres fields, OPENLENS_MYSQL_*/OPENLENS_PG_* env vars, mysql/postgres driver extras install), plus the known lossy FTS5 -> FULLTEXT / plainto_tsquery translation caveat and the WAL/pool notes. Match the README's existing table/prose style; document only shipped behavior (read the code, do not invent fields). No src/, pyproject, CI, or test changes.",
+          "done": "README documents storage: section, env vars, extras, lossy-translation caveat, WAL/pool notes; no invented fields."
+        }
+      ]
+    }
+  ],
+  "integrate": {
+    "label": "t19-integrate",
+    "owns": "(no new files; verification only, fix fallout in place if the fix belongs to no wave)",
+    "task": "Verify storage-live-conformance plan Definition of Done end to end. FIRST check for reachable live servers: docker daemon (docker info), else OPENLENS_TEST_MYSQL_DSN / OPENLENS_TEST_PG_DSN in the environment. If servers exist (local docker services or DSNs), install the matching extras and run tests/integration/test_storage_mysql.py (expect 11/11, zero skipped) and tests/integration/test_storage_postgres.py (expect 13/13 incl. GIN/EXPLAIN assertion, zero skipped). If no servers are reachable, record that explicitly with the exact probe output and name the CI service-container run as the remaining proof — never claim live green without it. Then, regardless: run the driver-absence unit tests with drivers uninstalled, the full offline suite, ruff check, ruff format --check, mypy src, and pip-audit. Fix cross-wave fallout (pyproject/CI/README inconsistencies) in place. Report the plan DoD checklist item by item with the exact command evidencing each.",
+    "done": "DoD checklist reported with evidence; live suites green where servers exist (or explicitly blocked with CI as proof path); full suite + all gates clean."
+  }
+}

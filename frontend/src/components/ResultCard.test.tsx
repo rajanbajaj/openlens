@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SearchResult } from '../api/types.ts';
 import { ResultCard } from './ResultCard.tsx';
@@ -52,13 +52,59 @@ describe('ResultCard transparency', () => {
     expect(ai).toHaveTextContent('Two models compared.');
     expect(ai).toHaveTextContent('rule-based');
     expect(ai).toHaveTextContent('AI-generated content');
+    expect(ai).not.toHaveTextContent('Sources:');
+    expect(screen.queryByTestId('result-ai-sources')).not.toBeInTheDocument();
     expect(screen.getByTestId('result-understanding')).toHaveTextContent('shopping');
 
     rerender(<ResultCard result={{ ...RICH_RESULT, metadata: {} }} />);
     expect(screen.queryByTestId('result-ai')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('result-ai-sources')).not.toBeInTheDocument();
     expect(screen.queryByTestId('result-understanding')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /show score breakdown/i }));
     expect(screen.getByTestId('result-breakdown')).toHaveTextContent('No scoring signals');
+  });
+
+  it('renders source links inside the AI block with correct hrefs', () => {
+    const result: SearchResult = {
+      ...RICH_RESULT,
+      metadata: {
+        ...RICH_RESULT.metadata,
+        ai_citations: [
+          { id: 'r1', title: 'Acme Headphones', url: 'https://example.com/h' },
+          { id: 'r2', title: 'Unlinked Review', url: null },
+        ],
+      },
+    };
+    render(<ResultCard result={result} />);
+    const sources = screen.getByTestId('result-ai-sources');
+    expect(sources).toHaveTextContent('Acme Headphones');
+    expect(sources).toHaveTextContent('Unlinked Review');
+    const link = within(sources).getByRole('link', { name: 'Acme Headphones' });
+    expect(link).toHaveAttribute('href', 'https://example.com/h');
+    expect(
+      within(sources).queryByRole('link', { name: 'Unlinked Review' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders no sources chrome for absent or malformed citations', () => {
+    const malformed: SearchResult = {
+      ...RICH_RESULT,
+      metadata: {
+        ...RICH_RESULT.metadata,
+        ai_citations: ['https://example.com/h', null, {}, { id: 'no-title' }],
+      },
+    };
+    const { rerender } = render(<ResultCard result={malformed} />);
+    expect(screen.getByTestId('result-ai')).toBeInTheDocument();
+    expect(screen.queryByTestId('result-ai-sources')).not.toBeInTheDocument();
+
+    rerender(
+      <ResultCard
+        result={{ ...RICH_RESULT, metadata: { ...RICH_RESULT.metadata, ai_citations: 'nope' } }}
+      />,
+    );
+    expect(screen.getByTestId('result-ai')).toBeInTheDocument();
+    expect(screen.queryByTestId('result-ai-sources')).not.toBeInTheDocument();
   });
 
   it('keeps trust warnings visually distinct from reasons', () => {

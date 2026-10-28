@@ -225,7 +225,13 @@ class AISummaryPlugin(BasePlugin):
                 ) from exc
             # Assigned only after both calls succeed (per-result atomic),
             # and stored as returned — never re-truncated here.
+            # ai_citations is a single-entry list today (each digest is
+            # built from its own result alone); a list so future
+            # multi-source digests fit without a shape change.
             result.metadata["ai_summary"] = summary
             result.metadata["ai_perspectives"] = perspectives
             result.metadata["ai_model"] = self._model.name
+            result.metadata["ai_citations"] = [
+                {"id": result.id, "title": result.title, "url": result.url}
+            ]
         return context

@@ -7,6 +7,8 @@
  * the UI never crashes on absent or malformed optional keys.
  */
 
+import type { AiCitation } from './types.ts';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -86,6 +88,31 @@ export interface AiDigest {
   summary: string;
   perspectives: string[];
   model: string;
+  citations: AiCitation[];
+}
+
+/**
+ * `metadata.ai_citations` (T22): array of `{id, title, url}` source
+ * records. Non-array values, non-record entries, and records missing a
+ * usable id or title are dropped — never a crash. An empty or missing
+ * url degrades to `url: null` (rendered as plain title text).
+ */
+export function resultAiCitations(metadata: Record<string, unknown>): AiCitation[] {
+  const raw = metadata['ai_citations'];
+  if (!Array.isArray(raw)) return [];
+  const citations: AiCitation[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue;
+    const { id, title, url } = entry;
+    if (typeof id !== 'string' || id === '') continue;
+    if (typeof title !== 'string' || title === '') continue;
+    citations.push({
+      id,
+      title,
+      url: typeof url === 'string' && url !== '' ? url : null,
+    });
+  }
+  return citations;
 }
 
 /**
@@ -100,6 +127,7 @@ export function resultAiDigest(metadata: Record<string, unknown>): AiDigest | nu
     summary,
     perspectives: asStringArray(metadata['ai_perspectives']),
     model: typeof model === 'string' && model !== '' ? model : 'unknown',
+    citations: resultAiCitations(metadata),
   };
 }
 

@@ -11,11 +11,13 @@ from typing import Any
 import pytest
 
 from openlens.core.context import SearchContext
+from openlens.api.schemas import SearchResponseSchema
 from openlens.core.interfaces import (
     ConfigError,
     PluginError,
     ProviderError,
     SearchRequest,
+    SearchResponse,
     SearchResult,
 )
 from openlens.core.pipeline import Pipeline
@@ -238,3 +240,87 @@ def test_timeout_request_still_succeeds_minus_ai_fields_via_diagnostics() -> Non
     assert executions[0]["error"]
     assert "timed out" in executions[0]["error"].lower()
     assert diagnostics["errors"]
+
+
+# -- citations ---------------------------------------------------------------
+
+
+def _cited_result(
+    id: str, title: str = "Cats", url: str | None = "https://example.com/cats"
+) -> SearchResult:
+    return SearchResult(
+        id=id,
+        title=title,
+        snippet="Cats nap.",
+        url=url,
+        original_score=1.0,
+        final_score=1.0,
+    )
+
+
+def test_citations_present_and_self_matching_on_enriched() -> None:
+    plugin = AISummaryPlugin({"enrich_top_k": 2}, model=FakeModelProvider())
+    context = SearchContext(
+        request=SearchRequest(query="cats", mode="default", limit=10, offset=0),
+        results=[
+            _cited_result("1", title="Cats", url="https://example.com/1"),
+            _cited_result("2", title="Dogs", url="https://example.com/2"),
+            _cited_result("3", title="Fish", url="https://example.com/3"),
+        ],
+    )
+    context = plugin.run(context)
+    for result in context.results[:2]:
+        citations = result.metadata["ai_citations"]
+        assert citations == [
+            {"id": result.id, "title": result.title, "url": result.url}
+        ]
+
+
+def test_citations_absent_on_unenriched() -> None:
+    plugin = AISummaryPlugin({"enrich_top_k": 1}, model=FakeModelProvider())
+    context = SearchContext(
+        request=SearchRequest(query="cats", mode="default", limit=10, offset=0),
+        results=[_cited_result("1"), _cited_result("2")],
+    )
+    context = plugin.run(context)
+    assert "ai_citations" in context.results[0].metadata
+    assert "ai_citations" not in context.results[1].metadata
+
+
+def test_citations_absent_when_enrichment_disabled() -> None:
+    plugin = AISummaryPlugin({"enrich_top_k": 0}, model=FakeModelProvider())
+    context = plugin.run(_context(2))
+    for result in context.results:
+        assert "ai_citations" not in result.metadata
+
+
+def test_citations_absent_after_backend_failure() -> None:
+    hanging = _HangingModel()
+    hanging.configure({"timeout_s": 0.05})
+    context = Pipeline([AISummaryPlugin(model=hanging)]).run(_context(2))
+    for result in context.results:
+        assert "ai_citations" not in result.metadata
+
+
+def test_wire_carries_citations_with_zero_schema_changes() -> None:
+    plugin = AISummaryPlugin(model=FakeModelProvider())
+    context = SearchContext(
+        request=SearchRequest(query="cats", mode="default", limit=10, offset=0),
+        results=[_cited_result("9", title="Owls", url="https://example.com/owls")],
+    )
+    enriched = plugin.run(context).results[0]
+    wire = SearchResponseSchema.from_core(
+        SearchResponse(
+            query="cats",
+            mode="default",
+            results=[enriched],
+            total=1,
+            applied_filters=[],
+            diagnostics={},
+        )
+    )
+    assert wire.results[0].metadata["ai_citations"] == [
+        {"id": "9", "title": "Owls", "url": "https://example.com/owls"}
+    ]
+    assert wire.results[0].metadata["ai_summary"]
+    assert wire.results[0].metadata["ai_model"] == "fake"

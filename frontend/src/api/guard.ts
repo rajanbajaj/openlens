@@ -5,6 +5,7 @@
  */
 
 import type {
+  AiCitation,
   CacheStatus,
   Diagnostics,
   ErrorEnvelope,
@@ -85,6 +86,16 @@ export function isDiagnostics(value: unknown): value is Diagnostics {
 export function isCacheStatus(value: unknown): value is CacheStatus {
   if (!isRecord(value)) return false;
   return value.status === undefined || typeof value.status === 'string';
+}
+
+/** One AI source-attribution entry (T22); structural check only. */
+export function isAiCitation(value: unknown): value is AiCitation {
+  if (!isRecord(value)) return false;
+  return (
+    (value.id === undefined || typeof value.id === 'string') &&
+    (value.title === undefined || typeof value.title === 'string') &&
+    (value.url === undefined || value.url === null || typeof value.url === 'string')
+  );
 }
 
 export function isProviderPrefs(value: unknown): value is ProviderPrefs {

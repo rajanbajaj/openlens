@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { resultAiDigest } from './enrichments.ts';
 import { isErrorEnvelope, isSearchResponse } from './guard.ts';
 import type { SearchResponse } from './types.ts';
 
@@ -213,5 +214,47 @@ describe('real backend response envelope fixture', () => {
     expect(isErrorEnvelope({ error: { code: 42 } })).toBe(false);
     expect(isSearchResponse(null)).toBe(false);
     expect(isErrorEnvelope(null)).toBe(false);
+  });
+
+  it('parses an envelope carrying AI metadata incl. ai_citations', () => {
+    const envelope: unknown = {
+      query: 'wireless headphones',
+      mode: 'shopping',
+      results: [
+        {
+          id: 'h1',
+          title: 'Acme Wireless Headphones',
+          snippet: 'Great sound',
+          original_score: 2.0,
+          final_score: 9.9,
+          url: 'https://example.com/h1',
+          provider: 'custom_index',
+          reasons: ['matches query'],
+          warnings: [],
+          metadata: {
+            ai_summary: 'Two models compared.',
+            ai_perspectives: [],
+            ai_model: 'rule-based',
+            ai_citations: [
+              { id: 'h1', title: 'Acme Wireless Headphones', url: 'https://example.com/h1' },
+            ],
+          },
+        },
+      ],
+      total: 1,
+      applied_filters: [],
+      diagnostics: {
+        fallback_used: false,
+        provider_latencies_ms: {},
+        plugin_executions: [],
+        errors: [],
+      },
+    };
+    expect(isSearchResponse(envelope)).toBe(true);
+    if (!isSearchResponse(envelope)) return;
+    const metadata = envelope.results[0]?.metadata as Record<string, unknown>;
+    expect(resultAiDigest(metadata)?.citations).toEqual([
+      { id: 'h1', title: 'Acme Wireless Headphones', url: 'https://example.com/h1' },
+    ]);
   });
 });

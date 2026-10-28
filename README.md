@@ -52,6 +52,63 @@ Secrets use `${ENV_VAR}` (or `${ENV_VAR:-default}`) references resolved at
 load time. An `${ENV_VAR}` with no value and no default fails startup
 validation loudly via `ConfigError` — secrets are never logged or returned.
 
+## Storage backends
+
+`storage.backend` in `configs/default.yaml` is the single switch
+(`sqlite` | `mysql` | `postgres`, default `sqlite`); per-backend
+connection fields live under `storage.sqlite` / `storage.mysql` /
+`storage.postgres`. An unknown backend or a non-mapping section fails
+startup validation loudly via `ConfigError`.
+
+| Backend | Fields |
+|---|---|
+| `sqlite` | `db_path` (default `data/openlens.db`; `:memory:` for ephemeral). The legacy provider-entry `db_path` still works as the fallback when `storage.sqlite.db_path` is unset; a config with no `storage:` section at all still boots SQLite. |
+| `mysql` | `host` / `port` (default `3306`) / `database` (`db` alias accepted) / `user` / `password` / `table` / `charset` / `pool_size` / `connect_timeout` / `checkout_timeout`. Conventional env vars `OPENLENS_MYSQL_HOST` / `OPENLENS_MYSQL_PORT` / `OPENLENS_MYSQL_DATABASE` / `OPENLENS_MYSQL_USER` / `OPENLENS_MYSQL_PASSWORD`. |
+| `postgres` | `host` / `port` (default `5432`) / `dbname` (`database` / `db` aliases accepted) / `user` / `password` / `schema` / `table` / `pool_size` / `connect_timeout` / `checkout_timeout`. Conventional env vars `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD`. |
+
+```yaml
+storage:
+  backend: sqlite
+  sqlite:
+    db_path: "data/openlens.db"
+```
+
+Server backends need their driver-only extras
+(`pip install openlens[mysql]` for `pymysql`, `pip install
+openlens[postgres]` for `psycopg` v3); SQLite has zero extra
+dependencies. Drivers lazy-import, so unconfigured backends add no
+import-time dependency — instantiating without the driver raises
+`ProviderError(UNAVAILABLE)`, never a raw `ImportError`, and connection
+failures at construction surface the same way.
+
+Known lossy FTS translation: `search` takes the already-parsed FTS5-shaped
+query string, and each server backend translates it to its native form
+without cross-engine normalization. MySQL passes it verbatim into
+`MATCH(title, content) AGAINST (... IN NATURAL LANGUAGE MODE)`, so FTS5
+phrase quotes, column filters, boolean operators, and `*` prefixes are
+treated as ordinary words/punctuation. Postgres strips phrase quotes,
+`*` prefixes, `^` boosts, `:` column filters, parentheses, and
+`AND`/`OR`/`NOT`/`NEAR` keywords, then passes the remainder to
+`plainto_tsquery('english', ...)` — which ANDs the surviving terms, so an
+FTS5 `OR` silently becomes an AND. Scores are engine-local
+(MySQL relevance, Postgres `ts_rank`, SQLite `-bm25` point the same
+direction but are never comparable across backends); only document id
+sets are expected to agree, and tokenization differences (MySQL
+stopwords / minimum token lengths, Postgres `english` stemming) can make
+id sets differ on some queries. Blank queries return `([], 0)` without
+touching the server.
+
+Concurrency: SQLite uses one shared connection plus a lock with
+`PRAGMA journal_mode=WAL` (readers don't block the single writer) and a
+busy timeout. MySQL and Postgres instead open a bounded connection pool
+at construction (`pool_size` default 5, blocking checkout with
+`checkout_timeout` default 5.0s, `connect_timeout` default 5s);
+`close()` drains every pooled connection and is idempotent. All backends
+share the same write contract: bulk writes commit per `chunk_size`
+chunk (default 500, no cross-chunk atomicity), upsert on repeated ids,
+`delete` of a missing id returns `False`, and `metadata` round-trips as
+a parsed dict.
+
 ## Pipeline
 
 Every request flows through 10 stages (`PipelineStage` in

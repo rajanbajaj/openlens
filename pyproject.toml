@@ -16,8 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # Cache backends (task 21). Drivers stay lazy: a default install imports
-# neither. Task 19 adds the mysql/postgres storage extras alongside this.
+# neither. Task 19 storage extras (driver-only; SQLite stays zero-dep).
 redis = ["redis>=5"]
+mysql = ["pymysql>=1.1"]
+postgres = ["psycopg[binary]>=3.1"]
 
 [build-system]
 requires = ["hatchling"]

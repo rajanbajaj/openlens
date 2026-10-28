@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resultAiCitations,
   resultAiDigest,
   resultAlsoFrom,
   resultCommerce,
@@ -51,6 +52,7 @@ describe('enrichment readers', () => {
       summary: 'Two headphones compared.',
       perspectives: ['Audiophiles prefer wired.'],
       model: 'rule-based',
+      citations: [],
     });
     expect(resultUnderstanding(RICH_METADATA)).toEqual({
       intent: 'shopping',
@@ -73,6 +75,54 @@ describe('enrichment readers', () => {
       facilities: ['wifi'],
       published: null,
     });
+  });
+
+  it('parses AI citations, degrading url-only gaps to plain-text entries', () => {
+    expect(
+      resultAiCitations({
+        ai_citations: [
+          { id: 'r1', title: 'Acme Headphones', url: 'https://example.com/h' },
+          { id: 'r2', title: 'Unlinked Review', url: null },
+          { id: 'r3', title: 'Missing Url' },
+        ],
+      }),
+    ).toEqual([
+      { id: 'r1', title: 'Acme Headphones', url: 'https://example.com/h' },
+      { id: 'r2', title: 'Unlinked Review', url: null },
+      { id: 'r3', title: 'Missing Url', url: null },
+    ]);
+    expect(
+      resultAiDigest({
+        ai_summary: 'Two headphones compared.',
+        ai_model: 'rule-based',
+        ai_citations: [{ id: 'r1', title: 'Acme Headphones', url: 'https://example.com/h' }],
+      })?.citations,
+    ).toEqual([{ id: 'r1', title: 'Acme Headphones', url: 'https://example.com/h' }]);
+  });
+
+  it('drops malformed AI citations without crashing', () => {
+    expect(resultAiCitations({})).toEqual([]);
+    expect(resultAiCitations({ ai_citations: 'https://example.com/h' })).toEqual([]);
+    expect(resultAiCitations({ ai_citations: null })).toEqual([]);
+    expect(
+      resultAiCitations({
+        ai_citations: [
+          null,
+          42,
+          'https://example.com/h',
+          {},
+          { id: 'no-title' },
+          { title: 'No Id' },
+          { id: '', title: 'Blank Id', url: 'https://example.com/blank' },
+          { id: 'r9', title: '', url: 'https://example.com/blank' },
+          { id: 'r1', title: 'Kept', url: 7 },
+          { id: 'r2', title: 'Blank Url', url: '' },
+        ],
+      }),
+    ).toEqual([
+      { id: 'r1', title: 'Kept', url: null },
+      { id: 'r2', title: 'Blank Url', url: null },
+    ]);
   });
 
   it('summarizes plugin executions with unknown-tolerant fallbacks', () => {

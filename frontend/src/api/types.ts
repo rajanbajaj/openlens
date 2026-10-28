@@ -90,6 +90,20 @@ export interface CacheStatus {
   status?: string;
 }
 
+/**
+ * Source attribution record for an AI digest (T22: `metadata.ai_citations`).
+ * Every field optional so malformed entries degrade instead of crashing;
+ * the enrichment reader keeps only entries with a usable id and title.
+ */
+export interface AiCitation {
+  /** Owning result id; absent on malformed records. */
+  id?: string;
+  /** Human-readable source title; absent on malformed records. */
+  title?: string;
+  /** Source link; absent or null when the backend reported none. */
+  url?: string | null;
+}
+
 /** POST /api/v1/search response body. */
 export interface SearchResponse {
   query: string;
