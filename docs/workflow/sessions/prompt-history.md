@@ -152,3 +152,12 @@ oldest first. Source: session JSONL logs; see `sessions/README.md`.
 31. postgress storage confirmation failed in ci. skipp it as well
 32. commit
 33. wrapup and exit
+
+## 2026-10-28-1919_spark-glass (01a18296-e1f4-7541-9cab-56016d52b506)
+
+1. go through this project .md files and build your context for this session
+2. let's build deploy/local check if any changes needed to run?
+3. curl -X POST localhost:8000/api/v1/search -H 'Content-Type: application/json' -d
+4. plan a ui/ux. Currently it is very bland. Make it using mordern glass components and better flow. We want to use workflow/ to implement
+5. also check the user flow and openlens features where they fit and how to
+6. implement this plan using workflow
