@@ -95,6 +95,10 @@ redeploys), or re-run the workflow from the last good commit. Data
 is safe across releases: named volumes persist and the pipeline
 never passes `-v`.
 
+Crawl workers: releases run `--scale crawler=3` (default); set
+`CRAWLER_SCALE` in the server's `release.env` to change it. Local
+dev stays at 1 replica unless you pass `--scale` yourself.
+
 Ops notes:
 
 - `:8000`/`:3000`/`:3001` bind all interfaces (LAN + tunnel);
