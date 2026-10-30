@@ -74,7 +74,7 @@ from openlens.retrieval.suggest import (
     correct_spelling,
     related_queries,
 )
-from openlens.storage.frontier import open_frontier_store
+from openlens.storage.frontier import normalize_frontier_url, open_frontier_store
 
 logger = logging.getLogger(__name__)
 
@@ -692,21 +692,31 @@ def _overlay_store_status(
                 depth = int(getattr(item, "depth", 0) or 0)
             except (TypeError, ValueError):
                 depth = 0
-        if url and url not in merged:
-            try:
-                priority = int(
-                    item.get("priority", 0)
-                    if isinstance(item, dict)
-                    else getattr(item, "priority", 0) or 0
-                )
-            except (TypeError, ValueError):
-                priority = 0
-            merged[url] = {
-                "url": url,
-                "depth": depth,
-                "status": "queued",
-                "priority": priority,
-            }
+        # Compare normalized URLs: the store keys rows by normalized URL,
+        # so a raw snapshot entry (trailing slash, fragment, case) must
+        # not shadow a terminal store row as still queued.
+        try:
+            key = normalize_frontier_url(url) if url else ""
+        except Exception:
+            key = url
+        if not key or key in merged:
+            continue
+        if _store_row_terminal(store, key):
+            continue
+        try:
+            priority = int(
+                item.get("priority", 0)
+                if isinstance(item, dict)
+                else getattr(item, "priority", 0) or 0
+            )
+        except (TypeError, ValueError):
+            priority = 0
+        merged[key] = {
+            "url": key,
+            "depth": depth,
+            "status": "queued",
+            "priority": priority,
+        }
     queue = list(merged.values())
     try:
         queued = int((counts or {}).get("queued", 0))
@@ -865,6 +875,22 @@ def _store_save_settings(app_config: Any, settings: Mapping[str, Any]) -> bool:
                 store.close()
     except Exception:
         return False
+
+
+def _store_row_terminal(store: Any, url: str) -> bool:
+    """Whether the store already finished ``url`` (done/failed/skipped).
+
+    Guards the status overlay against stale in-memory seeds: a raw seed
+    that the workers already processed must disappear instead of
+    reshowing as queued. Best effort — unknown means "still pending".
+    """
+    if store is None:
+        return False
+    try:
+        status = store.status_of(url)
+    except Exception:
+        return False
+    return status is not None and status not in ("queued", "active")
 
 
 def _store_get_settings(app_config: Any) -> dict[str, Any]:

@@ -248,6 +248,15 @@ class FrontierStore(ABC):
         """True when the normalized URL already has a queue row."""
         raise NotImplementedError
 
+    def status_of(self, url: str) -> str | None:
+        """Row status for the normalized URL, None when unknown.
+
+        Concrete (non-abstract) so older/test doubles keep working;
+        lets the dashboard drop stale in-memory seeds the store
+        already finished instead of reshowing them as queued.
+        """
+        return None
+
     @abstractmethod
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         """List ``queued`` + ``active`` rows in dequeue order."""
@@ -1345,6 +1354,25 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def status_of(self, url: str) -> str | None:
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return None
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT status FROM frontier_queue WHERE url = ? LIMIT 1",
+                    (norm,),
+                ).fetchone()
+                return str(row["status"]) if row is not None else None
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to look up frontier URL status: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         try:
             with self._lock:
@@ -2265,6 +2293,29 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to look up frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def status_of(self, url: str) -> str | None:
+        table = self._qualified("frontier_queue")
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return None
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT status FROM {table} WHERE url = %s LIMIT 1",  # noqa: S608
+                        (norm,),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+                return str(row[0]) if row is not None else None
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to look up frontier URL status: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

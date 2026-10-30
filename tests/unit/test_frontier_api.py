@@ -152,3 +152,37 @@ def test_status_overlays_store_truth(tmp_path) -> None:
     assert urls["https://example.com/seed"]["status"] == "queued"
     assert urls["https://example.com/pending-seed"]["status"] == "queued"
     assert body["queue_depth"] == 2
+
+
+def test_status_snapshot_entry_matching_terminal_store_row_not_shown_as_queued(
+    tmp_path,
+) -> None:
+    """A raw snapshot URL must not shadow its terminal store row as queued.
+
+    The store keys rows by normalized URL; the in-memory snapshot keeps
+    the raw seed (trailing slash). Without normalization the dashboard
+    shows a failed/done URL as still queued.
+    """
+    frontier_state.reset_frontier_state()
+    client = TestClient(create_app(engine=FakeEngine()))
+    db = str(tmp_path / "shadow.db")
+    config = dict(client.app.state.config)
+    config["storage"] = {"backend": "sqlite", "sqlite": {"db_path": db}}
+    client.app.state.config = config
+
+    store = SqliteFrontierStore(db)
+    try:
+        assert store.enqueue("https://example.com/article/", 0) is True
+        store.mark_failed("https://example.com/article/", "max_bytes abort")
+    finally:
+        store.close()
+    # Stale in-memory snapshot entry with the un-normalized seed URL.
+    frontier_state.get_frontier_state().queue.append(
+        {"url": "https://example.com/article/", "depth": 0, "status": "queued"}
+    )
+
+    body = client.get("/api/v1/frontier/status").json()
+    urls = {entry["url"]: entry for entry in body["queue"]}
+    # Terminal store row wins: the stale in-memory seed disappears
+    # instead of reshowing as queued.
+    assert urls == {}
