@@ -5,6 +5,7 @@ import {
   fetchFrontierStatus,
   fetchFrontierWorkers,
   frontierAdminHeaders,
+  frontierLiveUrl,
   pauseFrontier,
   resumeFrontier,
   saveAdminConfig,
@@ -71,6 +72,12 @@ describe('frontierAdminHeaders', () => {
   });
 });
 
+describe('frontierLiveUrl', () => {
+  it('maps the API base to the live socket path', () => {
+    expect(frontierLiveUrl()).toBe('ws://localhost:8000/api/v1/frontier/live');
+  });
+});
+
 describe('frontier mutations reuse the single X-Admin-Token gate', () => {
   it('pause sends no admin header by default', async () => {
     const { fetchImpl, calls } = captureFetch(STATUS);
@@ -90,6 +97,15 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
     expect(calls[0][0]).toContain('/api/v1/frontier/resume');
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({ seeds: ['https://example.com'] });
     expect(headerOf(calls[0])['X-Admin-Token']).toBe('secret');
+  });
+
+  it('resume includes priority only when given', async () => {
+    const { fetchImpl, calls } = captureFetch(STATUS);
+    await resumeFrontier(['https://example.com'], fetchImpl, 'secret', 6);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      seeds: ['https://example.com'],
+      priority: 6,
+    });
   });
 
   it('save settings PUTs the document with the admin token', async () => {

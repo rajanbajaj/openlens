@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi.testclient import TestClient
+import pytest
 
 from openlens.core.interfaces import (
     ConfigError,
@@ -419,3 +420,68 @@ def test_feedback_body_carries_no_identifiers() -> None:
     )
     assert resp.status_code == 200, resp.text
     assert set(resp.json().keys()) == {"doc_id", "action", "count"}
+
+
+def test_feedback_reason_taxonomy_and_summary() -> None:
+    from openlens.api import routes as routes_mod
+
+    client = make_client()
+    saved = dict(routes_mod._FEEDBACK_COUNTS)
+    routes_mod._FEEDBACK_COUNTS.clear()
+    try:
+        ok = client.post(
+            "/api/v1/feedback",
+            json={"doc_id": "reason-doc", "action": "not_helpful", "reason": "Privacy"},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json() == {
+            "doc_id": "reason-doc",
+            "action": "not_helpful",
+            "count": 1,
+            "reason": "privacy",
+        }
+        bad_reason = client.post(
+            "/api/v1/feedback",
+            json={"doc_id": "reason-doc", "action": "not_helpful", "reason": "nope"},
+        )
+        assert bad_reason.status_code == 422
+        reason_on_positive = client.post(
+            "/api/v1/feedback",
+            json={"doc_id": "reason-doc", "action": "click", "reason": "privacy"},
+        )
+        assert reason_on_positive.status_code == 422
+        client.post(
+            "/api/v1/feedback", json={"doc_id": "reason-doc", "action": "click"}
+        )
+        summary = client.get("/api/v1/admin/feedback/summary")
+        assert summary.status_code == 200, summary.text
+        body = summary.json()
+        assert body["total"] == 2
+        assert body["by_action"] == {"not_helpful": 1, "click": 1}
+        assert body["by_reason"] == {"privacy": 1, "unspecified": 1}
+        assert body["top_docs"] == [
+            {
+                "doc_id": "reason-doc",
+                "total": 2,
+                "helpful": 0,
+                "not_helpful": 1,
+                "reports": 0,
+                "top_reason": "privacy",
+            }
+        ]
+    finally:
+        routes_mod._FEEDBACK_COUNTS.clear()
+        routes_mod._FEEDBACK_COUNTS.update(saved)
+
+
+def test_feedback_summary_gated_when_token_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openlens.api.routes import FRONTIER_ADMIN_HEADER, FRONTIER_ADMIN_TOKEN_ENV
+
+    client = make_client()
+    monkeypatch.setenv(FRONTIER_ADMIN_TOKEN_ENV, "s3cret")
+    denied = client.get("/api/v1/admin/feedback/summary")
+    assert denied.status_code == 403
+    allowed = client.get(
+        "/api/v1/admin/feedback/summary", headers={FRONTIER_ADMIN_HEADER: "s3cret"}
+    )
+    assert allowed.status_code == 200

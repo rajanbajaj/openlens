@@ -52,6 +52,28 @@ def test_resume_with_seeds_replaces_queue(client: TestClient) -> None:
     assert body["queue"][0]["depth"] == 0
 
 
+def test_frontier_live_streams_status_snapshots(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live socket pushes the status view, then keeps pushing."""
+    monkeypatch.setattr("openlens.api.routes.FRONTIER_LIVE_INTERVAL_S", 0.05)
+    with client.websocket_connect("/api/v1/frontier/live") as ws:
+        first = ws.receive_json()
+        second = ws.receive_json()
+    for message in (first, second):
+        assert message["paused"] is False
+        assert message["queue"] == []
+        assert message["checkpoint"]["phase"] == "idle"
+    # A resume between connects is visible on the next socket.
+    resumed = client.post(
+        "/api/v1/frontier/resume", json={"seeds": ["https://example.com/live"]}
+    )
+    assert resumed.status_code == 200
+    with client.websocket_connect("/api/v1/frontier/live") as ws:
+        latest = ws.receive_json()
+    assert latest["queue"][0]["url"] == "https://example.com/live"
+
+
 def test_settings_round_trip_and_strict_body(client: TestClient) -> None:
     got = client.get("/api/v1/frontier/settings")
     assert got.status_code == 200

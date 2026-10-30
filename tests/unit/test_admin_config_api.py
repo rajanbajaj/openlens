@@ -152,6 +152,26 @@ def test_put_get_round_trip_all_docs(
         assert again.json()["version"] == 2
 
 
+def test_put_models_all_disabled_is_accepted(client: TestClient) -> None:
+    """Zero enabled model backends must save (AI features just go quiet).
+
+    Boot already tolerates this via ``_build_model_manager`` (returns
+    ``None``, AI plugins omitted); the PUT validator must match so the
+    admin UI can turn every backend off without "Save failed".
+    """
+    body = {"fake": {"enabled": False, "type": "fake"}}
+    resp = client.put("/api/v1/admin/config/models", json={"body": body})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["body"] == body
+    # A stale primary pointing at the now-disabled backend saves too:
+    # that is the exact doc the admin UI resubmits when switching the
+    # last backend off.
+    stale = {"primary": "fake", "fake": {"enabled": False, "type": "fake"}}
+    resp = client.put("/api/v1/admin/config/models", json={"body": stale})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["body"] == stale
+
+
 def test_put_overlays_running_app_config(
     client: TestClient, _toggle_provider: object
 ) -> None:
@@ -189,11 +209,12 @@ def test_put_strict_body_requires_body_mapping(client: TestClient) -> None:
             {"primary": "nope", "fake": {"enabled": True, "type": "fake"}},
             "invalid_request",
         ),
-        (
-            "models",
-            {"primary": "fake", "fake": {"enabled": False, "type": "fake"}},
-            "invalid_request",
-        ),
+        # NOTE: {"primary": "fake", "fake": {"enabled": False, ...}} is
+        # intentionally absent here: zero enabled backends is the valid
+        # "no AI" state (see test_put_models_all_disabled_is_accepted),
+        # and the admin UI resubmits a stale primary when switching the
+        # last backend off. A primary dangling with backends enabled
+        # (the "nope" case above) still 422s.
         ("providers", {"strategy": "bogus"}, "invalid_request"),
         (
             "providers",

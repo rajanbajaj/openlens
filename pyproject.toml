@@ -16,6 +16,9 @@ dependencies = [
   "psycopg[binary]>=3.1",
   # Redis is the default cache backend, so its driver ships too.
   "redis>=5",
+  # Live frontier stats stream (`/api/v1/frontier/live` websocket) needs a
+  # websocket stack for uvicorn/starlette; pure-python, no system deps.
+  "websockets>=14",
 ]
 
 [project.optional-dependencies]

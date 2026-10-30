@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { pauseFrontier, resumeFrontier, saveFrontierSettings } from '../api/client.ts';
+import {
+  frontierLiveUrl,
+  pauseFrontier,
+  resumeFrontier,
+  saveFrontierSettings,
+} from '../api/client.ts';
 import {
   frontierGetSettingsApiV1FrontierSettingsGet,
   frontierListWorkersApiV1FrontierWorkersGet,
@@ -88,7 +93,9 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [status, setStatus] = useState<FrontierStatus | null>(null);
   const [settings, setSettings] = useState<FrontierSettings>(DEFAULT_SETTINGS);
   const [seeds, setSeeds] = useState('');
+  const [priority, setPriority] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
 
   const snapshot = useQuery({
     queryKey: ['frontier', 'snapshot'],
@@ -118,11 +125,50 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     }
   }, [snapshot.isError, snapshot.data]);
 
+  // Live stats: the backend pushes the status view over a socket, so
+  // the queue/checkpoint/workers stay fresh without polling. Any
+  // socket or frame failure degrades to the snapshot above plus the
+  // manual Refresh button (the `live` badge shows which is in play).
+  useEffect(() => {
+    if (!open) return;
+    let socket: WebSocket | null = null;
+    let closed = false;
+    try {
+      socket = new WebSocket(frontierLiveUrl());
+    } catch {
+      return;
+    }
+    socket.onopen = () => {
+      if (!closed) setLive(true);
+    };
+    socket.onmessage = (event: MessageEvent) => {
+      if (closed) return;
+      try {
+        const data: unknown = JSON.parse(String(event.data));
+        if (isFrontierStatus(data)) setStatus(data);
+      } catch {
+        /* malformed frames never break the dashboard */
+      }
+    };
+    const markStale = () => {
+      if (!closed) setLive(false);
+    };
+    socket.onerror = markStale;
+    socket.onclose = markStale;
+    return () => {
+      closed = true;
+      socket?.close();
+    };
+  }, [open]);
+
   const loading = snapshot.isPending;
 
   async function refresh() {
     setNotice(null);
-    await snapshot.refetch();
+    const result = await snapshot.refetch();
+    if (result.isError) {
+      setNotice('Refresh failed.');
+    }
   }
 
   function handleToggle() {
@@ -132,6 +178,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   async function handlePause() {
     try {
       setStatus(await pauseFrontier(fetch, adminToken));
+      setNotice('Paused.');
     } catch {
       setNotice('Pause failed.');
     }
@@ -143,8 +190,16 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
-      setStatus(await resumeFrontier(list, fetch, adminToken));
+      const trimmed = priority.trim();
+      const parsed = trimmed === '' ? undefined : Number(trimmed);
+      if (parsed !== undefined && !Number.isInteger(parsed)) {
+        setNotice('Priority must be a whole number.');
+        return;
+      }
+      setStatus(await resumeFrontier(list, fetch, adminToken, parsed));
+      setNotice(list.length > 0 ? `Resumed with ${list.length} seed(s).` : 'Resumed.');
       setSeeds('');
+      setPriority('');
     } catch {
       setNotice('Resume failed.');
     }
@@ -195,7 +250,10 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
               </Button>{' '}
               <Button variant="ghost" onClick={() => void refresh()}>
                 Refresh
-              </Button>
+              </Button>{' '}
+              <span data-testid="frontier-live">
+                <Badge>{live ? 'Live' : 'Snapshot'}</Badge>
+              </span>
             </div>
 
             <h4 className="mt-ol-m mb-ol-s text-ol-m">Checkpoint</h4>
@@ -229,7 +287,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
               <ol data-testid="frontier-queue" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
                 {queue.map((entry) => (
                   <li key={entry.url}>
-                    <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth}
+                    <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth} · priority{' '}
+                    {entry.priority ?? 0}
                   </li>
                 ))}
               </ol>
@@ -259,6 +318,18 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 value={seeds}
                 onChange={(event) => setSeeds(event.target.value)}
                 rows={3}
+                className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+              />
+            </label>
+            <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+              Priority for these seeds (higher dequeues first; blank keeps stored)
+              <input
+                data-testid="frontier-priority"
+                type="number"
+                step={1}
+                value={priority}
+                onChange={(event) => setPriority(event.target.value)}
+                placeholder="0"
                 className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
               />
             </label>

@@ -134,6 +134,7 @@ class FrontierEntry:
     depth: int = 0
     status: str = STATUS_QUEUED
     parent_url: str | None = None
+    priority: int = 0
     attempts: int = 0
     last_error: str | None = None
     etag: str | None = None
@@ -162,12 +163,20 @@ class FrontierStore(ABC):
     """Abstract persistent URL frontier + checkpoints + settings."""
 
     @abstractmethod
-    def enqueue(self, url: str, depth: int = 0, parent_url: str | None = None) -> bool:
+    def enqueue(
+        self,
+        url: str,
+        depth: int = 0,
+        parent_url: str | None = None,
+        priority: int | None = None,
+    ) -> bool:
         """Queue ``url`` (normalized) unless already known.
 
         Returns True when the URL was newly queued, False when the
         normalized URL was already present (dedup, like the in-crawl
-        ``seen`` set plus ``normalize_url``).
+        ``seen`` set plus ``normalize_url``). An explicit ``priority``
+        is stored on insert and overwrites the stored value on
+        conflict; ``None`` keeps whatever is there (``0`` for new rows).
         """
         raise NotImplementedError
 
@@ -427,6 +436,20 @@ def normalize_frontier_url(url: str) -> str:
     return bare.lower().rstrip("/")
 
 
+def normalize_priority(priority: Any) -> int | None:
+    """Normalize an enqueue priority: ints win, ``None`` keeps, else ignore.
+
+    ``None`` (or a non-int like a bool) means "don't touch the stored
+    value": inserts fall back to ``0``, conflicts keep the row as is.
+    An explicit int always wins, including on already-queued rows.
+    """
+    if priority is None:
+        return None
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return None
+    return priority
+
+
 #: Coordination columns added to ``frontier_queue`` (also applied to
 #: pre-existing databases via :func:`sqlite_frontier_coordination_migrations`).
 _SQLITE_COORD_COLUMNS = (
@@ -434,6 +457,7 @@ _SQLITE_COORD_COLUMNS = (
     ("leased_at", "TEXT"),
     ("heartbeat_at", "TEXT"),
     ("lease_ttl_s", "INTEGER NOT NULL DEFAULT 120"),
+    ("priority", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -494,6 +518,7 @@ CREATE TABLE IF NOT EXISTS frontier_queue (
     url TEXT PRIMARY KEY,
     depth INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'queued',
+    priority INTEGER NOT NULL DEFAULT 0,
     parent_url TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
@@ -551,6 +576,7 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         "url TEXT PRIMARY KEY,"
         " depth INTEGER NOT NULL DEFAULT 0,"
         " status TEXT NOT NULL DEFAULT 'queued',"
+        " priority INTEGER NOT NULL DEFAULT 0,"
         " parent_url TEXT NULL,"
         " attempts INTEGER NOT NULL DEFAULT 0,"
         " last_error TEXT NULL,"
@@ -618,6 +644,8 @@ def postgres_frontier_coordination_migrations(
         f"ALTER TABLE {q}.frontier_queue"  # noqa: S608
         f" ADD COLUMN IF NOT EXISTS lease_ttl_s INTEGER NOT NULL"
         f" DEFAULT {DEFAULT_LEASE_TTL_S}",
+        f"ALTER TABLE {q}.frontier_queue"  # noqa: S608
+        " ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0",
         f"CREATE TABLE IF NOT EXISTS {q}.crawl_workers ("  # noqa: S608
         "worker_id TEXT PRIMARY KEY,"
         " crawl_id TEXT NOT NULL DEFAULT 'default',"
@@ -673,6 +701,7 @@ def _entry_from_row(row: Any) -> FrontierEntry:
         depth=int(_get("depth") or 0),
         status=str(_get("status") or STATUS_QUEUED),
         parent_url=_get("parent_url"),
+        priority=int(_get("priority") or 0),
         attempts=int(_get("attempts") or 0),
         last_error=_get("last_error"),
         etag=_get("etag"),
@@ -686,7 +715,7 @@ def _entry_from_row(row: Any) -> FrontierEntry:
 
 _CLAIM_COLUMNS = (
     "url, depth, status, parent_url, attempts,"
-    " last_error, etag, last_modified,"
+    " last_error, etag, last_modified, priority,"
     " owner, leased_at, heartbeat_at, lease_ttl_s"
 )
 
@@ -727,6 +756,14 @@ class SqliteFrontierStore(FrontierStore):
     def __init__(self, db_path: str = ":memory:") -> None:
         self._lock = threading.Lock()
         self._closed = False
+        if db_path != ":memory:":
+            # Bare runs (docker without the data volume, fresh checkouts)
+            # may lack the parent dir; sqlite creates the file but never
+            # its parents. Mirrors SqliteAppConfigStore.
+            parent = os.path.dirname(os.path.abspath(db_path))
+            if parent:
+                with contextlib.suppress(OSError):
+                    os.makedirs(parent, exist_ok=True)
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -743,20 +780,35 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
-    def enqueue(self, url: str, depth: int = 0, parent_url: str | None = None) -> bool:
+    def enqueue(
+        self,
+        url: str,
+        depth: int = 0,
+        parent_url: str | None = None,
+        priority: int | None = None,
+    ) -> bool:
         if not isinstance(url, str) or not url.strip():
             return False
         norm = normalize_frontier_url(url)
         if depth is None or not isinstance(depth, int) or depth < 0:
             depth = 0
+        prio = normalize_priority(priority)
         try:
             with self._lock, self._conn:
                 cursor = self._conn.execute(
                     "INSERT OR IGNORE INTO frontier_queue"
-                    " (url, depth, status, parent_url) VALUES (?, ?, 'queued', ?)",
-                    (norm, depth, parent_url),
+                    " (url, depth, status, parent_url, priority)"
+                    " VALUES (?, ?, 'queued', ?, ?)",
+                    (norm, depth, parent_url, prio if prio is not None else 0),
                 )
-                return cursor.rowcount == 1
+                if cursor.rowcount == 1:
+                    return True
+                if prio is not None:
+                    self._conn.execute(
+                        "UPDATE frontier_queue SET priority = ? WHERE url = ?",
+                        (prio, norm),
+                    )
+                return False
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to enqueue frontier URL: {exc}",
@@ -769,9 +821,10 @@ class SqliteFrontierStore(FrontierStore):
             with self._lock, self._conn:
                 row = self._conn.execute(
                     "SELECT url, depth, status, parent_url, attempts,"
-                    " last_error, etag, last_modified FROM frontier_queue"
+                    " last_error, etag, last_modified, priority FROM frontier_queue"
                     " WHERE status = 'queued'"
-                    " ORDER BY depth ASC, discovered_at ASC, rowid ASC LIMIT 1"
+                    " ORDER BY priority DESC, depth ASC,"
+                    " discovered_at ASC, rowid ASC LIMIT 1"
                 ).fetchone()
                 if row is None:
                     return None
@@ -927,7 +980,8 @@ class SqliteFrontierStore(FrontierStore):
                 row = self._conn.execute(
                     "SELECT " + _CLAIM_COLUMNS + " FROM frontier_queue"  # noqa: S608
                     " WHERE status = 'queued'"
-                    " ORDER BY depth ASC, discovered_at ASC, rowid ASC LIMIT 1"
+                    " ORDER BY priority DESC, depth ASC,"
+                    " discovered_at ASC, rowid ASC LIMIT 1"
                 ).fetchone()
                 if row is None:
                     cutoff = _cutoff_iso(ttl)
@@ -935,7 +989,8 @@ class SqliteFrontierStore(FrontierStore):
                         "SELECT " + _CLAIM_COLUMNS + " FROM frontier_queue"  # noqa: S608
                         " WHERE status = 'active'"
                         " AND (heartbeat_at IS NULL OR heartbeat_at < ?)"
-                        " ORDER BY depth ASC, discovered_at ASC, rowid ASC LIMIT 1",
+                        " ORDER BY priority DESC, depth ASC,"
+                        " discovered_at ASC, rowid ASC LIMIT 1",
                         (cutoff,),
                     ).fetchone()
                     if row is None:
@@ -1271,9 +1326,9 @@ class SqliteFrontierStore(FrontierStore):
             with self._lock:
                 rows = self._conn.execute(
                     "SELECT url, depth, status, parent_url, attempts,"
-                    " last_error, etag, last_modified FROM frontier_queue"
+                    " last_error, etag, last_modified, priority FROM frontier_queue"
                     " WHERE status IN ('queued', 'active')"
-                    " ORDER BY depth ASC, discovered_at ASC, rowid ASC"
+                    " ORDER BY priority DESC, depth ASC, discovered_at ASC, rowid ASC"
                     " LIMIT ? OFFSET ?",
                     (max(0, limit), max(0, offset)),
                 ).fetchall()
@@ -1602,21 +1657,40 @@ class PostgresFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
-    def enqueue(self, url: str, depth: int = 0, parent_url: str | None = None) -> bool:
+    def enqueue(
+        self,
+        url: str,
+        depth: int = 0,
+        parent_url: str | None = None,
+        priority: int | None = None,
+    ) -> bool:
         if not isinstance(url, str) or not url.strip():
             return False
         norm = normalize_frontier_url(url)
         table = self._qualified("frontier_queue")
+        prio = normalize_priority(priority)
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"INSERT INTO {table} (url, depth, status, parent_url)"  # noqa: S608
-                        " VALUES (%s, %s, 'queued', %s) ON CONFLICT (url)"
-                        " DO NOTHING",
-                        (norm, max(0, int(depth or 0)), parent_url),
+                        f"INSERT INTO {table}"  # noqa: S608
+                        " (url, depth, status, parent_url, priority)"
+                        " VALUES (%s, %s, 'queued', %s, %s)"
+                        " ON CONFLICT (url) DO NOTHING",
+                        (
+                            norm,
+                            max(0, int(depth or 0)),
+                            parent_url,
+                            prio if prio is not None else 0,
+                        ),
                     )
                     inserted = bool(cur.rowcount == 1)
+                    if not inserted and prio is not None:
+                        cur.execute(
+                            f"UPDATE {table} SET priority = %s"  # noqa: S608
+                            " WHERE url = %s",
+                            (prio, norm),
+                        )
                 conn.commit()
                 return inserted
         except Exception as exc:
@@ -1633,9 +1707,10 @@ class PostgresFrontierStore(FrontierStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         f"SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
-                        f" last_error, etag, last_modified FROM {table}"
+                        f" last_error, etag, last_modified, priority FROM {table}"
                         " WHERE status = 'queued'"
-                        " ORDER BY depth ASC, discovered_at ASC LIMIT 1"
+                        " ORDER BY priority DESC, depth ASC,"
+                        " discovered_at ASC LIMIT 1"
                         " FOR UPDATE SKIP LOCKED"
                     )
                     row = cur.fetchone()
@@ -1651,6 +1726,7 @@ class PostgresFrontierStore(FrontierStore):
                         "last_error",
                         "etag",
                         "last_modified",
+                        "priority",
                     )
                     entry = _entry_from_row(dict(zip(cols, row)))
                     cur.execute(
@@ -1779,6 +1855,7 @@ class PostgresFrontierStore(FrontierStore):
             "last_error",
             "etag",
             "last_modified",
+            "priority",
             "owner",
             "leased_at",
             "heartbeat_at",
@@ -1790,7 +1867,8 @@ class PostgresFrontierStore(FrontierStore):
                     cur.execute(
                         f"SELECT {_CLAIM_COLUMNS} FROM {table}"  # noqa: S608
                         " WHERE status = 'queued'"
-                        " ORDER BY depth ASC, discovered_at ASC LIMIT 1"
+                        " ORDER BY priority DESC, depth ASC,"
+                        " discovered_at ASC LIMIT 1"
                         " FOR UPDATE SKIP LOCKED"
                     )
                     row = cur.fetchone()
@@ -1800,7 +1878,8 @@ class PostgresFrontierStore(FrontierStore):
                             " WHERE status = 'active'"
                             " AND (heartbeat_at IS NULL"
                             " OR heartbeat_at < now() - make_interval(secs => %s))"
-                            " ORDER BY depth ASC, discovered_at ASC LIMIT 1"
+                            " ORDER BY priority DESC, depth ASC,"
+                            " discovered_at ASC LIMIT 1"
                             " FOR UPDATE SKIP LOCKED",
                             (float(ttl),),
                         )
@@ -1897,6 +1976,7 @@ class PostgresFrontierStore(FrontierStore):
             "last_error",
             "etag",
             "last_modified",
+            "priority",
             "owner",
             "leased_at",
             "heartbeat_at",
@@ -2162,15 +2242,16 @@ class PostgresFrontierStore(FrontierStore):
             "last_error",
             "etag",
             "last_modified",
+            "priority",
         )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
-                        f" last_error, etag, last_modified FROM {table}"
+                        f" last_error, etag, last_modified, priority FROM {table}"
                         " WHERE status IN ('queued', 'active')"
-                        " ORDER BY depth ASC, discovered_at ASC"
+                        " ORDER BY priority DESC, depth ASC, discovered_at ASC"
                         " LIMIT %s OFFSET %s",
                         (max(0, limit), max(0, offset)),
                     )

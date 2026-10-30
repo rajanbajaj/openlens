@@ -17,14 +17,23 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import suppress
+import asyncio
 import logging
 import os
 import secrets
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openlens.api.errors import EngineUnavailableError, error_body
 from openlens.api import frontier_state
@@ -98,9 +107,10 @@ _STATIC_QUERY_COUNTS: dict[str, int] = {
     "wireless headphones": 31,
 }
 
-#: In-process anonymous feedback tallies keyed by (doc_id, action).
-#: Only counts are kept: no query text, no user/session identifiers.
-_FEEDBACK_COUNTS: dict[tuple[str, str], int] = {}
+#: In-process anonymous feedback tallies keyed by (doc_id, action, reason).
+#: ``reason`` is ``""`` when absent. Only counts are kept: no query
+#: text, no user/session identifiers.
+_FEEDBACK_COUNTS: dict[tuple[str, str, str], int] = {}
 
 #: In-process named preference sets: name -> filters mapping. The
 #: backend-held counterpart to the frontend-local library cache — saved
@@ -143,6 +153,39 @@ _FEEDBACK_ACTION_ALIASES: dict[str, str] = {
     "report-suspicious": "report_suspicious",
     "report suspicious": "report_suspicious",
 }
+
+#: Closed "what was not right" taxonomy for negative/report feedback
+#: (privacy, kids-safety, misleading, irrelevant, other). Closed set by
+#: design: like actions, free-form text would smuggle PII/queries into
+#: the store, so anything outside the set fails with 422.
+FEEDBACK_REASONS: frozenset[str] = frozenset(
+    {
+        "privacy",
+        "kids-safety",
+        "misleading",
+        "irrelevant",
+        "other",
+    }
+)
+
+#: Actions a reason may accompany. Positive/engagement signals carry no
+#: "why", so a reason there fails with 422 instead of being silently
+#: tallied into a meaningless bucket.
+_FEEDBACK_REASON_ACTIONS: frozenset[str] = frozenset(
+    {
+        "not_helpful",
+        "report_incorrect",
+        "report_suspicious",
+    }
+)
+
+
+def normalize_feedback_reason(raw: str) -> str | None:
+    """Return the canonical feedback reason, or None when unknown."""
+    key = raw.strip().lower().replace("_", "-").replace(" ", "-")
+    if key in FEEDBACK_REASONS:
+        return key
+    return None
 
 
 def normalize_feedback_action(raw: str) -> str | None:
@@ -308,19 +351,23 @@ def suggest(
 
 
 class FeedbackRequestSchema(BaseModel):
-    """POST /api/v1/feedback body: anonymous (doc_id, action) counts only.
+    """POST /api/v1/feedback body: anonymous counts with optional reason.
 
     Extra fields are rejected so no query text or identifiers can be
     smuggled into the feedback store. `action` must name a canonical
     feedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case
-    variants are normalized before validation. (Defined here because
-    schemas.py is owned by wave0; the integrator may relocate it.)
+    variants are normalized before validation. `reason` is optional and
+    limited to the closed `FEEDBACK_REASONS` taxonomy ("what was not
+    right"); it is only accepted with negative/report actions.
+    (Defined here because schemas.py is owned by wave0; the integrator
+    may relocate it.)
     """
 
     model_config = ConfigDict(extra="forbid")
 
     doc_id: str = Field(min_length=1, max_length=512)
     action: str = Field(min_length=1, max_length=64)
+    reason: str | None = Field(default=None, min_length=1, max_length=32)
 
     @field_validator("doc_id")
     @classmethod
@@ -338,25 +385,73 @@ class FeedbackRequestSchema(BaseModel):
             raise ValueError(f"unknown action; known: {known}")
         return canonical
 
+    @field_validator("reason")
+    @classmethod
+    def reason_must_be_known(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        canonical = normalize_feedback_reason(value)
+        if canonical is None:
+            known = ", ".join(sorted(FEEDBACK_REASONS))
+            raise ValueError(f"unknown reason; known: {known}")
+        return canonical
+
+    @model_validator(mode="after")
+    def reason_needs_negative_action(self) -> "FeedbackRequestSchema":
+        if self.reason is not None and self.action not in _FEEDBACK_REASON_ACTIONS:
+            raise ValueError("reason applies only to negative/report actions")
+        return self
+
 
 class FeedbackResponseSchema(BaseModel):
-    """Feedback acknowledgement: the pair plus its in-process count."""
+    """Feedback acknowledgement: the triple plus its in-process count."""
 
     doc_id: str
     action: str
     count: int = Field(ge=1)
+    reason: str | None = None
 
 
-@router.post("/feedback", response_model=FeedbackResponseSchema)
+#: Bounds on the admin feedback summary (bounded payloads, no paging).
+MAX_FEEDBACK_TOP_DOCS = 50
+
+
+class FeedbackDocSummarySchema(BaseModel):
+    """Per-document feedback rollup for the admin summary."""
+
+    doc_id: str
+    total: int = Field(ge=0)
+    helpful: int = Field(ge=0)
+    not_helpful: int = Field(ge=0)
+    reports: int = Field(ge=0)
+    top_reason: str | None = None
+
+
+class FeedbackSummarySchema(BaseModel):
+    """Admin feedback overview: totals plus the noisiest documents."""
+
+    total: int = Field(ge=0)
+    by_action: dict[str, int]
+    by_reason: dict[str, int]
+    top_docs: list[FeedbackDocSummarySchema]
+
+
+@router.post(
+    "/feedback",
+    response_model=FeedbackResponseSchema,
+    response_model_exclude_none=True,
+)
 def feedback(body: FeedbackRequestSchema, request: Request) -> FeedbackResponseSchema:
     """Record one anonymous feedback event as an in-process count.
 
-    The module-level tally is the canonical response source; when the
-    app engine exposes ``record_feedback`` the event is mirrored there
-    too (best-effort, never failing the request) so future ranking can
-    consume the counts.
+    The tally key is ``(doc_id, action, reason)`` with ``""`` for absent
+    reasons, so reason-less posts keep their exact historic shape. The
+    module-level tally is the canonical response source; when the app
+    engine exposes ``record_feedback`` the ``(doc_id, action)`` event is
+    mirrored there too (best-effort, never failing the request) so
+    future ranking can consume the counts.
     """
-    key = (body.doc_id.strip(), body.action.strip())
+    key = (body.doc_id.strip(), body.action.strip(), body.reason or "")
     count = _FEEDBACK_COUNTS.get(key, 0) + 1
     _FEEDBACK_COUNTS[key] = count
     engine = getattr(request.app.state, "engine", None)
@@ -366,7 +461,67 @@ def feedback(body: FeedbackRequestSchema, request: Request) -> FeedbackResponseS
             with suppress(Exception):
                 hook(key[0], key[1])
             break
-    return FeedbackResponseSchema(doc_id=key[0], action=key[1], count=count)
+    return FeedbackResponseSchema(
+        doc_id=key[0], action=key[1], count=count, reason=body.reason
+    )
+
+
+@router.get("/admin/feedback/summary", response_model=FeedbackSummarySchema)
+def admin_feedback_summary(request: Request) -> FeedbackSummarySchema | JSONResponse:
+    """Admin-only feedback overview (same gate as config mutations).
+
+    Aggregates the anonymous tallies: totals by action and reason plus
+    the noisiest documents. Gated because even anonymous aggregates
+    describe user behavior; reads stay open only when no admin token is
+    configured (local dev), exactly like the other admin reads.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    by_action: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    per_doc: dict[str, dict[str, Any]] = {}
+    for (doc_id, action, reason), count in _FEEDBACK_COUNTS.items():
+        by_action[action] = by_action.get(action, 0) + count
+        reason_label = reason or "unspecified"
+        by_reason[reason_label] = by_reason.get(reason_label, 0) + count
+        entry = per_doc.setdefault(
+            doc_id,
+            {"total": 0, "helpful": 0, "not_helpful": 0, "reports": 0, "reasons": {}},
+        )
+        entry["total"] += count
+        if action == "helpful":
+            entry["helpful"] += count
+        elif action == "not_helpful":
+            entry["not_helpful"] += count
+        elif action in ("report_incorrect", "report_suspicious"):
+            entry["reports"] += count
+        if reason:
+            entry["reasons"][reason] = entry["reasons"].get(reason, 0) + count
+    top_docs = []
+    for doc_id, entry in sorted(
+        per_doc.items(), key=lambda item: item[1]["total"], reverse=True
+    )[:MAX_FEEDBACK_TOP_DOCS]:
+        reasons = entry["reasons"]
+        top_reason = (
+            max(reasons.items(), key=lambda item: item[1])[0] if reasons else None
+        )
+        top_docs.append(
+            FeedbackDocSummarySchema(
+                doc_id=doc_id,
+                total=entry["total"],
+                helpful=entry["helpful"],
+                not_helpful=entry["not_helpful"],
+                reports=entry["reports"],
+                top_reason=top_reason,
+            )
+        )
+    return FeedbackSummarySchema(
+        total=sum(by_action.values()),
+        by_action=by_action,
+        by_reason=by_reason,
+        top_docs=top_docs,
+    )
 
 
 class SavedPrefsSchema(BaseModel):
@@ -430,7 +585,7 @@ def save_prefs(body: SavedPrefsSchema) -> SavedPrefsResponseSchema:
     return SavedPrefsResponseSchema(name=body.name, filters=dict(body.filters))
 
 
-def _frontier_read_store(request: Request) -> Any | None:
+def _frontier_read_store(request: Request | WebSocket) -> Any | None:
     """Cached read-only frontier store for status overlays (fail-open).
 
     The store is opened once per app lifetime (same tradeoff as the
@@ -480,6 +635,7 @@ def _overlay_store_status(
             "url": url,
             "depth": int(getattr(entry, "depth", 0) or 0),
             "status": str(getattr(entry, "status", "queued") or "queued"),
+            "priority": int(getattr(entry, "priority", 0) or 0),
         }
     # Snapshot entries arrive as submodels (Pydantic coerces the nested
     # dicts on construction), never as plain dicts.
@@ -497,7 +653,20 @@ def _overlay_store_status(
             except (TypeError, ValueError):
                 depth = 0
         if url and url not in merged:
-            merged[url] = {"url": url, "depth": depth, "status": "queued"}
+            try:
+                priority = int(
+                    item.get("priority", 0)
+                    if isinstance(item, dict)
+                    else getattr(item, "priority", 0) or 0
+                )
+            except (TypeError, ValueError):
+                priority = 0
+            merged[url] = {
+                "url": url,
+                "depth": depth,
+                "status": "queued",
+                "priority": priority,
+            }
     queue = list(merged.values())
     try:
         queued = int((counts or {}).get("queued", 0))
@@ -536,6 +705,7 @@ def _frontier_status_payload() -> FrontierStatusSchema:
             "url": str(entry.get("url", "")),
             "depth": int(entry.get("depth", 0)),
             "status": str(entry.get("status", "queued")),
+            "priority": int(entry.get("priority", 0) or 0),
         }
         for entry in snap["queue"]
         if isinstance(entry, dict) and str(entry.get("url", "")).strip()
@@ -581,6 +751,49 @@ def frontier_status(request: Request) -> FrontierStatusSchema:
         return FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
 
 
+#: Seconds between pushes on the live frontier websocket. Tests
+#: monkeypatch this (module-global lookup per iteration) instead of
+#: waiting out the production cadence.
+FRONTIER_LIVE_INTERVAL_S = 2.0
+
+
+@router.websocket("/frontier/live")
+async def frontier_live(websocket: WebSocket) -> None:
+    """Stream frontier status snapshots until the client disconnects.
+
+    Same payload as ``GET /frontier/status`` (snapshot overlaid with
+    store truth), pushed immediately on connect and every
+    ``FRONTIER_LIVE_INTERVAL_S`` after. Open like the status read: it
+    exposes the same queue/checkpoint view, no mutations. Awaiting the
+    next client message with a timeout both detects disconnects
+    promptly and lets a client nudge an early refresh by sending any
+    text frame.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            try:
+                payload = _overlay_store_status(
+                    _frontier_status_payload(), _frontier_read_store(websocket)
+                )
+            except Exception:
+                payload = FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
+            try:
+                await websocket.send_json(payload.model_dump())
+            except (WebSocketDisconnect, RuntimeError):
+                break
+            try:
+                await asyncio.wait_for(
+                    websocket.receive(), timeout=FRONTIER_LIVE_INTERVAL_S
+                )
+            except asyncio.TimeoutError:
+                continue
+            except (WebSocketDisconnect, RuntimeError):
+                break
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 def _store_set_paused(app_config: Any, paused: bool) -> bool:
     """Mirror the pause flag into the persistent frontier settings row.
 
@@ -605,12 +818,16 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
     return True
 
 
-def _publish_seeds(app_config: Any, seeds: list[str]) -> bool:
+def _publish_seeds(
+    app_config: Any, seeds: list[str], priority: int | None = None
+) -> bool:
     """Publish seeds to Kafka, else enqueue them into the persistent store.
 
     Kafka-first when ``kafka:`` is enabled; the store fallback keeps
     local/test setups crawling when the broker is unreachable. Seeds are
     also kept in the in-memory snapshot by the caller for the dashboard.
+    An explicit ``priority`` is stored on insert and overwrites the
+    stored value on conflict; ``None`` keeps whatever is there.
     Returns True when a durable queue (Kafka or store) accepted them.
     """
     if seeds and kafka_enabled(app_config if isinstance(app_config, dict) else None):
@@ -618,7 +835,7 @@ def _publish_seeds(app_config: Any, seeds: list[str]) -> bool:
             queue = open_kafka_queue(app_config)
             try:
                 for seed in seeds:
-                    queue.publish(seed, 0)
+                    queue.publish(seed, 0, priority=priority)
             finally:
                 with suppress(Exception):
                     queue.close()
@@ -634,7 +851,7 @@ def _publish_seeds(app_config: Any, seeds: list[str]) -> bool:
         try:
             for seed in seeds:
                 with suppress(Exception):
-                    store.enqueue(seed, 0)
+                    store.enqueue(seed, 0, priority=priority)
         finally:
             with suppress(Exception):
                 store.close()
@@ -680,10 +897,14 @@ def frontier_resume(
     state.paused = False
     state.checkpoint["phase"] = "running"
     seeds = [seed.strip() for seed in body.seeds if seed.strip()]
+    priority = body.priority if body.priority is not None else 0
     if seeds:
-        state.queue = [{"url": seed, "depth": 0, "status": "queued"} for seed in seeds]
+        state.queue = [
+            {"url": seed, "depth": 0, "status": "queued", "priority": priority}
+            for seed in seeds
+        ]
     app_config = getattr(request.app.state, "config", None)
-    _publish_seeds(app_config, seeds)
+    _publish_seeds(app_config, seeds, priority=body.priority)
     _store_set_paused(app_config, False)
     return _overlay_store_status(
         _frontier_status_payload(), _frontier_read_store(request)

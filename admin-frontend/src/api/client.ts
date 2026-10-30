@@ -44,6 +44,18 @@ export const API_BASE_URL: string =
 /** Backend default page size (`DEFAULT_LIMIT` in `schemas.py`). */
 export const DEFAULT_LIMIT = 10;
 
+/**
+ * WebSocket URL for the live frontier stream
+ * (`/api/v1/frontier/live` pushes the same payload as the status
+ * endpoint). Same host/base as the API:
+ * `http(s)` becomes `ws(s)`, and an empty base resolves against the
+ * page origin (built bundle behind the nginx `/api/` proxy).
+ */
+export function frontierLiveUrl(): string {
+  const base = API_BASE_URL || `${window.location.protocol}//${window.location.host}`;
+  return `${base.replace(/^http/, 'ws')}/api/v1/frontier/live`;
+}
+
 /** Backend query ceiling (`MAX_QUERY_LENGTH` in `schemas.py`). */
 export const MAX_QUERY_LENGTH = 1000;
 
@@ -370,7 +382,9 @@ export async function pauseFrontier(
 
 /**
  * Issue `POST {API_URL}/api/v1/frontier/resume` with optional
- * replacement `seeds`. Throws {@link SearchApiError} on failure.
+ * replacement `seeds`. `priority`, when given, applies to every seed
+ * (higher dequeues first; omitted keeps the stored value).
+ * Throws {@link SearchApiError} on failure.
  * Pass `adminToken` when the backend sets
  * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
  */
@@ -378,6 +392,7 @@ export async function resumeFrontier(
   seeds: string[] = [],
   fetchImpl: FetchImpl = fetch,
   adminToken: string = '',
+  priority?: number,
 ): Promise<FrontierStatus> {
   let response: Response;
   try {
@@ -387,7 +402,7 @@ export async function resumeFrontier(
         'Content-Type': 'application/json',
         ...frontierAdminHeaders(adminToken),
       },
-      body: JSON.stringify({ seeds }),
+      body: JSON.stringify(priority === undefined ? { seeds } : { seeds, priority }),
     });
   } catch (error) {
     throw new SearchApiError(

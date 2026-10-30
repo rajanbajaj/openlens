@@ -227,6 +227,22 @@ Postgres seen-set (normalized-URL primary key; `done` rows are never
 refetched). Committed offsets are the resume checkpoint; the
 store-backed claim path stays as the offline/test fallback.
 
+Queue priority: `POST /api/v1/frontier/resume` accepts an optional
+`priority` integer applied to every seed in the call (the admin
+frontier page exposes it as the "Priority" field next to the seed
+box). Higher values dequeue first (`ORDER BY priority DESC, depth
+ASC`); omitted/`None` keeps whatever the store already has (`0` for
+new rows), while an explicit int — including `0` and negatives —
+overwrites it on conflict. In Kafka mode the priority travels in the
+message payload, so consumed URLs land in the store with the same
+precedence; discovered links carry none and default to `0`.
+
+Live frontier stats: `/api/v1/frontier/live` is a websocket that pushes
+the same status view (queue/checkpoint, overlaid with store truth) on
+connect and every 2s after, so the admin dashboard stays fresh without
+polling. It is read-only like the status endpoint; any client frame
+nudges an early refresh and closing the socket simply ends the stream.
+
 ## Pipeline
 
 Every request flows through 10 stages (`PipelineStage` in

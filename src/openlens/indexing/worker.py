@@ -422,6 +422,16 @@ def run_standalone_worker(
             repository.close()
 
 
+#: Idle polls between opportunistic store drains. The poll loop only
+#: drains the persistent store when a Kafka message arrives, so seeds
+#: that landed in the store after startup (fallback-enqueued during a
+#: broker outage, crash leftovers) would otherwise wait behind an empty
+#: topic forever. Draining every Nth idle poll (poll blocks ~1s, so ~30s
+#: cadence) picks those up; the drain itself is pause-aware and cheap
+#: when the frontier is empty.
+_IDLE_DRAIN_EVERY_POLLS = 30
+
+
 def run_kafka_worker(
     seed_urls: list[str],
     app_config: dict[str, Any],
@@ -512,6 +522,7 @@ def run_kafka_worker(
         if not worker.paused():
             _drain_once()
         iteration = 0
+        idle_polls = 0
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
@@ -529,10 +540,23 @@ def run_kafka_worker(
                 continue
             message = kafka.poll()
             if message is None:
+                idle_polls += 1
+                if idle_polls % _IDLE_DRAIN_EVERY_POLLS == 0 and not worker.paused():
+                    # Opportunistic backlog drain (resilient: a transient
+                    # store error must not kill the poll loop; the next
+                    # cadence retries). Startup misconfiguration still
+                    # fails loud via the initial _drain_once above.
+                    with contextlib.suppress(Exception):
+                        _drain_once()
                 continue
+            idle_polls = 0
             counts["received"] += 1
             with contextlib.suppress(Exception):
-                frontier_store.enqueue(message.url, message.depth)
+                frontier_store.enqueue(
+                    message.url,
+                    message.depth,
+                    priority=getattr(message, "priority", None),
+                )
             stats = run_index(
                 [],
                 repository,

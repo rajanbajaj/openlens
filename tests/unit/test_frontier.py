@@ -70,6 +70,43 @@ def test_dequeue_depth_order_and_mark_done() -> None:
         store.close()
 
 
+def test_enqueue_priority_orders_dequeue_before_depth() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/low", 0, priority=1) is True
+        assert store.enqueue("https://example.com/high", 2, priority=9) is True
+        assert store.enqueue("https://example.com/mid", 0, priority=5) is True
+        first = store.dequeue()
+        assert first is not None and first.url.endswith("/high")
+        assert first.priority == 9
+        second = store.dequeue()
+        assert second is not None and second.url.endswith("/mid")
+        assert second.priority == 5
+    finally:
+        store.close()
+
+
+def test_enqueue_priority_none_keeps_explicit_overwrites() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/a", 0, priority=7) is True
+        # Re-queue without priority keeps the stored value...
+        assert store.enqueue("https://example.com/a", 0) is False
+        assert store.pending(limit=10)[0].priority == 7
+        # ...while an explicit int (even 0, even negative) overwrites it.
+        assert store.enqueue("https://example.com/a", 0, priority=0) is False
+        assert store.pending(limit=10)[0].priority == 0
+        assert store.enqueue("https://example.com/a", 0, priority=-3) is False
+        assert store.pending(limit=10)[0].priority == -3
+        # New rows default to zero.
+        assert store.enqueue("https://example.com/b", 0) is True
+        by_url = {e.url: e.priority for e in store.pending(limit=10)}
+        assert by_url["https://example.com/b"] == 0
+        assert by_url["https://example.com/a"] == -3
+    finally:
+        store.close()
+
+
 def test_requeue_active_restores_pause() -> None:
     store = SqliteFrontierStore(":memory:")
     try:

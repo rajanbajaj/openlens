@@ -43,10 +43,16 @@ DEFAULT_POLL_TIMEOUT_S = 1.0
 
 @dataclass(frozen=True)
 class KafkaMessage:
-    """One consumed URL message (offset committed separately)."""
+    """One consumed URL message (offset committed separately).
+
+    ``priority`` mirrors the frontier store semantic: ``None`` (absent
+    from the payload, e.g. pre-upgrade messages) keeps whatever the
+    store already has; an explicit int overwrites it on conflict.
+    """
 
     url: str
     depth: int = 0
+    priority: int | None = None
 
 
 def _coerce_enabled(value: Any) -> bool:
@@ -279,20 +285,26 @@ class KafkaQueue:
 
     # -- produce ---------------------------------------------------------
 
-    def publish(self, url: str, depth: int = 0) -> bool:
+    def publish(self, url: str, depth: int = 0, priority: int | None = None) -> bool:
         """Publish one URL (keyed by normalized URL). False when blank.
 
-        Raises ``ProviderError(UNAVAILABLE)`` when the broker rejects or
+        ``priority`` is only carried when explicit (``None`` omits the
+        key so consumers keep the stored value); an explicit int,
+        including ``0``, overwrites it on conflict. Raises
+        ``ProviderError(UNAVAILABLE)`` when the broker rejects or
         times out, so callers can fall back to the store queue.
         """
         if not isinstance(url, str) or not url.strip():
             return False
         cleaned = url.strip()
+        payload: dict[str, Any] = {"url": cleaned, "depth": int(depth)}
+        if priority is not None:
+            payload["priority"] = int(priority)
         try:
             future = self._producer.send(
                 self._topic,
                 key=normalize_url(cleaned),
-                value={"url": cleaned, "depth": int(depth)},
+                value=payload,
             )
             future.get(timeout=self._publish_timeout_s)
         except Exception as exc:
@@ -374,17 +386,24 @@ class KafkaQueue:
         record = records[0]
         self._pending_record = record
         value = getattr(record, "value", None)
+        priority: int | None = None
         if isinstance(value, Mapping):
             url = str(value.get("url", "") or "")
             try:
                 depth = int(value.get("depth", 0) or 0)
             except (TypeError, ValueError):
                 depth = 0
+            raw_priority: Any = value.get("priority", None)
+            if raw_priority is not None:
+                try:
+                    priority = int(raw_priority)
+                except (TypeError, ValueError):
+                    priority = None
         else:
             url, depth = str(value or ""), 0
         if not url.strip():
             return None
-        return KafkaMessage(url=url.strip(), depth=depth)
+        return KafkaMessage(url=url.strip(), depth=depth, priority=priority)
 
     def commit(self) -> None:
         """Commit the last polled offset (call after a successful crawl)."""

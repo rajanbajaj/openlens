@@ -155,6 +155,8 @@ export interface FrontierQueueEntry {
   url: string;
   depth: number;
   status: string;
+  /** Dequeue precedence (higher first); absent on pre-priority backends. */
+  priority?: number;
 }
 
 /** Latest crawl checkpoint summary. */

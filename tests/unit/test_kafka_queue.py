@@ -102,19 +102,26 @@ class _FakeQueue:
 
     def __init__(
         self,
-        messages: list[tuple[str, int]] | None = None,
+        messages: list[tuple[str, int] | tuple[str, int, int | None]] | None = None,
         available: bool = True,
     ) -> None:
-        self._messages = [KafkaMessage(url, depth) for url, depth in (messages or [])]
+        self._messages = []
+        for item in messages or []:
+            if len(item) == 3:
+                url, depth, prio = item
+                self._messages.append(KafkaMessage(url, depth, prio))
+            else:
+                url, depth = item
+                self._messages.append(KafkaMessage(url, depth))
         self._available = available
-        self.published: list[tuple[str, int]] = []
+        self.published: list[tuple[str, int, int | None]] = []
         self.commits = 0
 
     def check_available(self, timeout_s: float = 5.0) -> bool:
         return self._available
 
-    def publish(self, url: str, depth: int = 0) -> bool:
-        self.published.append((url, depth))
+    def publish(self, url: str, depth: int = 0, priority: int | None = None) -> bool:
+        self.published.append((url, depth, priority))
         return True
 
     def poll(self) -> KafkaMessage | None:
@@ -292,6 +299,48 @@ def test_poll_commit_cycle() -> None:
     assert consumer.closed is True
 
 
+def test_publish_carries_priority_only_when_explicit() -> None:
+    producer = _FakeProducer()
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=producer
+    )
+    assert queue.publish("https://example.com/hi", 0, priority=7) is True
+    assert producer.sent[0][2] == {
+        "url": "https://example.com/hi",
+        "depth": 0,
+        "priority": 7,
+    }
+    assert queue.publish("https://example.com/lo", 0) is True
+    assert producer.sent[1][2] == {"url": "https://example.com/lo", "depth": 0}
+    # Explicit zero still travels (it overwrites on conflict downstream).
+    assert queue.publish("https://example.com/zero", 0, priority=0) is True
+    assert producer.sent[2][2]["priority"] == 0
+    queue.close()
+
+
+def test_poll_parses_priority_and_tolerates_garbage() -> None:
+    consumer = _FakeConsumer(
+        [
+            [{"url": "https://example.com/hi", "depth": 0, "priority": 7}],
+            [{"url": "https://example.com/old", "depth": 1}],
+            [{"url": "https://example.com/bad", "depth": 0, "priority": "x"}],
+        ]
+    )
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}},
+        producer=_FakeProducer(),
+        consumer_factory=lambda: consumer,
+    )
+    assert queue.poll() == KafkaMessage(
+        url="https://example.com/hi", depth=0, priority=7
+    )
+    # Pre-upgrade payloads (no key) keep the stored value downstream.
+    assert queue.poll() == KafkaMessage(url="https://example.com/old", depth=1)
+    # Unparseable priorities degrade to keep-stored, never crash the loop.
+    assert queue.poll() == KafkaMessage(url="https://example.com/bad", depth=0)
+    queue.close()
+
+
 def test_missing_driver_fails_closed() -> None:
     with pytest.raises(ProviderError):
         KafkaQueue(bootstrap_servers=["b:1"], producer=None)
@@ -324,7 +373,7 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     assert counts["received"] == 1
     assert fake.commits == 1
     # Seed fetched; the discovered link fanned back out to the topic...
-    assert ("https://kafka.test/b", 1) in fake.published
+    assert ("https://kafka.test/b", 1, None) in fake.published
     # ...and durably recorded in the store (no refetch on redelivery).
     store = SqliteFrontierStore(db_path)
     try:
@@ -334,6 +383,42 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     assert "https://kafka.test/a" not in pending_urls
     assert "https://kafka.test/b" not in pending_urls
     assert hits.get("https://kafka.test/a", 0) == 1
+
+
+def test_run_kafka_worker_passes_message_priority_to_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The drain enqueues the consumed message with its Kafka priority."""
+    db_path = str(tmp_path / "frontier.db")
+    seen: list[tuple[str, int | None]] = []
+    original_enqueue = SqliteFrontierStore.enqueue
+
+    def _spy(
+        self: SqliteFrontierStore,
+        url: str,
+        depth: int = 0,
+        parent_url: str | None = None,
+        priority: int | None = None,
+    ) -> bool:
+        seen.append((url, priority))
+        return original_enqueue(
+            self, url, depth, parent_url=parent_url, priority=priority
+        )
+
+    monkeypatch.setattr(SqliteFrontierStore, "enqueue", _spy)
+    fake = _FakeQueue([("https://kafka.test/a", 0, 7)])
+    hits: dict[str, int] = {}
+    counts = run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=_crawler_factory(hits),
+        queue=fake,
+        max_iterations=10,
+        idle_sleep_s=0.01,
+    )
+    assert counts["received"] == 1
+    assert ("https://kafka.test/a", 7) in seen
 
 
 def test_run_kafka_worker_drains_store_backlog_on_startup(tmp_path: Path) -> None:
@@ -360,6 +445,56 @@ def test_run_kafka_worker_drains_store_backlog_on_startup(tmp_path: Path) -> Non
     assert counts["added"] == 2
     assert hits.get("https://kafka.test/a", 0) == 1
     assert hits.get("https://kafka.test/b", 0) == 1
+
+
+def test_run_kafka_worker_idle_polls_drain_store_backlog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Store seeds stranded behind an empty topic are still crawled.
+
+    Seeds that land in the store after worker startup (fallback path
+    during a broker outage) must not wait for the next Kafka message:
+    every Nth idle poll drains the store. ``/c`` below is enqueued
+    mid-run (it is linked from nowhere, so only the idle drain can
+    reach it).
+    """
+    monkeypatch.setattr("openlens.indexing.worker._IDLE_DRAIN_EVERY_POLLS", 3)
+    db_path = str(tmp_path / "frontier.db")
+    store = SqliteFrontierStore(db_path)
+    try:
+        assert store.enqueue("https://kafka.test/a", 0) is True
+    finally:
+        store.close()
+    polls = 0
+
+    def seeding_poll() -> KafkaMessage | None:
+        nonlocal polls
+        polls += 1
+        if polls == 5:
+            late = SqliteFrontierStore(db_path)
+            try:
+                assert late.enqueue("https://kafka.test/c", 0) is True
+            finally:
+                late.close()
+        return None
+
+    fake = _FakeQueue([])
+    fake.poll = seeding_poll  # type: ignore[method-assign]
+    hits: dict[str, int] = {}
+    counts = run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=_crawler_factory(hits),
+        queue=fake,
+        max_iterations=10,
+        idle_sleep_s=0.01,
+    )
+    assert counts["received"] == 0
+    assert hits.get("https://kafka.test/a", 0) == 1
+    # Reached purely through the idle drain (404s retry per
+    # max_attempts_per_url, so only presence is asserted).
+    assert hits.get("https://kafka.test/c", 0) >= 1
 
 
 def test_run_kafka_worker_respects_pause(tmp_path: Path) -> None:
@@ -425,7 +560,7 @@ def test_resume_publishes_to_kafka(
         "/api/v1/frontier/resume", json={"seeds": ["https://kafka.test/a"]}
     )
     assert resp.status_code == 200, resp.text
-    assert fake.published == [("https://kafka.test/a", 0)]
+    assert fake.published == [("https://kafka.test/a", 0, None)]
 
 
 def test_resume_falls_back_to_store_when_broker_down(
@@ -450,6 +585,61 @@ def test_resume_falls_back_to_store_when_broker_down(
     try:
         assert {e.url for e in store.pending(limit=100)} == {"https://kafka.test/a"}
         assert store.get_settings().get("paused") is False
+    finally:
+        store.close()
+
+
+def test_resume_priority_reaches_kafka_and_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = _FakeQueue()
+    monkeypatch.setattr(routes_mod, "kafka_enabled", lambda config: True)
+    monkeypatch.setattr(routes_mod, "open_kafka_queue", lambda config: fake)
+    client = _api_client(monkeypatch, tmp_path)
+    resp = client.post(
+        "/api/v1/frontier/resume",
+        json={"seeds": ["https://kafka.test/a"], "priority": 6},
+    )
+    assert resp.status_code == 200, resp.text
+    assert fake.published == [("https://kafka.test/a", 0, 6)]
+    assert resp.json()["queue"][0]["priority"] == 6
+
+
+def test_resume_priority_rejects_non_integers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _api_client(monkeypatch, tmp_path)
+    for bad in ("high", 1.5):
+        resp = client.post(
+            "/api/v1/frontier/resume",
+            json={"seeds": ["https://kafka.test/a"], "priority": bad},
+        )
+        assert resp.status_code == 422, bad
+
+
+def test_resume_priority_falls_back_to_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(routes_mod, "kafka_enabled", lambda config: True)
+
+    def _boom(config: Any) -> Any:
+        raise ProviderError(
+            "broker down",
+            provider_name="kafka_queue",
+            code=ProviderError.UNAVAILABLE,
+        )
+
+    monkeypatch.setattr(routes_mod, "open_kafka_queue", _boom)
+    client = _api_client(monkeypatch, tmp_path)
+    resp = client.post(
+        "/api/v1/frontier/resume",
+        json={"seeds": ["https://kafka.test/a"], "priority": 4},
+    )
+    assert resp.status_code == 200, resp.text
+    store = SqliteFrontierStore(str(tmp_path / "api-frontier.db"))
+    try:
+        entries = store.pending(limit=100)
+        assert [(e.url, e.priority) for e in entries] == [("https://kafka.test/a", 4)]
     finally:
         store.close()
 

@@ -208,6 +208,7 @@ class FrontierQueueEntrySchema(BaseModel):
     url: str
     depth: int = Field(ge=0)
     status: str = "queued"
+    priority: int = 0
 
 
 class FrontierCheckpointSchema(BaseModel):
@@ -285,11 +286,27 @@ class FrontierSettingsResponseSchema(BaseModel):
 
 
 class FrontierResumeSchema(BaseModel):
-    """POST /api/v1/frontier/resume body: optional replacement seeds."""
+    """POST /api/v1/frontier/resume body: optional replacement seeds.
+
+    `priority` applies to every seed in the call: higher values dequeue
+    first (`ORDER BY priority DESC, depth ASC`). Omitted/`None` keeps
+    whatever the store already has (``0`` for new rows). Negative
+    values deprioritize below the default.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     seeds: list[str] = Field(default_factory=list)
+    priority: int | None = Field(default=None)
+
+    @field_validator("priority")
+    @classmethod
+    def priority_must_be_int(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("priority must be an integer")
+        return value
 
 
 class AdminConfigPutSchema(BaseModel):

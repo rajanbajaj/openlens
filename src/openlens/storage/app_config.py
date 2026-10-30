@@ -616,7 +616,15 @@ def validate_config_doc(doc_key: str, body: Any) -> None:
     if doc_key == "models":
         from openlens.models.manager import ModelManager
 
-        ModelManager.from_config({"models": body})
+        try:
+            ModelManager.from_config({"models": body})
+        except ConfigError as exc:
+            # Zero enabled backends is a valid "no AI" state: boot maps
+            # it to a None manager (see engine._build_model_manager), so
+            # the PUT validator must accept it too. Any other validation
+            # error (bad primary, malformed entry) still fails the save.
+            if "No enabled model backends" not in str(exc):
+                raise
     elif doc_key == "providers":
         from openlens.providers.manager import ProviderManager
 

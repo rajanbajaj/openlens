@@ -317,7 +317,10 @@ def test_build_worker_sqlite_file_repo_creates_parent(tmp_path) -> None:
 
     db_path = str(tmp_path / "missing-parent" / "crawl.db")
     config: dict[str, Any] = {
-        "storage": {"backend": "sqlite"},
+        "storage": {
+            "backend": "sqlite",
+            "sqlite": {"db_path": str(tmp_path / "frontier.db")},
+        },
         "providers": {"custom_index": {"enabled": True, "db_path": db_path}},
         "indexing": {},
     }
