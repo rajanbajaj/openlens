@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
+  clearFrontier,
   frontierLiveUrl,
   pauseFrontier,
   resumeFrontier,
@@ -24,6 +25,7 @@ import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
 import { Drawer } from './ui/Drawer.tsx';
 import { GlassPanel } from './ui/GlassPanel.tsx';
+import { Toasts, useToasts } from './ui/Toast.tsx';
 
 /** Local defaults used before the backend settings load. */
 const DEFAULT_SETTINGS: FrontierSettings = {
@@ -84,8 +86,8 @@ export interface FrontierDrawerProps {
  * the user frontend so queue/worker mutations stay admin-only behind
  * the backend `X-Admin-Token` gate. Loads its data lazily on first
  * open via TanStack Query (generated typed client); every fetch
- * failure degrades to an empty view with a notice instead of
- * crashing the page.
+ * failure degrades to an empty view with an error toast instead of
+ * crashing the page. All submissions confirm via toaster popups.
  */
 function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   // Open by default: in the admin app this is a page, not a rail drawer.
@@ -94,7 +96,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [settings, setSettings] = useState<FrontierSettings>(DEFAULT_SETTINGS);
   const [seeds, setSeeds] = useState('');
   const [priority, setPriority] = useState('');
-  const [notice, setNotice] = useState<string | null>(null);
+  const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [live, setLive] = useState(false);
 
   const snapshot = useQuery({
@@ -113,7 +115,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     if (snapshot.data.status) {
       setStatus(snapshot.data.status);
     } else {
-      setNotice('Frontier status unavailable.');
+      pushToast('Frontier status unavailable.', 'error');
     }
     setSettings(snapshot.data.settings);
     setWorkers(snapshot.data.workers);
@@ -121,7 +123,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
 
   useEffect(() => {
     if (snapshot.isError && !snapshot.data) {
-      setNotice('Frontier status unavailable.');
+      pushToast('Frontier status unavailable.', 'error');
     }
   }, [snapshot.isError, snapshot.data]);
 
@@ -164,10 +166,9 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const loading = snapshot.isPending;
 
   async function refresh() {
-    setNotice(null);
     const result = await snapshot.refetch();
     if (result.isError) {
-      setNotice('Refresh failed.');
+      pushToast('Refresh failed.', 'error');
     }
   }
 
@@ -178,9 +179,30 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   async function handlePause() {
     try {
       setStatus(await pauseFrontier(fetch, adminToken));
-      setNotice('Paused.');
+      pushToast('Paused.', 'success');
     } catch {
-      setNotice('Pause failed.');
+      pushToast('Pause failed.', 'error');
+    }
+  }
+
+  async function handleClear() {
+    if (
+      !window.confirm(
+        'Pause crawling and permanently drop all queued URLs? In-flight and history are kept.',
+      )
+    ) {
+      return;
+    }
+    try {
+      const cleared = await clearFrontier(fetch, adminToken);
+      setStatus(cleared);
+      const count = cleared.cleared_queued ?? 0;
+      const topic = cleared.kafka_purged
+        ? 'Topic purged.'
+        : 'Topic not purged: already-published URLs may refill the queue on resume.';
+      pushToast(`Paused. Cleared ${count} queued URL(s). ${topic}`, 'success');
+    } catch {
+      pushToast('Clear failed.', 'error');
     }
   }
 
@@ -193,15 +215,15 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       const trimmed = priority.trim();
       const parsed = trimmed === '' ? undefined : Number(trimmed);
       if (parsed !== undefined && !Number.isInteger(parsed)) {
-        setNotice('Priority must be a whole number.');
+        pushToast('Priority must be a whole number.', 'error');
         return;
       }
       setStatus(await resumeFrontier(list, fetch, adminToken, parsed));
-      setNotice(list.length > 0 ? `Resumed with ${list.length} seed(s).` : 'Resumed.');
+      pushToast(list.length > 0 ? `Resumed with ${list.length} seed(s).` : 'Resumed.', 'success');
       setSeeds('');
       setPriority('');
     } catch {
-      setNotice('Resume failed.');
+      pushToast('Resume failed.', 'error');
     }
   }
 
@@ -209,9 +231,9 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     try {
       const saved = await saveFrontierSettings(settings, fetch, adminToken);
       setSettings(saved.settings);
-      setNotice('Settings saved.');
+      pushToast('Settings saved.', 'success');
     } catch {
-      setNotice('Saving settings failed.');
+      pushToast('Saving settings failed.', 'error');
     }
   }
 
@@ -235,11 +257,6 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
             <p data-testid="frontier-state" className="my-ol-s">
               {status?.paused ? <Badge>Paused</Badge> : <Badge>Running</Badge>}
             </p>
-            {notice ? (
-              <p data-testid="frontier-notice" className="my-ol-s text-ol-s">
-                {notice}
-              </p>
-            ) : null}
 
             <div className="flex flex-wrap gap-ol-s my-ol-s">
               <Button variant="secondary" onClick={() => void handlePause()}>
@@ -250,6 +267,9 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
               </Button>{' '}
               <Button variant="ghost" onClick={() => void refresh()}>
                 Refresh
+              </Button>{' '}
+              <Button variant="secondary" onClick={() => void handleClear()}>
+                Pause &amp; clear
               </Button>{' '}
               <span data-testid="frontier-live">
                 <Badge>{live ? 'Live' : 'Snapshot'}</Badge>
@@ -413,6 +433,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
           </>
         )}
       </Drawer>
+      <Toasts items={toasts} onDismiss={dismissToast} />
     </GlassPanel>
   );
 }

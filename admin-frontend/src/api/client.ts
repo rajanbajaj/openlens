@@ -381,6 +381,33 @@ export async function pauseFrontier(
 }
 
 /**
+ * Issue `POST {API_URL}/api/v1/frontier/clear`: pause and drop every
+ * queued URL (store rows plus the Kafka topic when enabled). The
+ * response status carries `cleared_queued` and `kafka_purged`.
+ * Throws {@link SearchApiError} on failure.
+ * Pass `adminToken` when the backend sets
+ * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function clearFrontier(
+  fetchImpl: FetchImpl = fetch,
+  adminToken: string = '',
+): Promise<FrontierStatus> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${API_BASE_URL}/api/v1/frontier/clear`, {
+      method: 'POST',
+      headers: { ...frontierAdminHeaders(adminToken) },
+    });
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  return parseFrontier(response, isFrontierStatus);
+}
+
+/**
  * Issue `POST {API_URL}/api/v1/frontier/resume` with optional
  * replacement `seeds`. `priority`, when given, applies to every seed
  * (higher dequeues first; omitted keeps the stored value).

@@ -4,6 +4,7 @@ import type { AdminConfigDoc, AdminConfigName } from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
+import { Toasts, useToasts } from './ui/Toast.tsx';
 
 /** Props for one config document editor. */
 export interface ConfigEditorProps {
@@ -20,7 +21,7 @@ export interface ConfigEditorProps {
  * document (DB row when written, YAML seed otherwise) and saves edits
  * through the `X-Admin-Token` gate. While the backend
  * `/api/v1/admin/config/*` routes are still pending, the GET degrades
- * to `null` and the editor shows the file default with a notice; a
+ * to `null` and the editor shows the file default with an info toast; a
  * save then surfaces the backend error instead of silently dropping
  * the edit.
  */
@@ -33,7 +34,7 @@ export function ConfigEditor({
 }: ConfigEditorProps) {
   const [doc, setDoc] = useState<AdminConfigDoc | null>(null);
   const [text, setText] = useState(() => JSON.stringify(fileDefault, null, 2));
-  const [notice, setNotice] = useState<string | null>(null);
+  const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [pendingBackend, setPendingBackend] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -48,21 +49,29 @@ export function ConfigEditor({
           setText(JSON.stringify(loadedDoc.body, null, 2));
         } else {
           setPendingBackend(true);
-          setNotice('Backend config endpoint pending: showing file defaults (read-only preview).');
+          pushToast(
+            'Backend config endpoint pending: showing file defaults (read-only preview).',
+            'info',
+          );
         }
       },
       () => {
         if (!cancelled) {
           setLoaded(true);
           setPendingBackend(true);
-          setNotice('Backend config endpoint pending: showing file defaults (read-only preview).');
+          pushToast(
+            'Backend config endpoint pending: showing file defaults (read-only preview).',
+            'info',
+          );
         }
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [name]);
+    // pushToast is stable across renders (useCallback), so this still
+    // re-subscribes only per document.
+  }, [name, pushToast]);
 
   async function handleSave() {
     let parsed: Record<string, unknown> | unknown[];
@@ -70,24 +79,24 @@ export function ConfigEditor({
       const value: unknown = JSON.parse(text);
       // Mapping sections plus the list-form `plugins:` section.
       if (typeof value !== 'object' || value === null) {
-        setNotice('Document must be a JSON object or array.');
+        pushToast('Document must be a JSON object or array.', 'error');
         return;
       }
       parsed = value as Record<string, unknown> | unknown[];
     } catch {
-      setNotice('Invalid JSON: fix the document before saving.');
+      pushToast('Invalid JSON: fix the document before saving.', 'error');
       return;
     }
     try {
       const saved = await saveAdminConfig(name, parsed, fetch, adminToken);
       setDoc(saved);
       setPendingBackend(false);
-      setNotice('Saved.');
+      pushToast('Saved.', 'success');
     } catch (error) {
       if (error instanceof SearchApiError) {
-        setNotice(`Save failed (${error.code}): ${error.message}`);
+        pushToast(`Save failed (${error.code}): ${error.message}`, 'error');
       } else {
-        setNotice('Save failed.');
+        pushToast('Save failed.', 'error');
       }
     }
   }
@@ -105,11 +114,6 @@ export function ConfigEditor({
           <Badge>{pendingBackend ? 'Backend pending' : 'Loading…'}</Badge>
         )}
       </p>
-      {notice ? (
-        <p data-testid={`config-editor-${name}-notice`} className="my-ol-s text-ol-s">
-          {notice}
-        </p>
-      ) : null}
       <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
         Document (JSON object or array)
         <textarea
@@ -126,6 +130,7 @@ export function ConfigEditor({
           Save {name}
         </Button>
       </div>
+      <Toasts items={toasts} onDismiss={dismissToast} />
     </Card>
   );
 }

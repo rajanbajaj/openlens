@@ -107,6 +107,26 @@ def test_enqueue_priority_none_keeps_explicit_overwrites() -> None:
         store.close()
 
 
+def test_clear_queued_removes_only_queued() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/a", 0) is True
+        assert store.enqueue("https://example.com/b", 0) is True
+        active = store.dequeue()
+        assert active is not None
+        assert store.enqueue("https://example.com/c", 0) is True
+        store.mark_done("https://example.com/c")
+        cleared = store.clear_queued()
+        assert cleared == 1  # only the never-claimed row
+        remaining = {e.url for e in store.pending(limit=10)}
+        assert "https://example.com/a" in remaining  # in-flight kept
+        assert "https://example.com/b" not in remaining
+        assert store.counts().get("queued", 0) == 0
+        assert store.clear_queued() == 0  # idempotent
+    finally:
+        store.close()
+
+
 def test_requeue_active_restores_pause() -> None:
     store = SqliteFrontierStore(":memory:")
     try:

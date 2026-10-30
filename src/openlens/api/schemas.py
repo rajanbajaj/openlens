@@ -265,6 +265,10 @@ class FrontierStatusSchema(BaseModel):
     )
     new_urls: list[FrontierNewUrlSchema] = Field(default_factory=list)
     workers: list[FrontierWorkerSchema] = Field(default_factory=list)
+    # POST /api/v1/frontier/clear echoes what the clean removed; other
+    # endpoints leave the defaults (nothing cleared, topic untouched).
+    cleared_queued: int = Field(default=0, ge=0)
+    kafka_purged: bool = False
 
 
 class FrontierSettingsSchema(BaseModel):

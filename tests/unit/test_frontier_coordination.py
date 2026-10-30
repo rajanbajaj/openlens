@@ -435,6 +435,9 @@ def test_coordination_defaults_preserve_single_worker_shape() -> None:
         def close(self) -> None:
             return None
 
+        def clear_queued(self) -> int:
+            return 0
+
     legacy = _LegacyStore()
     assert legacy.claim("worker-1") is None
     assert legacy.reap_expired_leases() == 7

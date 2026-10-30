@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clearFrontier,
   fetchAdminConfig,
   fetchFrontierSettings,
   fetchFrontierStatus,
@@ -97,6 +98,16 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
     expect(calls[0][0]).toContain('/api/v1/frontier/resume');
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({ seeds: ['https://example.com'] });
     expect(headerOf(calls[0])['X-Admin-Token']).toBe('secret');
+  });
+
+  it('clear pauses, drops the queue, and reports counts', async () => {
+    const cleared = { ...STATUS, cleared_queued: 3, kafka_purged: true };
+    const { fetchImpl, calls } = captureFetch(cleared);
+    const status = await clearFrontier(fetchImpl, 'secret');
+    expect(calls[0][0]).toContain('/api/v1/frontier/clear');
+    expect(headerOf(calls[0])['X-Admin-Token']).toBe('secret');
+    expect(status.cleared_queued).toBe(3);
+    expect(status.kafka_purged).toBe(true);
   });
 
   it('resume includes priority only when given', async () => {

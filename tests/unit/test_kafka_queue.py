@@ -30,6 +30,7 @@ from openlens.indexing.kafka_queue import (
     KafkaQueue,
     kafka_enabled,
     open_kafka_queue,
+    purge_topic,
     validate_kafka_section,
 )
 from openlens.indexing.worker import run_kafka_worker
@@ -339,6 +340,101 @@ def test_poll_parses_priority_and_tolerates_garbage() -> None:
     # Unparseable priorities degrade to keep-stored, never crash the loop.
     assert queue.poll() == KafkaMessage(url="https://example.com/bad", depth=0)
     queue.close()
+
+
+class _FakeTopicErrors:
+    def __init__(self, errors: list[tuple[str, int, str]]) -> None:
+        self.topic_errors = errors
+
+
+class _FakeAdmin:
+    """Offline KafkaAdminClient stand-in (records calls, canned errors)."""
+
+    def __init__(
+        self,
+        partitions: int = 3,
+        replicas: int = 1,
+        delete_errors: list[tuple[str, int, str]] | None = None,
+        create_errors: list[tuple[str, int, str]] | None = None,
+    ) -> None:
+        self._partitions = partitions
+        self._replicas = replicas
+        self._delete_errors = delete_errors or []
+        self._create_errors = create_errors or []
+        self.deleted: list[str] = []
+        self.created: list[tuple[str, int, int]] = []
+        self.closed = False
+
+    def describe_topics(self, topics: list[str]) -> list[dict[str, Any]]:
+        return [
+            {
+                "topic": topic,
+                "partitions": [
+                    {"partition": i, "replicas": [0] * self._replicas}
+                    for i in range(self._partitions)
+                ],
+            }
+            for topic in topics
+        ]
+
+    def delete_topics(
+        self, topics: list[str], timeout_ms: int | None = None
+    ) -> _FakeTopicErrors:
+        self.deleted.extend(topics)
+        return _FakeTopicErrors(self._delete_errors)
+
+    def create_topics(
+        self, new_topics: list[Any], timeout_ms: int | None = None
+    ) -> _FakeTopicErrors:
+        for topic in new_topics:
+            self.created.append(
+                (topic.name, topic.num_partitions, topic.replication_factor)
+            )
+        return _FakeTopicErrors(self._create_errors)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_purge_topic_recreates_with_same_layout() -> None:
+    admin = _FakeAdmin(partitions=4, replicas=2)
+    result = purge_topic(
+        {"kafka": {"bootstrap_servers": ["b:1"]}},
+        admin_client_factory=lambda: admin,
+    )
+    assert result == {"purged": True, "partitions": 4}
+    assert admin.deleted == ["crawl.urls"]
+    assert admin.created == [("crawl.urls", 4, 2)]
+    assert admin.closed is True
+
+
+def test_purge_topic_tolerates_unknown_topic_on_delete() -> None:
+    admin = _FakeAdmin(delete_errors=[("crawl.urls", 3, "unknown")])
+    result = purge_topic(
+        {"kafka": {"bootstrap_servers": ["b:1"]}},
+        admin_client_factory=lambda: admin,
+    )
+    assert result["purged"] is True
+    assert admin.created and admin.created[0][0] == "crawl.urls"
+
+
+def test_purge_topic_surfaces_broker_errors() -> None:
+    admin = _FakeAdmin(delete_errors=[("crawl.urls", 7, "request timed out")])
+    with pytest.raises(ProviderError):
+        purge_topic(
+            {"kafka": {"bootstrap_servers": ["b:1"]}},
+            admin_client_factory=lambda: admin,
+        )
+
+
+def test_purge_topic_fails_closed_without_driver() -> None:
+    def _boom() -> Any:
+        raise ImportError("no kafka package")
+
+    with pytest.raises(ProviderError):
+        purge_topic(
+            {"kafka": {"bootstrap_servers": ["b:1"]}}, admin_client_factory=_boom
+        )
 
 
 def test_missing_driver_fails_closed() -> None:
@@ -658,6 +754,73 @@ def test_resume_priority_falls_back_to_store(
         assert [(e.url, e.priority) for e in entries] == [("https://kafka.test/a", 4)]
     finally:
         store.close()
+
+
+def test_clear_pauses_and_clears_store_queue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _api_client(monkeypatch, tmp_path)
+    db = str(tmp_path / "api-frontier.db")
+    store = SqliteFrontierStore(db)
+    try:
+        assert store.enqueue("https://kafka.test/a", 0) is True
+        assert store.enqueue("https://kafka.test/b", 1, priority=2) is True
+    finally:
+        store.close()
+    resp = client.post("/api/v1/frontier/clear")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["paused"] is True
+    assert body["cleared_queued"] == 2
+    assert body["kafka_purged"] is False  # kafka disabled in this client
+    assert body["queue"] == []
+    assert body["checkpoint"]["phase"] == "paused"
+    store = SqliteFrontierStore(db)
+    try:
+        assert store.pending(limit=100) == []
+        assert store.get_settings().get("paused") is True
+    finally:
+        store.close()
+
+
+def test_clear_purges_kafka_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(routes_mod, "kafka_enabled", lambda config: True)
+    purged: list[Any] = []
+
+    def _fake_purge(config: Any) -> dict[str, Any]:
+        purged.append(config)
+        return {"purged": True, "partitions": 3}
+
+    monkeypatch.setattr(routes_mod, "purge_topic", _fake_purge)
+    client = _api_client(monkeypatch, tmp_path)
+    resp = client.post("/api/v1/frontier/clear")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kafka_purged"] is True
+    assert len(purged) == 1
+
+
+def test_clear_reports_purge_failure_without_failing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A dead broker still yields 200: pause+store clear stand alone."""
+    monkeypatch.setattr(routes_mod, "kafka_enabled", lambda config: True)
+
+    def _boom(config: Any) -> Any:
+        raise ProviderError(
+            "broker down",
+            provider_name="kafka_queue",
+            code=ProviderError.UNAVAILABLE,
+        )
+
+    monkeypatch.setattr(routes_mod, "purge_topic", _boom)
+    client = _api_client(monkeypatch, tmp_path)
+    resp = client.post("/api/v1/frontier/clear")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["paused"] is True
+    assert body["kafka_purged"] is False
 
 
 def test_pause_resume_flip_store_flag(

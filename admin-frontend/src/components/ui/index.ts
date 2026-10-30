@@ -16,5 +16,5 @@ export { Skeleton } from './Skeleton.tsx';
 export type { SkeletonProps } from './Skeleton.tsx';
 export { TextInput } from './TextInput.tsx';
 export type { TextInputProps } from './TextInput.tsx';
-export { Toasts } from './Toast.tsx';
-export type { ToastItem, ToastsProps } from './Toast.tsx';
+export { Toasts, TOAST_TTL_MS, useToasts } from './Toast.tsx';
+export type { ToastItem, ToastKind, ToastsProps } from './Toast.tsx';

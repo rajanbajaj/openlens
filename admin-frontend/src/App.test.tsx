@@ -43,7 +43,7 @@ describe('admin shell', () => {
     render(<App />);
     fireEvent.click(screen.getByTestId('admin-tab-models'));
     await waitFor(() => {
-      expect(screen.getByTestId('config-editor-models-notice')).toHaveTextContent(/pending/i);
+      expect(screen.getByTestId('toasts')).toHaveTextContent(/pending/i);
     });
     const area = screen.getByTestId('config-editor-models-text') as HTMLTextAreaElement;
     expect(area.value).toContain('fake');

@@ -234,6 +234,16 @@ class FrontierStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def clear_queued(self) -> int:
+        """Delete every ``queued`` row (admin queue-clean).
+
+        In-flight (``active``) rows are kept, as is all history
+        (``done``/``failed``) and coordination state. Returns the
+        number of rows removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def is_known(self, url: str) -> bool:
         """True when the normalized URL already has a queue row."""
         raise NotImplementedError
@@ -951,6 +961,20 @@ class SqliteFrontierStore(FrontierStore):
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to requeue frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def clear_queued(self) -> int:
+        try:
+            with self._lock, self._conn:
+                cursor = self._conn.execute(
+                    "DELETE FROM frontier_queue WHERE status = 'queued'"
+                )
+                return cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to clear queued frontier URLs: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -1824,6 +1848,16 @@ class PostgresFrontierStore(FrontierStore):
                 " WHERE url = %s AND status IN ('active', 'failed')",
                 (normalize_frontier_url(url),),
             )
+        )
+
+    def clear_queued(self) -> int:
+        table = self._qualified("frontier_queue")
+        return int(
+            self._write(
+                f"DELETE FROM {table} WHERE status = 'queued'",  # noqa: S608
+                (),
+            )
+            or 0
         )
 
     # -- shared-queue coordination (Postgres) -----------------------------

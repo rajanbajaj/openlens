@@ -244,6 +244,14 @@ fan-out only publishes first sightings (re-sightings are already in
 the store for any drain to pick up), which keeps popular URLs from
 reflooding the topic.
 
+Pause & clean the queue: `POST /api/v1/frontier/clear` (admin only,
+same `X-Admin-Token` gate) pauses crawling, deletes every `queued`
+row, and purges + recreates the Kafka topic so already-published
+messages cannot refill the queue on resume. In-flight rows, history,
+checkpoints, and settings are kept. The response carries
+`cleared_queued` and `kafka_purged`; the admin frontier page exposes
+it as the "Pause & clear" button behind a confirm step.
+
 Live frontier stats: `/api/v1/frontier/live` is a websocket that pushes
 the same status view (queue/checkpoint, overlaid with store truth) on
 connect and every 2s after, so the admin dashboard stays fresh without

@@ -196,6 +196,10 @@ export interface FrontierStatus {
   new_urls: FrontierNewUrl[];
   /** Live workers; absent on pre-worker backends (read via reader). */
   workers?: FrontierWorker[];
+  /** POST /api/v1/frontier/clear echo; absent or zero elsewhere. */
+  cleared_queued?: number;
+  /** POST /api/v1/frontier/clear echo; absent or false elsewhere. */
+  kafka_purged?: boolean;
 }
 
 /** Frontier crawl settings (PUT body is strict: unknown keys rejected). */

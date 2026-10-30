@@ -111,6 +111,49 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     expect(screen.getByTestId('frontier-state')).toBeInTheDocument();
   });
 
+  it('pauses and clears the queue behind a confirm', async () => {
+    MockSocket.instances = [];
+    stubBackend({ ...STATUS, cleared_queued: 2, kafka_purged: true });
+    vi.stubGlobal('WebSocket', MockSocket);
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByText('Pause & clear')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Pause & clear'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Paused. Cleared 2 queued URL(s). Topic purged.',
+      );
+    });
+  });
+
+  it('does nothing when the clear confirm is dismissed', async () => {
+    MockSocket.instances = [];
+    let clearCalls = 0;
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/clear')) clearCalls += 1;
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByText('Pause & clear')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Pause & clear'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(clearCalls).toBe(0);
+  });
+
   it('confirms a successful seed resume with a seed count', async () => {
     MockSocket.instances = [];
     stubBackend(STATUS);
@@ -124,7 +167,7 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     });
     fireEvent.click(screen.getByText('Resume'));
     await waitFor(() => {
-      expect(screen.getByTestId('frontier-notice')).toHaveTextContent('Resumed with 1 seed(s).');
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Resumed with 1 seed(s).');
     });
   });
 });

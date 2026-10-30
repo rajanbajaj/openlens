@@ -173,9 +173,9 @@ def kafka_section(config: Mapping[str, Any] | None) -> dict[str, Any]:
 def _load_driver() -> tuple[Any, Any]:
     """Import the driver pair (module, KafkaError); UNAVAILABLE when absent."""
     try:
-        import kafka  # type: ignore[import-not-found]
+        import kafka  # type: ignore[import-not-found, import-untyped]
 
-        from kafka.errors import KafkaError  # type: ignore[import-not-found]
+        from kafka.errors import KafkaError  # type: ignore[import-not-found, import-untyped]
     except ImportError as exc:
         raise ProviderError(
             "Kafka driver is not installed; install the kafka extra to "
@@ -440,3 +440,101 @@ def open_kafka_queue(
     return KafkaQueue.from_app_config(
         config, producer=producer, consumer_factory=consumer_factory
     )
+
+
+def purge_topic(
+    config: Mapping[str, Any] | None,
+    *,
+    admin_client_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
+    """Delete and recreate the crawl topic (admin queue-clean).
+
+    Clearing the store alone is not a clean: already-published messages
+    would refill it on resume, so the topic goes too. The topic is
+    recreated with the same partition count and replication factor it
+    had (described first); a missing topic is created with one
+    partition. Consumer-group offsets for a deleted topic are dropped
+    by the broker, and paused workers hold no commits during the
+    operation, so the next resume starts the group from the beginning
+    of the fresh topic (``auto_offset_reset=earliest``).
+
+    Returns ``{"purged": True, "partitions": n}``. Raises
+    ``ProviderError(UNAVAILABLE)`` when the driver is missing or the
+    broker fails. Unknown-topic on delete and topic-exists on create
+    are tolerated (idempotent reruns, concurrent recreates).
+    """
+    section = config.get("kafka") if isinstance(config, Mapping) else None
+    normalized = validate_kafka_section(section if isinstance(section, Mapping) else {})
+    topic = str(normalized["topic"])
+    timeout_ms = int(float(normalized.get("publish_timeout_s", 5.0)) * 1000)
+    try:
+        from kafka.admin import NewTopic  # type: ignore[import-not-found, import-untyped]
+    except ImportError:
+        # Driver-absent runtimes (and their fakes) only need the shape.
+        @dataclass(frozen=True)
+        class NewTopic:  # type: ignore[no-redef]
+            name: str
+            num_partitions: int
+            replication_factor: int
+
+    try:
+        from kafka.errors import (  # type: ignore[import-not-found, import-untyped]
+            TopicAlreadyExistsError,
+            UnknownTopicOrPartitionError,
+        )
+
+        unknown_topic_errno = int(UnknownTopicOrPartitionError.errno)
+        topic_exists_errno = int(TopicAlreadyExistsError.errno)
+    except ImportError:
+        # Stable Kafka protocol codes; lets driver-less fakes speak them.
+        unknown_topic_errno, topic_exists_errno = 3, 36
+    try:
+        if admin_client_factory is not None:
+            admin = admin_client_factory()
+        else:
+            _load_driver()
+            from kafka.admin import KafkaAdminClient  # type: ignore[import-not-found, import-untyped]
+
+            admin = KafkaAdminClient(
+                bootstrap_servers=list(normalized["bootstrap_servers"]),
+                request_timeout_ms=timeout_ms,
+            )
+    except ImportError as exc:
+        raise _error(f"Kafka admin client unavailable: {exc}") from exc
+    try:
+        described = admin.describe_topics([topic]) or []
+        meta = described[0] if described else {}
+        partitions = list(meta.get("partitions", []) or [])
+        num_partitions = len(partitions) or 1
+        first = partitions[0] if partitions else {}
+        replicas = list(first.get("replicas", [None]) or [None])
+        replication_factor = max(1, len([r for r in replicas if r is not None]))
+    except Exception:
+        num_partitions, replication_factor = 1, 1
+    try:
+        try:
+            delete_response = admin.delete_topics([topic], timeout_ms=timeout_ms)
+        except TypeError:
+            # Older drivers take no timeout: same call, broker default.
+            delete_response = admin.delete_topics([topic])
+        for _, code, message in getattr(delete_response, "topic_errors", []) or []:
+            if int(code) not in (0, unknown_topic_errno):
+                raise _error(f"Kafka delete of topic '{topic}' failed: {message}")
+        new_topic = NewTopic(topic, num_partitions, replication_factor)
+        try:
+            create_response = admin.create_topics([new_topic], timeout_ms=timeout_ms)
+        except TypeError:
+            create_response = admin.create_topics([new_topic])
+        for _, code, message in getattr(create_response, "topic_errors", []) or []:
+            if int(code) not in (0, topic_exists_errno):
+                raise _error(f"Kafka create of topic '{topic}' failed: {message}")
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise _error(f"Kafka purge of topic '{topic}' failed: {exc}") from exc
+    finally:
+        with contextlib.suppress(Exception):
+            close = getattr(admin, "close", None)
+            if callable(close):
+                close()
+    return {"purged": True, "partitions": num_partitions}

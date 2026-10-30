@@ -63,7 +63,11 @@ from openlens.storage.app_config import (
     try_get_doc,
     validate_config_doc,
 )
-from openlens.indexing.kafka_queue import kafka_enabled, open_kafka_queue
+from openlens.indexing.kafka_queue import (
+    kafka_enabled,
+    open_kafka_queue,
+    purge_topic,
+)
 from openlens.retrieval.suggest import (
     complete,
     correct_spelling,
@@ -877,6 +881,50 @@ def _publish_seeds(
     if not seeds:
         return True
     return _enqueue_seeds_to_store(app_config, seeds, priority)
+
+
+@router.post("/frontier/clear", response_model=FrontierStatusSchema)
+def frontier_clear(request: Request) -> FrontierStatusSchema | JSONResponse:
+    """Pause crawling and drop every queued URL (admin-only).
+
+    Clears the persistent store's ``queued`` rows and purges the Kafka
+    topic when ``kafka:`` is enabled — the topic must go too, or already
+    published messages refill the queue on the next resume. In-flight
+    (``active``) rows are kept, as is all history (``done``/``failed``),
+    checkpoints, and settings. The in-memory snapshot queue is emptied
+    so the dashboard stops showing seeds that no longer exist anywhere.
+    Clearing is best-effort per step and always reports honestly: the
+    response carries ``cleared_queued`` and ``kafka_purged``.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    state = frontier_state.get_frontier_state()
+    state.paused = True
+    state.checkpoint["phase"] = "paused"
+    state.queue = []
+    app_config = getattr(request.app.state, "config", None)
+    _store_set_paused(app_config, True)
+    cleared = 0
+    try:
+        store = _frontier_read_store(request)
+        if store is not None:
+            cleared = int(store.clear_queued() or 0)
+    except Exception as exc:
+        logger.warning("frontier clear: store clear failed: %s", exc)
+    purged = False
+    if kafka_enabled(app_config if isinstance(app_config, dict) else None):
+        try:
+            result = purge_topic(app_config)
+            purged = bool(result.get("purged", False))
+        except ProviderError as exc:
+            logger.warning("frontier clear: Kafka purge failed: %s", exc)
+    payload = _overlay_store_status(
+        _frontier_status_payload(), _frontier_read_store(request)
+    )
+    payload.cleared_queued = cleared
+    payload.kafka_purged = purged
+    return payload
 
 
 @router.post("/frontier/pause", response_model=FrontierStatusSchema)
