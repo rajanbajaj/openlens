@@ -6,6 +6,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 /** Every backend endpoint fails: the shell must still render. */
@@ -23,11 +24,15 @@ describe('admin shell', () => {
     }
   });
 
-  it('persists the admin token to localStorage', () => {
+  it('persists the admin token to sessionStorage and forgets it on demand', () => {
     stubFetchAllFailing();
     render(<App />);
     fireEvent.change(screen.getByTestId('frontier-admin-token'), { target: { value: 'secret' } });
-    expect(localStorage.getItem('openlens-admin-token')).toBe('secret');
+    expect(sessionStorage.getItem('openlens-admin-token')).toBe('secret');
+    expect(localStorage.getItem('openlens-admin-token')).toBeNull();
+    fireEvent.click(screen.getByTestId('frontier-admin-forget'));
+    expect(screen.getByTestId('frontier-admin-token')).toHaveValue('');
+    expect(sessionStorage.getItem('openlens-admin-token')).toBeNull();
   });
 
   it('shows the frontier dashboard on the default tab', async () => {

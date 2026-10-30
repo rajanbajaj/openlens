@@ -2,8 +2,9 @@
 
 Kids/privacy/fairness reporting rides on POST /api/v1/feedback with a
 closed action taxonomy (`report_incorrect`, `report_suspicious`); the URL
-frontier mutations are admin-only once `OPENLENS_FRONTIER_ADMIN_TOKEN`
-is set. Offline: fake engine, in-memory frontier, no keys.
+frontier mutations are admin-only (fail-closed without a token unless the
+local-dev `OPENLENS_ALLOW_OPEN_ADMIN` opt-in is set). Offline: fake
+engine, in-memory frontier, no keys.
 """
 
 from __future__ import annotations
@@ -70,12 +71,15 @@ def test_feedback_rejects_unknown_action(client: TestClient) -> None:
 # --- frontier admin gate -----------------------------------------------------
 
 
-def test_frontier_mutations_open_without_token(client: TestClient) -> None:
-    assert client.post("/api/v1/frontier/pause").status_code == 200
-    assert client.post("/api/v1/frontier/resume", json={}).status_code == 200
+def test_frontier_mutations_denied_without_token_or_opt_in(
+    client: TestClient,
+) -> None:
+    """Fail-closed: unconfigured gate denies mutations (no open default)."""
+    assert client.post("/api/v1/frontier/pause").status_code == 403
+    assert client.post("/api/v1/frontier/resume", json={}).status_code == 403
     assert (
         client.put("/api/v1/frontier/settings", json=_valid_settings()).status_code
-        == 200
+        == 403
     )
 
 

@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from openlens.api.routes import FRONTIER_ADMIN_HEADER, FRONTIER_ADMIN_TOKEN_ENV
+from openlens.api.routes import (
+    ALLOW_OPEN_ADMIN_ENV,
+    FRONTIER_ADMIN_HEADER,
+    FRONTIER_ADMIN_TOKEN_ENV,
+)
+
+
 from openlens.core.interfaces import SearchRequest, SearchResult
 from openlens.main import create_app, load_app_config, load_effective_config
 from openlens.providers import registry
@@ -30,6 +36,12 @@ from openlens.storage.app_config import (
 )
 
 from tests.unit.test_api import FakeEngine
+
+
+@pytest.fixture(autouse=True)
+def _allow_open_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy local-dev contract under test: mutations open without a token."""
+    monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
 
 
 class _ToggleFakeProvider(BaseSearchProvider):

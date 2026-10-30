@@ -22,7 +22,14 @@ from openlens.storage.frontier import (
     SqliteFrontierStore,
     open_frontier_store,
 )
+from openlens.api.routes import ALLOW_OPEN_ADMIN_ENV
 from openlens.storage.repository import DocumentRepository
+
+
+@pytest.fixture(autouse=True)
+def _allow_open_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy local-dev contract under test: mutations open without a token."""
+    monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
 
 
 def _crawler(**overrides: Any) -> PoliteCrawler:

@@ -21,9 +21,15 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from openlens.api.errors import register_exception_handlers
+from openlens.api.errors import error_body, register_exception_handlers
+from openlens.api.rate_limit import (
+    RateLimiter,
+    client_ip,
+    retry_after_seconds,
+    scope_for_request,
+)
 from openlens.api.routes import router as search_router
 from openlens.cache.factory import (
     DEFAULT_TTL_S,
@@ -612,8 +618,29 @@ def create_app(engine: Optional[Engine] = None) -> FastAPI:
         get_registry().disable()
     wrapped: Optional[Engine] = _ObservedEngine(engine) if engine is not None else None
     app.state.engine = wrapped
+    # Per-IP abuse throttle for the public surface (search/suggest/
+    # feedback/admin mutations). State is per backend replica; routes
+    # read it for the live-socket handshake, which middleware can't see.
+    app.state.rate_limiter = RateLimiter()
     register_exception_handlers(app)
     app.include_router(search_router)
+
+    @app.middleware("http")
+    async def _rate_limit_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        scope = scope_for_request(request.method, request.url.path)
+        limiter: RateLimiter | None = getattr(request.app.state, "rate_limiter", None)
+        if scope is not None and limiter is not None:
+            peer = request.client.host if request.client else None
+            retry_after = limiter.check(scope, client_ip(dict(request.headers), peer))
+            if retry_after is not None:
+                return JSONResponse(
+                    status_code=429,
+                    content=error_body("rate_limited", "too many requests"),
+                    headers={"Retry-After": retry_after_seconds(retry_after)},
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def _request_id_middleware(

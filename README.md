@@ -165,7 +165,9 @@ The local Docker stack (`deploy/local/docker-compose.yml`) runs this
 Postgres plus a pgAdmin browser UI; the backend service points at it
 via `OPENLENS_PG_HOST=postgres`. Tables are created on first connect
 (`CREATE TABLE IF NOT EXISTS`), so a fresh volume boots cleanly and
-the seed corpus is indexed on startup.
+the seed corpus is indexed on startup. Releasing to the LAN server
+(push-to-`main` via a self-hosted runner) is documented in
+[deploy/local/README.md](deploy/local/README.md).
 
 Postgres is the default store and its driver (`psycopg` v3, binary
 wheel) ships in the base install. MySQL stays an extra

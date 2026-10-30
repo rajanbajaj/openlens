@@ -87,6 +87,14 @@ class FakeEngine(Engine):
         return {"fake-provider": True}
 
 
+@pytest.fixture(autouse=True)
+def _allow_open_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy local-dev contract under test: mutations open without a token."""
+    from openlens.api.routes import ALLOW_OPEN_ADMIN_ENV
+
+    monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
+
+
 def make_client(**kwargs: Any) -> TestClient:
     return TestClient(create_app(engine=FakeEngine(**kwargs)))
 

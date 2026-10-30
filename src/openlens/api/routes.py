@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openlens.api.errors import EngineUnavailableError, error_body
 from openlens.api import frontier_state
+from openlens.api.rate_limit import client_ip
 from openlens.api.schemas import AdminConfigDocResponseSchema, AdminConfigPutSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
@@ -201,25 +202,60 @@ def normalize_feedback_action(raw: str) -> str | None:
 
 
 #: Environment variable holding the frontier admin token. When set to a
-#: non-empty value, every mutating /frontier/* endpoint requires it via
-#: the `X-Admin-Token` header; reads stay open. When unset (local dev,
-#: tests), mutations stay open as before.
+#: non-empty value, every mutating /frontier/* and /admin/* endpoint requires
+#: it via the `X-Admin-Token` header; reads stay open. When unset, mutations
+#: are denied unless the explicit local-dev opt-in below is enabled — the
+#: gate is fail-closed so an unconfigured server never leaves admin
+#: mutations open.
 FRONTIER_ADMIN_TOKEN_ENV = "OPENLENS_FRONTIER_ADMIN_TOKEN"  # noqa: S105 (env var name, not a credential)
 FRONTIER_ADMIN_HEADER = "X-Admin-Token"
+
+#: Explicit local-dev opt-in that re-opens admin mutations when no token is
+#: configured. Accepts 1/true/yes/on. Never enable on a networked server:
+#: any unauthenticated caller could then mutate frontier/worker/config state.
+ALLOW_OPEN_ADMIN_ENV = "OPENLENS_ALLOW_OPEN_ADMIN"
+
+
+def _open_admin_allowed() -> bool:
+    """Whether the local-dev open-admin opt-in is enabled."""
+    return os.environ.get(ALLOW_OPEN_ADMIN_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _admin_denied(provided: str) -> bool:
+    """Whether `provided` fails the admin gate (shared by HTTP and WS)."""
+    expected = os.environ.get(FRONTIER_ADMIN_TOKEN_ENV, "").strip()
+    if expected:
+        return not (provided and secrets.compare_digest(provided.strip(), expected))
+    return not _open_admin_allowed()
 
 
 def _frontier_admin_response(request: Request) -> JSONResponse | None:
     """Return a 403 envelope unless the request carries admin rights."""
-    expected = os.environ.get(FRONTIER_ADMIN_TOKEN_ENV, "").strip()
-    if not expected:
-        return None
-    provided = (request.headers.get(FRONTIER_ADMIN_HEADER) or "").strip()
-    if provided and secrets.compare_digest(provided, expected):
-        return None
-    return JSONResponse(
-        status_code=403,
-        content=error_body("forbidden", "frontier mutation requires admin rights"),
-    )
+    provided = request.headers.get(FRONTIER_ADMIN_HEADER) or ""
+    if _admin_denied(provided):
+        return JSONResponse(
+            status_code=403,
+            content=error_body("forbidden", "frontier mutation requires admin rights"),
+        )
+    return None
+
+
+def _ws_admin_denied(websocket: WebSocket) -> bool:
+    """Whether a live-socket handshake fails the admin gate.
+
+    Browsers cannot set custom headers on a WebSocket handshake, so the
+    admin UI offers the token as a ``Sec-WebSocket-Protocol`` value. Either
+    the header or a matching subprotocol value satisfies the gate.
+    """
+    candidates = [websocket.headers.get(FRONTIER_ADMIN_HEADER) or ""]
+    protocols = websocket.headers.get("sec-websocket-protocol") or ""
+    candidates.extend(part.strip() for part in protocols.split(",") if part.strip())
+    return all(_admin_denied(candidate) for candidate in candidates)
 
 
 def _coerce_terms(value: Any) -> list[str]:
@@ -767,12 +803,23 @@ async def frontier_live(websocket: WebSocket) -> None:
 
     Same payload as ``GET /frontier/status`` (snapshot overlaid with
     store truth), pushed immediately on connect and every
-    ``FRONTIER_LIVE_INTERVAL_S`` after. Open like the status read: it
-    exposes the same queue/checkpoint view, no mutations. Awaiting the
+    ``FRONTIER_LIVE_INTERVAL_S`` after. The socket requires the same
+    admin rights as the mutating endpoints (``X-Admin-Token`` header):
+    the live worker/queue view is an admin surface and an unauthenticated
+    socket can be held open to flood the server. Awaiting the
     next client message with a timeout both detects disconnects
     promptly and lets a client nudge an early refresh by sending any
     text frame.
     """
+    limiter = getattr(websocket.app.state, "rate_limiter", None)
+    if limiter is not None:
+        peer = websocket.client.host if websocket.client else None
+        if limiter.check("ws", client_ip(dict(websocket.headers), peer)) is not None:
+            await websocket.close(code=1008)
+            return
+    if _ws_admin_denied(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     try:
         while True:
@@ -931,8 +978,7 @@ def frontier_clear(request: Request) -> FrontierStatusSchema | JSONResponse:
 def frontier_pause(request: Request) -> FrontierStatusSchema | JSONResponse:
     """Pause crawling; the queue snapshot is preserved as-is.
 
-    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set (see
-    `_frontier_admin_response`); reads stay open.
+    Admin-only (see `_frontier_admin_response`); reads stay open.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -953,8 +999,8 @@ def frontier_resume(
 ) -> FrontierStatusSchema | JSONResponse:
     """Resume crawling, optionally replacing the queue with `seeds`.
 
-    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set: seed URLs
-    choose what gets crawled, so untrusted callers must not set them.
+    Admin-only: seed URLs choose what gets crawled, so untrusted
+    callers must not set them.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -996,7 +1042,7 @@ def frontier_put_settings(
 ) -> FrontierSettingsResponseSchema | JSONResponse:
     """Replace the frontier settings (strict body, unknown keys rejected).
 
-    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set.
+    Admin-only.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -1034,8 +1080,8 @@ def frontier_worker_heartbeat(
 ) -> FrontierWorkersResponseSchema | JSONResponse:
     """Record one worker heartbeat and return the live worker list.
 
-    Worker-control plane: admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN`
-    is set (same gate as pause/resume/settings). Blank worker ids are
+    Worker-control plane: admin-only (same gate as pause/resume/settings).
+    Blank worker ids are
     rejected with 422 so anonymous rows can never enter the registry.
     """
     denied = _frontier_admin_response(request)
@@ -1129,8 +1175,8 @@ def admin_config_put(
 ) -> AdminConfigDocResponseSchema | JSONResponse:
     """Persist one config doc (strict body, validated like boot).
 
-    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set — reuses the
-    exact frontier gate (`_frontier_admin_response`), no second auth
+    Admin-only — reuses the exact frontier gate
+    (`_frontier_admin_response`), no second auth
     scheme. The body is validated with the existing startup validators;
     anything the boot path would reject fails with 422. The
     ``REDACTED_SECRET`` sentinel is accepted for secret fields and means

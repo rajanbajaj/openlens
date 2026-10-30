@@ -136,7 +136,10 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     let socket: WebSocket | null = null;
     let closed = false;
     try {
-      socket = new WebSocket(frontierLiveUrl());
+      // Browsers cannot set WS headers, so the token travels as a
+      // subprotocol the backend gate accepts (see `_ws_admin_denied`).
+      const protocols = adminToken.trim() ? ['x-admin-token', adminToken.trim()] : [];
+      socket = new WebSocket(frontierLiveUrl(), protocols);
     } catch {
       return;
     }
@@ -161,7 +164,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       closed = true;
       socket?.close();
     };
-  }, [open]);
+  }, [open, adminToken]);
 
   const loading = snapshot.isPending;
 

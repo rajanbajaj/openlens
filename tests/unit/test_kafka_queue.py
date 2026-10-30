@@ -634,6 +634,9 @@ def test_run_kafka_worker_broker_down_fails_loud(tmp_path: Path) -> None:
 def _api_client(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **overrides: Any
 ) -> TestClient:
+    from openlens.api.routes import ALLOW_OPEN_ADMIN_ENV
+
+    monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
     client = TestClient(create_app(engine=FakeEngine()))
     config = dict(client.app.state.config)
     config["storage"] = {

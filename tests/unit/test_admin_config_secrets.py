@@ -15,8 +15,10 @@ values must never leave the backend in plaintext:
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
+from openlens.api.routes import ALLOW_OPEN_ADMIN_ENV
 from openlens.storage.app_config import (
     REDACTED_SECRET,
     SqliteAppConfigStore,
@@ -26,6 +28,12 @@ from openlens.storage.app_config import (
 from openlens.main import create_app
 
 from tests.unit.test_api import FakeEngine
+
+
+@pytest.fixture(autouse=True)
+def _allow_open_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy local-dev contract under test: mutations open without a token."""
+    monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
 
 
 def _client() -> TestClient:

@@ -31,9 +31,11 @@ class MockSocket {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   url: string;
+  protocols: string[] = [];
   closed = false;
-  constructor(url: string) {
+  constructor(url: string, protocols: string[] = []) {
     this.url = url;
+    this.protocols = protocols;
     MockSocket.instances.push(this);
   }
   close(): void {
@@ -75,12 +77,13 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     MockSocket.instances = [];
     stubBackend();
     vi.stubGlobal('WebSocket', MockSocket);
-    render(<FrontierDrawer adminToken="" />);
+    render(<FrontierDrawer adminToken="secret" />);
     await waitFor(() => {
       expect(screen.getByTestId('frontier-queue')).toHaveTextContent('example.com/a');
     });
     expect(MockSocket.instances).toHaveLength(1);
     expect(MockSocket.instances[0].url).toBe('ws://localhost:8000/api/v1/frontier/live');
+    expect(MockSocket.instances[0].protocols).toEqual(['x-admin-token', 'secret']);
 
     MockSocket.instances[0].open();
     await waitFor(() => {
