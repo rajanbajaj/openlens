@@ -17,20 +17,52 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import suppress
+import logging
+import os
+import secrets
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from openlens.api.errors import EngineUnavailableError
+from openlens.api.errors import EngineUnavailableError, error_body
+from openlens.api import frontier_state
+from openlens.api.schemas import AdminConfigDocResponseSchema, AdminConfigPutSchema
+from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
+from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
+from openlens.api.schemas import FrontierWorkerHeartbeatSchema
+from openlens.api.schemas import FrontierWorkersResponseSchema
 from openlens.api.schemas import SearchRequestSchema, SearchResponseSchema
 from openlens.api.schemas import SuggestResponseSchema
-from openlens.core.interfaces import Engine, ProviderPrefs, SearchRequest
+from openlens.core.interfaces import (
+    ConfigError,
+    Engine,
+    ProviderError,
+    ProviderPrefs,
+    SearchRequest,
+)
+from openlens.storage.app_config import (
+    CONFIG_DOC_KEYS,
+    AppConfigStore,
+    apply_db_config_overlay,
+    extract_file_doc,
+    missing_secrets,
+    open_app_config_store,
+    redact_secrets,
+    restore_secrets,
+    try_get_doc,
+    validate_config_doc,
+)
+from openlens.indexing.kafka_queue import kafka_enabled, open_kafka_queue
 from openlens.retrieval.suggest import (
     complete,
     correct_spelling,
     related_queries,
 )
+from openlens.storage.frontier import open_frontier_store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["search"])
 
@@ -69,6 +101,78 @@ _STATIC_QUERY_COUNTS: dict[str, int] = {
 #: In-process anonymous feedback tallies keyed by (doc_id, action).
 #: Only counts are kept: no query text, no user/session identifiers.
 _FEEDBACK_COUNTS: dict[tuple[str, str], int] = {}
+
+#: In-process named preference sets: name -> filters mapping. The
+#: backend-held counterpart to the frontend-local library cache — saved
+#: categories, weight overrides, and safety presets survive across
+#: clients. Values only: never query text or identifiers.
+_SAVED_PREFS: dict[str, dict[str, Any]] = {}
+
+#: Bounds on the saved-prefs store (in-process only, never persisted).
+MAX_SAVED_PREFS = 50
+MAX_SAVED_PREF_NAME_LENGTH = 64
+MAX_SAVED_PREF_FILTERS = 50
+
+#: Canonical feedback actions accepted by POST /api/v1/feedback.
+#: Engagement signals plus the kids/privacy/fairness reporting taxonomy:
+#: `report_incorrect` (report an incorrect classification) and
+#: `report_suspicious` (report a suspicious website). Anything else is
+#: rejected with 422 so no free-form text can be smuggled into the store.
+FEEDBACK_ACTIONS: frozenset[str] = frozenset(
+    {
+        "click",
+        "impression",
+        "save",
+        "unsave",
+        "helpful",
+        "not_helpful",
+        "report_incorrect",
+        "report_suspicious",
+    }
+)
+
+#: Spellings normalized to canonical actions before validation.
+_FEEDBACK_ACTION_ALIASES: dict[str, str] = {
+    "nothelpful": "not_helpful",
+    "not-helpful": "not_helpful",
+    "not helpful": "not_helpful",
+    "reportincorrect": "report_incorrect",
+    "report-incorrect": "report_incorrect",
+    "report incorrect": "report_incorrect",
+    "reportsuspicious": "report_suspicious",
+    "report-suspicious": "report_suspicious",
+    "report suspicious": "report_suspicious",
+}
+
+
+def normalize_feedback_action(raw: str) -> str | None:
+    """Return the canonical feedback action for `raw`, or None when unknown."""
+    key = raw.strip().lower()
+    if key in FEEDBACK_ACTIONS:
+        return key
+    return _FEEDBACK_ACTION_ALIASES.get(key)
+
+
+#: Environment variable holding the frontier admin token. When set to a
+#: non-empty value, every mutating /frontier/* endpoint requires it via
+#: the `X-Admin-Token` header; reads stay open. When unset (local dev,
+#: tests), mutations stay open as before.
+FRONTIER_ADMIN_TOKEN_ENV = "OPENLENS_FRONTIER_ADMIN_TOKEN"  # noqa: S105 (env var name, not a credential)
+FRONTIER_ADMIN_HEADER = "X-Admin-Token"
+
+
+def _frontier_admin_response(request: Request) -> JSONResponse | None:
+    """Return a 403 envelope unless the request carries admin rights."""
+    expected = os.environ.get(FRONTIER_ADMIN_TOKEN_ENV, "").strip()
+    if not expected:
+        return None
+    provided = (request.headers.get(FRONTIER_ADMIN_HEADER) or "").strip()
+    if provided and secrets.compare_digest(provided, expected):
+        return None
+    return JSONResponse(
+        status_code=403,
+        content=error_body("forbidden", "frontier mutation requires admin rights"),
+    )
 
 
 def _coerce_terms(value: Any) -> list[str]:
@@ -168,6 +272,7 @@ def search(
         offset=body.offset,
         filters=dict(body.filters),
         provider_prefs=prefs,
+        history=tuple(body.history),
     )
     core_response = engine.search(core_request)
     query_text = core_response.query or core_request.query
@@ -206,8 +311,10 @@ class FeedbackRequestSchema(BaseModel):
     """POST /api/v1/feedback body: anonymous (doc_id, action) counts only.
 
     Extra fields are rejected so no query text or identifiers can be
-    smuggled into the feedback store. (Defined here because schemas.py
-    is owned by wave0; the integrator may relocate it.)
+    smuggled into the feedback store. `action` must name a canonical
+    feedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case
+    variants are normalized before validation. (Defined here because
+    schemas.py is owned by wave0; the integrator may relocate it.)
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -215,12 +322,21 @@ class FeedbackRequestSchema(BaseModel):
     doc_id: str = Field(min_length=1, max_length=512)
     action: str = Field(min_length=1, max_length=64)
 
-    @field_validator("doc_id", "action")
+    @field_validator("doc_id")
     @classmethod
-    def must_not_be_blank(cls, value: str) -> str:
+    def doc_id_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("action")
+    @classmethod
+    def action_must_be_known(cls, value: str) -> str:
+        canonical = normalize_feedback_action(value)
+        if canonical is None:
+            known = ", ".join(sorted(FEEDBACK_ACTIONS))
+            raise ValueError(f"unknown action; known: {known}")
+        return canonical
 
 
 class FeedbackResponseSchema(BaseModel):
@@ -251,3 +367,558 @@ def feedback(body: FeedbackRequestSchema, request: Request) -> FeedbackResponseS
                 hook(key[0], key[1])
             break
     return FeedbackResponseSchema(doc_id=key[0], action=key[1], count=count)
+
+
+class SavedPrefsSchema(BaseModel):
+    """PUT /api/v1/prefs body: one named preference set.
+
+    A saved set is a reusable ``filters`` mapping (preferred domains,
+    weight overrides, safety preset, category terms) stored under
+    ``name``. Extra fields are rejected so no query text or identifiers
+    can be smuggled into the store.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=MAX_SAVED_PREF_NAME_LENGTH)
+    filters: dict[str, Any] = Field(
+        default_factory=dict, max_length=MAX_SAVED_PREF_FILTERS
+    )
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
+        return value.strip()
+
+
+class SavedPrefsResponseSchema(BaseModel):
+    """Acknowledgement for a saved preference set."""
+
+    name: str
+    filters: dict[str, Any]
+
+
+class SavedPrefsListResponseSchema(BaseModel):
+    """GET /api/v1/prefs response body: every saved set."""
+
+    prefs: dict[str, dict[str, Any]]
+
+
+@router.get("/prefs", response_model=SavedPrefsListResponseSchema)
+def list_prefs() -> SavedPrefsListResponseSchema:
+    """Return every saved preference set (values only, never queries)."""
+    return SavedPrefsListResponseSchema(
+        prefs={name: dict(filters) for name, filters in _SAVED_PREFS.items()}
+    )
+
+
+@router.put("/prefs", response_model=SavedPrefsResponseSchema)
+def save_prefs(body: SavedPrefsSchema) -> SavedPrefsResponseSchema:
+    """Save (or replace) one named preference set.
+
+    Bounded to ``MAX_SAVED_PREFS`` entries; beyond that the request
+    fails with 400 instead of growing the in-process store.
+    """
+    if body.name not in _SAVED_PREFS and len(_SAVED_PREFS) >= MAX_SAVED_PREFS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many saved preference sets (max {MAX_SAVED_PREFS})",
+        )
+    _SAVED_PREFS[body.name] = dict(body.filters)
+    return SavedPrefsResponseSchema(name=body.name, filters=dict(body.filters))
+
+
+def _frontier_read_store(request: Request) -> Any | None:
+    """Cached read-only frontier store for status overlays (fail-open).
+
+    The store is opened once per app lifetime (same tradeoff as the
+    cached admin config store): status polls must not pay pool
+    construction per request. Unreachable/misconfigured backends yield
+    None and the dashboard falls back to the in-memory snapshot.
+    """
+    store = getattr(request.app.state, "_frontier_read_store", None)
+    if store is not None:
+        return store
+    if getattr(request.app.state, "_frontier_read_store_failed", False):
+        return None
+    app_config = getattr(request.app.state, "config", None)
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+    except Exception:
+        request.app.state._frontier_read_store_failed = True
+        return None
+    request.app.state._frontier_read_store = store
+    return store
+
+
+def _overlay_store_status(
+    payload: FrontierStatusSchema, store: Any | None
+) -> FrontierStatusSchema:
+    """Replace snapshot queue/checkpoint with store truth when available.
+
+    Snapshot seeds not yet claimed (e.g. sitting in the Kafka topic) are
+    appended as ``queued`` so a fresh resume never renders an empty
+    dashboard. Everything degrades to the snapshot when the store is
+    down, preserving the offline/tests behavior.
+    """
+    if store is None:
+        return payload
+    try:
+        checkpoint = store.load_checkpoint()
+        pending = store.pending(limit=500)
+        counts = store.counts()
+    except Exception:
+        return payload
+    merged: dict[str, dict[str, Any]] = {}
+    for entry in pending or []:
+        url = str(getattr(entry, "url", "") or "")
+        if not url.strip():
+            continue
+        merged[url] = {
+            "url": url,
+            "depth": int(getattr(entry, "depth", 0) or 0),
+            "status": str(getattr(entry, "status", "queued") or "queued"),
+        }
+    # Snapshot entries arrive as submodels (Pydantic coerces the nested
+    # dicts on construction), never as plain dicts.
+    for item in payload.queue or []:
+        if isinstance(item, dict):
+            url = str(item.get("url", "") or "")
+            try:
+                depth = int(item.get("depth", 0) or 0)
+            except (TypeError, ValueError):
+                depth = 0
+        else:
+            url = str(getattr(item, "url", "") or "")
+            try:
+                depth = int(getattr(item, "depth", 0) or 0)
+            except (TypeError, ValueError):
+                depth = 0
+        if url and url not in merged:
+            merged[url] = {"url": url, "depth": depth, "status": "queued"}
+    queue = list(merged.values())
+    try:
+        queued = int((counts or {}).get("queued", 0))
+        active = int((counts or {}).get("active", 0))
+        queue_depth = queued + active if (queued or active) else len(queue)
+    except Exception:
+        queue_depth = len(queue)
+    existing_checkpoint = getattr(payload, "checkpoint", None)
+    if isinstance(existing_checkpoint, dict):
+        checkpoint_payload = dict(existing_checkpoint)
+    elif existing_checkpoint is not None and hasattr(existing_checkpoint, "model_dump"):
+        checkpoint_payload = dict(existing_checkpoint.model_dump())
+    else:
+        checkpoint_payload = {"phase": "idle", "pages_attempted": 0, "pages_indexed": 0}
+    if checkpoint is not None:
+        checkpoint_payload = {
+            "phase": str(getattr(checkpoint, "phase", "running")),
+            "pages_attempted": int(getattr(checkpoint, "pages_attempted", 0) or 0),
+            "pages_indexed": int(getattr(checkpoint, "pages_indexed", 0) or 0),
+        }
+    return FrontierStatusSchema(
+        paused=bool(payload.paused),
+        queue=queue,  # type: ignore[arg-type]
+        queue_depth=queue_depth,
+        checkpoint=checkpoint_payload,  # type: ignore[arg-type]
+        new_urls=list(payload.new_urls),  # type: ignore[union-attr,arg-type]
+        workers=list(payload.workers),  # type: ignore[union-attr,arg-type]
+    )
+
+
+def _frontier_status_payload() -> FrontierStatusSchema:
+    """Shape the in-memory frontier snapshot into the status schema."""
+    snap = frontier_state.snapshot()
+    queue = [
+        {
+            "url": str(entry.get("url", "")),
+            "depth": int(entry.get("depth", 0)),
+            "status": str(entry.get("status", "queued")),
+        }
+        for entry in snap["queue"]
+        if isinstance(entry, dict) and str(entry.get("url", "")).strip()
+    ]
+    new_urls = [
+        {"url": str(entry.get("url", "")), "status": str(entry.get("status", "added"))}
+        for entry in snap["new_urls"]
+        if isinstance(entry, dict) and str(entry.get("url", "")).strip()
+    ]
+    checkpoint = snap["checkpoint"] if isinstance(snap["checkpoint"], dict) else {}
+    try:
+        workers = frontier_state.list_workers()
+    except Exception:
+        workers = []
+    return FrontierStatusSchema(
+        paused=bool(snap["paused"]),
+        queue=queue,  # type: ignore[arg-type]
+        queue_depth=len(queue),
+        checkpoint={
+            "phase": str(checkpoint.get("phase", "idle")),
+            "pages_attempted": int(checkpoint.get("pages_attempted", 0)),
+            "pages_indexed": int(checkpoint.get("pages_indexed", 0)),
+        },  # type: ignore[arg-type]
+        new_urls=new_urls,  # type: ignore[arg-type]
+        workers=workers,  # type: ignore[arg-type]
+    )
+
+
+@router.get("/frontier/status", response_model=FrontierStatusSchema)
+def frontier_status(request: Request) -> FrontierStatusSchema:
+    """Queue view + checkpoint + new-URL list for the dashboard.
+
+    Never 500s on state problems: an unreadable snapshot degrades to
+    the empty status, mirroring the suggest endpoint's degrade rule.
+    """
+    try:
+        app_config = getattr(request.app.state, "config", None)
+        frontier_state.seed_settings_from_config(app_config)
+        return _overlay_store_status(
+            _frontier_status_payload(), _frontier_read_store(request)
+        )
+    except Exception:
+        return FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
+
+
+def _store_set_paused(app_config: Any, paused: bool) -> bool:
+    """Mirror the pause flag into the persistent frontier settings row.
+
+    Workers poll ``store.get_settings()["paused"]`` (not the in-memory
+    snapshot), so the dashboard flag alone never stops a worker. Best
+    effort: store failures (no DB in tests/offline) never break the
+    dashboard write. Returns True when the row was updated.
+    """
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        try:
+            settings = store.get_settings()
+            merged = dict(settings) if isinstance(settings, dict) else {}
+            merged["paused"] = paused
+            store.save_settings(merged)
+        finally:
+            with suppress(Exception):
+                store.close()
+    except Exception as exc:
+        logger.warning("frontier pause flag not persisted to store: %s", exc)
+        return False
+    return True
+
+
+def _publish_seeds(app_config: Any, seeds: list[str]) -> bool:
+    """Publish seeds to Kafka, else enqueue them into the persistent store.
+
+    Kafka-first when ``kafka:`` is enabled; the store fallback keeps
+    local/test setups crawling when the broker is unreachable. Seeds are
+    also kept in the in-memory snapshot by the caller for the dashboard.
+    Returns True when a durable queue (Kafka or store) accepted them.
+    """
+    if seeds and kafka_enabled(app_config if isinstance(app_config, dict) else None):
+        try:
+            queue = open_kafka_queue(app_config)
+            try:
+                for seed in seeds:
+                    queue.publish(seed, 0)
+            finally:
+                with suppress(Exception):
+                    queue.close()
+            return True
+        except ProviderError as exc:
+            logger.warning(
+                "frontier resume: Kafka publish failed, using store fallback: %s", exc
+            )
+    if not seeds:
+        return True
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        try:
+            for seed in seeds:
+                with suppress(Exception):
+                    store.enqueue(seed, 0)
+        finally:
+            with suppress(Exception):
+                store.close()
+        return True
+    except Exception as exc:
+        logger.warning("frontier resume: store enqueue failed: %s", exc)
+        return False
+
+
+@router.post("/frontier/pause", response_model=FrontierStatusSchema)
+def frontier_pause(request: Request) -> FrontierStatusSchema | JSONResponse:
+    """Pause crawling; the queue snapshot is preserved as-is.
+
+    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set (see
+    `_frontier_admin_response`); reads stay open.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    state = frontier_state.get_frontier_state()
+    state.paused = True
+    state.checkpoint["phase"] = "paused"
+    app_config = getattr(request.app.state, "config", None)
+    _store_set_paused(app_config, True)
+    return _overlay_store_status(
+        _frontier_status_payload(), _frontier_read_store(request)
+    )
+
+
+@router.post("/frontier/resume", response_model=FrontierStatusSchema)
+def frontier_resume(
+    body: FrontierResumeSchema, request: Request
+) -> FrontierStatusSchema | JSONResponse:
+    """Resume crawling, optionally replacing the queue with `seeds`.
+
+    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set: seed URLs
+    choose what gets crawled, so untrusted callers must not set them.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    state = frontier_state.get_frontier_state()
+    state.paused = False
+    state.checkpoint["phase"] = "running"
+    seeds = [seed.strip() for seed in body.seeds if seed.strip()]
+    if seeds:
+        state.queue = [{"url": seed, "depth": 0, "status": "queued"} for seed in seeds]
+    app_config = getattr(request.app.state, "config", None)
+    _publish_seeds(app_config, seeds)
+    _store_set_paused(app_config, False)
+    return _overlay_store_status(
+        _frontier_status_payload(), _frontier_read_store(request)
+    )
+
+
+@router.get("/frontier/settings", response_model=FrontierSettingsResponseSchema)
+def frontier_get_settings(request: Request) -> FrontierSettingsResponseSchema:
+    """Current frontier settings (config-seeded, then PUT-overridden)."""
+    with suppress(Exception):
+        app_config = getattr(request.app.state, "config", None)
+        frontier_state.seed_settings_from_config(app_config)
+    snap = frontier_state.snapshot()
+    settings = snap["settings"] if isinstance(snap["settings"], dict) else {}
+    response = FrontierSettingsResponseSchema(settings=settings)  # type: ignore[arg-type]
+    return response
+
+
+@router.put("/frontier/settings", response_model=FrontierSettingsResponseSchema)
+def frontier_put_settings(
+    body: FrontierSettingsSchema,
+    request: Request,
+) -> FrontierSettingsResponseSchema | JSONResponse:
+    """Replace the frontier settings (strict body, unknown keys rejected).
+
+    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    state = frontier_state.get_frontier_state()
+    state.settings = body.model_dump()
+    return FrontierSettingsResponseSchema(settings=body)
+
+
+@router.get("/frontier/workers", response_model=FrontierWorkersResponseSchema)
+def frontier_list_workers() -> FrontierWorkersResponseSchema:
+    """List crawler workers recently heard from by this API replica.
+
+    Read-only: stays open even when `OPENLENS_FRONTIER_ADMIN_TOKEN` is
+    set. Only tracks workers heartbeating this replica (see
+    `frontier_state.WORKER_STALE_AFTER_S`); entries older than the stale
+    window are pruned on read.
+    """
+    try:
+        workers = frontier_state.list_workers()
+    except Exception:
+        workers = []
+    return FrontierWorkersResponseSchema(
+        workers=workers,  # type: ignore[arg-type]
+        worker_count=len(workers),
+    )
+
+
+@router.post(
+    "/frontier/workers/heartbeat",
+    response_model=FrontierWorkersResponseSchema,
+)
+def frontier_worker_heartbeat(
+    body: FrontierWorkerHeartbeatSchema, request: Request
+) -> FrontierWorkersResponseSchema | JSONResponse:
+    """Record one worker heartbeat and return the live worker list.
+
+    Worker-control plane: admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN`
+    is set (same gate as pause/resume/settings). Blank worker ids are
+    rejected with 422 so anonymous rows can never enter the registry.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    worker_id = body.worker_id.strip()
+    if not worker_id:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "worker_id must not be blank"),
+        )
+    try:
+        frontier_state.heartbeat_worker(
+            worker_id,
+            crawl_id=body.crawl_id,
+            claimed=body.claimed,
+            status=body.status,
+        )
+        workers = frontier_state.list_workers()
+    except Exception:
+        workers = []
+    return FrontierWorkersResponseSchema(
+        workers=workers,  # type: ignore[arg-type]
+        worker_count=len(workers),
+    )
+
+    # -- Admin config docs (DB-persisted, file fallback) --------------------
+
+
+def _admin_config_store(request: Request) -> AppConfigStore:
+    """Resolve the config-doc store for this app (lazy, cached, offline-safe).
+
+    ``create_app`` attaches the configured store; apps built without one
+    (older tests, embeds) get an in-memory SQLite store so the endpoints
+    stay exercisable without a database.
+    """
+    store = getattr(request.app.state, "app_config_store", None)
+    if isinstance(store, AppConfigStore):
+        return store
+    app_config = getattr(request.app.state, "config", None)
+    store = open_app_config_store(app_config if isinstance(app_config, dict) else {})
+    request.app.state.app_config_store = store
+    return store
+
+
+@router.get("/admin/config/{doc}", response_model=AdminConfigDocResponseSchema)
+def admin_config_get(
+    doc: str, request: Request
+) -> AdminConfigDocResponseSchema | JSONResponse:
+    """Return one effective config doc plus its winning layer.
+
+    Reads stay open (same rule as the frontier reads): a persisted row
+    wins with ``source: db``; otherwise the YAML-backed file section is
+    returned with ``source: file``. Unknown doc keys fail with 404.
+    Live secret values (``api_key`` and friends) are always replaced by
+    the ``REDACTED_SECRET`` sentinel before leaving the backend.
+    """
+    if doc not in CONFIG_DOC_KEYS:
+        return JSONResponse(
+            status_code=404,
+            content=error_body(
+                "not_found",
+                f"unknown config doc '{doc}'. Known: {', '.join(CONFIG_DOC_KEYS)}.",
+            ),
+        )
+    stored = try_get_doc(_admin_config_store(request), doc)
+    if stored is not None:
+        raw = dict(stored.body) if isinstance(stored.body, dict) else list(stored.body)
+        return AdminConfigDocResponseSchema(
+            doc=doc,
+            body=redact_secrets(raw),
+            version=stored.version,
+            updated_at=stored.updated_at or None,
+            source="db",
+        )
+    app_config = getattr(request.app.state, "config", None)
+    return AdminConfigDocResponseSchema(
+        doc=doc,
+        body=redact_secrets(
+            extract_file_doc(app_config if isinstance(app_config, dict) else {}, doc)
+        ),
+        version=0,
+        updated_at=None,
+        source="file",
+    )
+
+
+@router.put("/admin/config/{doc}", response_model=AdminConfigDocResponseSchema)
+def admin_config_put(
+    doc: str, put: AdminConfigPutSchema, request: Request
+) -> AdminConfigDocResponseSchema | JSONResponse:
+    """Persist one config doc (strict body, validated like boot).
+
+    Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set — reuses the
+    exact frontier gate (`_frontier_admin_response`), no second auth
+    scheme. The body is validated with the existing startup validators;
+    anything the boot path would reject fails with 422. The
+    ``REDACTED_SECRET`` sentinel is accepted for secret fields and means
+    "keep the existing value"; a sentinel with no prior value fails with
+    422 instead of storing the sentinel as a credential. The write
+    replaces the row wholesale (version++); the running app's in-memory
+    config is overlaid so reads stay consistent, and the next boot picks
+    the row up over the YAML seed. Responses carry the redacted body.
+    """
+    if doc not in CONFIG_DOC_KEYS:
+        return JSONResponse(
+            status_code=404,
+            content=error_body(
+                "not_found",
+                f"unknown config doc '{doc}'. Known: {', '.join(CONFIG_DOC_KEYS)}.",
+            ),
+        )
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    store = _admin_config_store(request)
+    app_config = getattr(request.app.state, "config", None)
+    prior = try_get_doc(store, doc)
+    if prior is not None:
+        existing = (
+            dict(prior.body) if isinstance(prior.body, dict) else list(prior.body)
+        )
+    else:
+        existing = extract_file_doc(
+            app_config if isinstance(app_config, dict) else {}, doc
+        )
+    effective = restore_secrets(
+        dict(put.body) if isinstance(put.body, dict) else list(put.body),
+        existing,
+    )
+    unfilled = missing_secrets(effective)
+    if unfilled:
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "invalid_request",
+                f"secret value required for {', '.join(unfilled)}: "
+                "no prior value to keep.",
+            ),
+        )
+    try:
+        validate_config_doc(doc, effective)
+    except ConfigError as exc:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", str(exc)),
+        )
+    try:
+        stored = store.put(doc, effective)
+    except ProviderError as exc:
+        return JSONResponse(
+            status_code=503,
+            content=error_body("config_store_unavailable", str(exc)),
+        )
+    if isinstance(app_config, dict):
+        request.app.state.config = apply_db_config_overlay(
+            {
+                **app_config,
+                doc: (
+                    dict(effective) if isinstance(effective, dict) else list(effective)
+                ),
+            },
+            store,
+        )
+    return AdminConfigDocResponseSchema(
+        doc=doc,
+        body=redact_secrets(
+            dict(stored.body) if isinstance(stored.body, dict) else list(stored.body)
+        ),
+        version=stored.version,
+        updated_at=stored.updated_at or None,
+        source="db",
+    )

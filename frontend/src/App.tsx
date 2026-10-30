@@ -28,6 +28,7 @@ import {
 import { Button } from './components/ui/Button.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 import ModeSelector from './components/ModeSelector.tsx';
+import { Pagination } from './components/Pagination.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import SearchForm from './components/SearchForm.tsx';
@@ -72,6 +73,7 @@ export default function App() {
   const [userFilters, setUserFilters] = useState(EMPTY_FILTER_STATE);
   const [prefs, setPrefs] = useState<ProviderPrefs>(EMPTY_PREFS);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<ErrorDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -90,6 +92,7 @@ export default function App() {
     searchMode: SearchMode,
     filters: UserFilterState,
     providerPrefs: ProviderPrefs,
+    size: number = pageSize,
   ) {
     const message = validateQuery(searchQuery);
     if (message !== null) return;
@@ -99,8 +102,8 @@ export default function App() {
       const body = buildSearchBody({
         query: searchQuery,
         mode: searchMode,
-        limit: PAGE_SIZE,
-        offset: offsetForPage(nextPage, PAGE_SIZE),
+        limit: size,
+        offset: offsetForPage(nextPage, size),
         filters: buildFilters(filters),
         providerPrefs: prefsActive(providerPrefs) ? providerPrefs : null,
       });
@@ -127,13 +130,13 @@ export default function App() {
     }
   }
 
-  const pages = response ? totalPages(response.total, PAGE_SIZE) : 0;
+  const pages = response ? totalPages(response.total, pageSize) : 0;
 
   // Prefetch the next page while idle once results land. Failures resolve
   // to null inside `prefetchPage`, so a miss only means "not prefetched".
   useEffect(() => {
     if (!response || loading || error) return;
-    if (page >= totalPages(response.total, PAGE_SIZE)) return;
+    if (page >= totalPages(response.total, pageSize)) return;
     const body = lastBody.current;
     if (!body) return;
     const nextPage = page + 1;
@@ -162,6 +165,12 @@ export default function App() {
 
   function goToPage(nextPage: number) {
     void runSearch(nextPage, query, mode, userFilters, prefs);
+  }
+
+  function handlePageSize(size: number) {
+    if (!Number.isFinite(size) || size <= 0 || size === pageSize) return;
+    setPageSize(size);
+    void runSearch(1, query, mode, userFilters, prefs, size);
   }
 
   function submitFirstPage(searchQuery: string) {
@@ -216,12 +225,12 @@ export default function App() {
   const showLanding = !hasSearched && !loading;
 
   return (
-    <div className="ol-shell">
+    <div className="ol-shell flex min-h-screen flex-col">
       {showLanding ? (
-        <main className="ol-landing">
+        <main className="ol-landing grid min-h-screen place-items-center p-6">
           <GlassPanel variant="hero" data-testid="search-hero">
-            <h1 className="ol-brand">OpenLens</h1>
-            <p className="ol-brand-sub">Plug-and-play search</p>
+            <h1 className="ol-brand m-0 text-2xl font-bold tracking-tight">OpenLens</h1>
+            <p className="ol-brand-sub text-ol-ink-soft m-0 text-sm">Plug-and-play search</p>
             <SearchForm
               value={query}
               onChange={setQuery}
@@ -235,8 +244,8 @@ export default function App() {
       ) : (
         <>
           <GlassPanel variant="header" role="banner" data-testid="search-header">
-            <div className="ol-header-inner">
-              <h1 className="ol-brand">OpenLens</h1>
+            <div className="ol-header-inner mx-auto flex w-full max-w-4xl items-baseline gap-4 px-6 py-4">
+              <h1 className="ol-brand m-0 text-2xl font-bold tracking-tight">OpenLens</h1>
               <SearchForm
                 value={query}
                 onChange={setQuery}
@@ -248,9 +257,9 @@ export default function App() {
             </div>
           </GlassPanel>
           <main>
-            <div className="ol-app-shell">
+            <div className="ol-app-shell mx-auto grid w-full max-w-4xl items-start gap-4 p-6">
               <aside
-                className="ol-shell-sidebar"
+                className="ol-shell-sidebar min-w-0"
                 data-testid="sidebar-mount"
                 aria-label="Search filters"
               >
@@ -279,8 +288,8 @@ export default function App() {
                   </section>
                 ) : null}
               </aside>
-              <div className="ol-shell-results">
-                <p aria-live="polite" data-testid="result-announcer" className="ol-sr-only">
+              <div className="ol-shell-results min-w-0">
+                <p aria-live="polite" data-testid="result-announcer" className="ol-sr-only sr-only">
                   {announcement}
                 </p>
                 {loading ? <LoadingState /> : null}
@@ -319,22 +328,18 @@ export default function App() {
                       onSaveResult={handleSaveResult}
                     />
                     {pages > 1 ? (
-                      <nav aria-label="Pagination" className="ol-pagination">
-                        <Button disabled={page <= 1} onClick={() => goToPage(page - 1)}>
-                          Previous
-                        </Button>
-                        <span data-testid="page-indicator">
-                          Page {page} of {pages}
-                        </span>
-                        <Button disabled={page >= pages} onClick={() => goToPage(page + 1)}>
-                          Next
-                        </Button>
-                      </nav>
+                      <Pagination
+                        page={page}
+                        totalPages={pages}
+                        pageSize={pageSize}
+                        onPage={goToPage}
+                        onPageSize={handlePageSize}
+                      />
                     ) : null}
                   </section>
                 ) : null}
               </div>
-              <div className="ol-shell-rail">
+              <div className="ol-shell-rail min-w-0">
                 {!loading && !error && response ? (
                   <Suspense fallback={<p>Loading diagnostics…</p>}>
                     <DiagnosticsRail diagnostics={response.diagnostics} />

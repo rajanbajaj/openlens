@@ -10,7 +10,9 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY configs/ ./configs/
 
-RUN pip install --no-cache-dir .
+# `[kafka]` (pure-Python client) powers the API seed fan-out and the
+# distributed crawl loop; harmless when Kafka is disabled.
+RUN pip install --no-cache-dir .[kafka]
 
 EXPOSE 8000
 

@@ -34,7 +34,11 @@ Politeness and bounds:
 from __future__ import annotations
 
 import collections
+import contextlib
+import email.utils
 import html.parser
+import json
+import re
 import tempfile
 import threading
 import time
@@ -42,6 +46,7 @@ import urllib.parse
 import urllib.robotparser
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
 
@@ -86,10 +91,31 @@ ALLOWED_CONFIG_KEYS = frozenset(
         "default_max_depth",
         "user_agent",
         "respect_robots",
+        "checkpoint_interval_pages",
+        "max_attempts_per_url",
+        "frontier_enabled",
     }
 )
 
 _T = TypeVar("_T")
+
+
+def published_from_last_modified(value: str | None) -> str | None:
+    """Normalize an HTTP ``Last-Modified`` header to an ISO ``YYYY-MM-DD`` date.
+
+    The freshness scorer and attribute enricher read the ``published`` key
+    (ISO format only), so the raw header value is converted here, once, at
+    ingest. Unparseable or missing values yield ``None`` (neutral downstream).
+    """
+    if not value or not value.strip():
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(value.strip())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed is None:
+        return None
+    return parsed.date().isoformat()
 
 
 def normalize_url(url: str) -> str:
@@ -179,6 +205,60 @@ class BoundedFrontier:
         self._path.unlink(missing_ok=True)
 
 
+class PersistentFrontier:
+    """FrontierStore-backed FIFO queue with the BoundedFrontier interface.
+
+    Push/pop/__len__/evicted mirror :class:`BoundedFrontier` so the
+    :meth:`PoliteCrawler.crawl` loop works unchanged; rows live in the
+    persistent store instead of an in-memory deque plus a write-only
+    sidecar file. ``push`` accepts an optional ``depth`` (stored on the
+    queue row); ``pop_entry`` returns the full stored entry (depth,
+    attempts) for the persistent crawl path.
+    """
+
+    def __init__(
+        self,
+        store: Any,
+        maxsize: int,
+        on_push: Callable[[str, int], None] | None = None,
+    ) -> None:
+        if maxsize <= 0:
+            raise ValueError("frontier maxsize must be positive")
+        self._store = store
+        self._maxsize = maxsize
+        self._on_push = on_push
+        self.evicted = 0
+
+    def __len__(self) -> int:
+        counts = self._store.counts()
+        return int(counts.get("queued", 0)) + int(counts.get("active", 0))
+
+    @property
+    def path(self) -> None:
+        return None
+
+    def push(self, url: str, depth: int = 0) -> None:
+        self._store.enqueue(url, depth)
+        if self._on_push is not None:
+            # Best effort: the store row above is the durable record, so a
+            # failing fan-out (e.g. Kafka down) never loses the URL.
+            with contextlib.suppress(Exception):
+                self._on_push(url, depth)
+        overflow = len(self) - self._maxsize
+        if overflow > 0:
+            self.evicted += self._store.evict_oldest(self._maxsize)
+
+    def pop(self) -> str | None:
+        entry = self.pop_entry()
+        return entry.url if entry is not None else None
+
+    def pop_entry(self) -> Any | None:
+        return self._store.dequeue()
+
+    def close(self) -> None:
+        """No-op: rows persist in the store (resume reads them back)."""
+
+
 class _BoundedLru:
     """Tiny LRU map with a hard capacity (oldest-evicted on overflow)."""
 
@@ -237,6 +317,488 @@ class _LinkTitleParser(html.parser.HTMLParser):
         return "".join(self._title_parts).strip()
 
 
+#: Tags whose text is never visible (code, not content).
+_NON_VISIBLE_TAGS = frozenset({"script", "style", "noscript", "template"})
+
+
+class _VisibleTextParser(html.parser.HTMLParser):
+    """Collects visible text in document order, skipping code tags."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _NON_VISIBLE_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _NON_VISIBLE_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        return " ".join(" ".join(self._chunks).split())
+
+
+def extract_visible_text(html_text: str) -> str:
+    """Visible text of an HTML page (no tags, scripts, or styles).
+
+    Never raises: unparseable input yields ``""`` and the caller keeps
+    the raw body. Whitespace is collapsed so snippets, FTS, and model
+    prompts consume prose, not markup.
+    """
+    if not isinstance(html_text, str) or not html_text:
+        return ""
+    parser = _VisibleTextParser()
+    try:
+        parser.feed(html_text)
+        parser.close()
+    except Exception:
+        return ""
+    return parser.text
+
+
+#: Max JSON-LD script blocks parsed per page (scalability bound).
+_MAX_JSONLD_BLOCKS = 5
+
+#: Max bytes parsed per JSON-LD script block.
+_MAX_JSONLD_BYTES = 65536
+
+#: Metadata keys the offline extractor may emit. This is the fixed
+#: contract shared with the indexer preservation list
+#: (``indexing/indexer.py::RANKING_METADATA_KEYS``) and the integrity
+#: scorer (``plugins/integrity_scorer.py``): the crawler produces these
+#: keys from fetched HTML alone — no network, no external engines.
+EXTRACTED_METADATA_KEYS: frozenset[str] = frozenset(
+    {
+        "language",
+        "author",
+        "published",
+        "section",
+        "price",
+        "currency",
+        "availability",
+        "brand",
+        "rating",
+        "rating_count",
+        "isbn",
+        "license",
+        "publisher",
+        "ingredients",
+        "cuisine",
+        "dietary_tags",
+        "allergens",
+        "total_minutes",
+        "sponsored",
+        "content_safety",
+        "final_url",
+        "redirect_chain",
+        "domain_age_days",
+        "booking_url",
+        "style",
+        "size",
+        "occasion",
+    }
+)
+
+#: Meta keys (``name``/``property``, lowercased) mapped to metadata fields.
+_META_KEY_MAP: dict[str, str] = {
+    "author": "author",
+    "article:author": "author",
+    "article:published_time": "published",
+    "article:section": "section",
+    "og:price:amount": "price",
+    "product:price:amount": "price",
+    "og:price:currency": "currency",
+    "product:price:currency": "currency",
+    "product:availability": "availability",
+    "product:brand": "brand",
+    "og:brand": "brand",
+    "books:isbn": "isbn",
+    "book:isbn": "isbn",
+    "product:size": "size",
+    "product:color": "style",
+    "product:material": "style",
+    "occasion": "occasion",
+    "language": "language",
+    "content-language": "language",
+    "dc.language": "language",
+}
+
+
+class _PageDataParser(html.parser.HTMLParser):
+    """Collects title, links, meta, JSON-LD, and sponsored markers in one pass.
+
+    Purely syntactic: no network, no script execution. JSON-LD blocks are
+    stored verbatim (capped in count and size); parsing happens in
+    :func:`extract_page_attributes` so a malformed block never breaks the
+    crawl of the page.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[str] = []
+        self._title_parts: list[str] = []
+        self._in_title = False
+        self.lang: str | None = None
+        self.meta: list[tuple[str, str]] = []
+        self.time_datetimes: list[str] = []
+        self.jsonld_blocks: list[str] = []
+        self._jsonld_parts: list[str] | None = None
+        self.sponsored_rel = False
+        self.sponsored_attr = False
+        self.booking_hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lowered = tag.lower()
+        if lowered == "title":
+            self._in_title = True
+        if lowered == "html":
+            for name, value in attrs:
+                if name.lower() == "lang" and value and value.strip():
+                    self.lang = value.strip()
+        if lowered == "a":
+            href_value = ""
+            rel_tokens: list[str] = []
+            for name, value in attrs:
+                lname = name.lower()
+                if lname == "href" and value:
+                    href_value = value.strip()
+                    self.links.append(value.strip())
+                if lname == "rel" and value:
+                    rel_tokens = value.lower().split()
+                    if "sponsored" in rel_tokens:
+                        self.sponsored_rel = True
+            if href_value and (
+                "booking" in rel_tokens
+                or "book-now" in rel_tokens
+                or "booking" in href_value.lower()
+                or "book-now" in href_value.lower()
+                or "/book/" in href_value.lower()
+                or "reserve" in href_value.lower()
+            ):
+                self.booking_hrefs.append(href_value)
+        for name, value in attrs:
+            if name.lower() == "data-sponsored" and value is not None:
+                self.sponsored_attr = True
+        if lowered == "meta":
+            norm = {name.lower(): (value or "") for name, value in attrs}
+            key = norm.get("property") or norm.get("name") or ""
+            content = norm.get("content", "")
+            if key.strip() and content:
+                self.meta.append((key.strip().lower(), content.strip()))
+        if lowered == "time":
+            for name, value in attrs:
+                if name.lower() == "datetime" and value and value.strip():
+                    self.time_datetimes.append(value.strip())
+        if lowered == "script":
+            norm = {name.lower(): (value or "") for name, value in attrs}
+            if norm.get("type", "").strip().lower() == "application/ld+json":
+                if len(self.jsonld_blocks) < _MAX_JSONLD_BLOCKS:
+                    self._jsonld_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered == "title":
+            self._in_title = False
+        if lowered == "script" and self._jsonld_parts is not None:
+            block = "".join(self._jsonld_parts)
+            if block.strip():
+                self.jsonld_blocks.append(block[:_MAX_JSONLD_BYTES])
+            self._jsonld_parts = None
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._jsonld_parts is not None:
+            if sum(len(part) for part in self._jsonld_parts) < _MAX_JSONLD_BYTES:
+                self._jsonld_parts.append(data)
+
+    @property
+    def title(self) -> str:
+        return "".join(self._title_parts).strip()
+
+
+def _ld_nodes(payload: Any) -> list[dict[str, Any]]:
+    """Unwrap a JSON-LD payload into node dicts (follows ``@graph``)."""
+    if isinstance(payload, dict):
+        graph = payload.get("@graph")
+        if isinstance(graph, list):
+            nodes: list[dict[str, Any]] = []
+            for item in graph:
+                nodes.extend(_ld_nodes(item))
+            return nodes
+        return [payload]
+    if isinstance(payload, list):
+        nodes = []
+        for item in payload:
+            nodes.extend(_ld_nodes(item))
+        return nodes
+    return []
+
+
+def _node_types(node: dict[str, Any]) -> set[str]:
+    raw = node.get("@type", "")
+    if isinstance(raw, str):
+        return {raw.strip().lower()} if raw.strip() else set()
+    if isinstance(raw, list):
+        return {str(t).strip().lower() for t in raw if str(t).strip()}
+    return set()
+
+
+def _name_of(value: Any) -> str | None:
+    """First display name: plain strings win, ``{"name": ...}`` unwrapped."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        name = value.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+    if isinstance(value, list):
+        for item in value:
+            name = _name_of(item)
+            if name:
+                return name
+        return None
+    return None
+
+
+def _str_list_of(value: Any) -> list[str] | None:
+    """Coerce a string or list of strings; None when nothing usable."""
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else None
+    if isinstance(value, list):
+        items = [
+            item.strip() for item in value if isinstance(item, str) and item.strip()
+        ]
+        return items or None
+    return None
+
+
+def _last_token(value: Any) -> str | None:
+    """Last URL/path token, lowercased (schema.org enum unwrapping)."""
+    if not isinstance(value, str):
+        value = _name_of(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip().rstrip("/")
+    if not text:
+        return None
+    return text.rsplit("/", 1)[-1].rsplit("#", 1)[-1].strip().lower() or None
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a price/rating value; None when absent or unparseable."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = "".join(
+            ch for ch in value.strip().replace(",", "") if ch.isdigit() or ch in ".-"
+        )
+        if not cleaned or cleaned in {"-", ".", "-."}:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _to_int(value: Any) -> int | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _to_iso_date(value: Any) -> str | None:
+    """Normalize a date-time string to ``YYYY-MM-DD``; None when unparseable."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
+
+
+#: Compiled lazily on first duration parse to keep import time minimal.
+_DURATION_RE: re.Pattern[str] | None = None
+
+
+def _to_minutes(value: Any) -> int | None:
+    """Parse an ISO-8601 duration (``PT1H30M``) into whole minutes."""
+    global _DURATION_RE
+    if _DURATION_RE is None:
+        _DURATION_RE = re.compile(
+            r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$"
+        )
+    if not isinstance(value, str):
+        return None
+    match = _DURATION_RE.match(value.strip().upper())
+    if not match or not any(match.groups()):
+        return None
+    days, hours, minutes, _seconds = (int(g) if g else 0 for g in match.groups())
+    total = days * 1440 + hours * 60 + minutes
+    return total or None
+
+
+def extract_page_attributes(html_text: str) -> dict[str, Any]:
+    """Extract vertical metadata from raw HTML offline (no network).
+
+    Reads JSON-LD (Product/Offer/AggregateRating, Book, Recipe,
+    Article), OpenGraph/product meta tags, ``<time datetime>``, the
+    ``<html lang>`` attribute, ``rel="sponsored"`` markers, and
+    adult-content rating meta. Returns only keys with found values;
+    JSON-LD wins over meta tags, meta wins over ``<time>``. Malformed
+    markup or JSON never raises: unparseable pieces are skipped.
+    """
+    parser = _PageDataParser()
+    try:
+        parser.feed(html_text)
+    except Exception:
+        return {}
+    out: dict[str, Any] = {}
+
+    def _set(key: str, value: Any) -> None:
+        if key not in out and value is not None:
+            out[key] = value
+
+    for block in parser.jsonld_blocks:
+        try:
+            payload = json.loads(block)
+        except (ValueError, RecursionError):
+            continue
+        for node in _ld_nodes(payload):
+            if not isinstance(node, dict):
+                continue
+            types = _node_types(node)
+            if "author" in node or "creator" in node:
+                _set("author", _name_of(node.get("author", node.get("creator"))))
+            lowered = {str(k).lower(): v for k, v in node.items()}
+            for key in ("datepublished", "datecreated"):
+                if key in lowered:
+                    raw_date = lowered[key]
+                    _set(
+                        "published",
+                        _to_iso_date(raw_date) if isinstance(raw_date, str) else None,
+                    )
+                    break
+            if node.get("inLanguage"):
+                _set("language", str(node["inLanguage"]).strip().lower() or None)
+            offers = node.get("offers")
+            offer_nodes = offers if isinstance(offers, list) else [offers]
+            for offer in offer_nodes:
+                if not isinstance(offer, dict):
+                    continue
+                _set("price", _to_float(offer.get("price")))
+                currency = offer.get("priceCurrency")
+                if isinstance(currency, str) and currency.strip():
+                    _set("currency", currency.strip().upper())
+                _set("availability", _last_token(offer.get("availability")))
+            rating_node = node.get("aggregateRating")
+            if isinstance(rating_node, dict):
+                _set("rating", _to_float(rating_node.get("ratingValue")))
+                _set(
+                    "rating_count",
+                    _to_int(
+                        rating_node.get("ratingCount", rating_node.get("reviewCount"))
+                    ),
+                )
+            if types & {"product"}:
+                _set("brand", _name_of(node.get("brand")))
+                _set("size", _name_of(node.get("size")))
+                style_bits: list[str] = []
+                for style_key in ("color", "material", "pattern", "category"):
+                    name = _name_of(node.get(style_key))
+                    if name:
+                        style_bits.append(name)
+                if style_bits:
+                    _set("style", ", ".join(style_bits))
+                audience = node.get("audience")
+                audience_type = (
+                    audience.get("audienceType")
+                    if isinstance(audience, dict)
+                    else audience
+                )
+                occasion = _name_of(audience_type)
+                if occasion:
+                    _set("occasion", occasion)
+            if types & {"book"}:
+                _set("isbn", _name_of(node.get("isbn")))
+                _set("license", _name_of(node.get("license")))
+                _set("publisher", _name_of(node.get("publisher")))
+            if types & {"recipe", "recipeinstruction"}:
+                _set("ingredients", _str_list_of(node.get("recipeIngredient")))
+                cuisine = node.get("recipeCuisine")
+                _set("cuisine", _name_of(cuisine))
+                diet = node.get("suitableForDiet")
+                diet_items = diet if isinstance(diet, list) else [diet]
+                _set(
+                    "dietary_tags",
+                    _str_list_of([_last_token(item) for item in diet_items]),
+                )
+                for raw_key, raw_value in node.items():
+                    if "allergen" in str(raw_key).lower():
+                        _set("allergens", _str_list_of(raw_value))
+                        break
+                for duration_key in ("totalTime", "cookTime", "prepTime"):
+                    if duration_key in node:
+                        _set("total_minutes", _to_minutes(node.get(duration_key)))
+                        break
+            if types & {"article", "newsarticle", "blogposting", "reportage"}:
+                _set("section", _name_of(node.get("articleSection")))
+
+    for meta_key, content in parser.meta:
+        if meta_key in ("rating", "robots"):
+            marker = content.lower()
+            if "adult" in marker or "rta-" in marker:
+                _set("content_safety", "adult")
+            continue
+        field = _META_KEY_MAP.get(meta_key)
+        if field is None:
+            continue
+        if field == "price":
+            _set("price", _to_float(content))
+        elif field == "currency":
+            _set("currency", content.strip().upper() or None)
+        elif field == "published":
+            _set("published", _to_iso_date(content) or content)
+        elif field == "language":
+            _set("language", content.strip().lower() or None)
+        elif field == "isbn":
+            cleaned = content.strip()
+            _set("isbn", cleaned or None)
+        else:
+            _set(field, content or None)
+
+    if parser.lang and "language" not in out:
+        out["language"] = parser.lang.strip().lower()
+    if "published" not in out:
+        for stamp in parser.time_datetimes:
+            dated = _to_iso_date(stamp)
+            if dated:
+                out["published"] = dated
+                break
+    if parser.sponsored_rel or parser.sponsored_attr:
+        out["sponsored"] = True
+    if parser.booking_hrefs:
+        _set("booking_url", parser.booking_hrefs[0])
+    return {key: out[key] for key in sorted(out) if key in EXTRACTED_METADATA_KEYS}
+
+
 @dataclass
 class _FetchedPage:
     status: int
@@ -245,6 +807,8 @@ class _FetchedPage:
     body: bytes
     headers: dict[str, str] = field(default_factory=dict)
     bytes_aborted: bool = False
+    requested_url: str = ""
+    redirect_chain: list[str] = field(default_factory=list)
 
 
 class PoliteCrawler:
@@ -264,6 +828,10 @@ class PoliteCrawler:
         self.default_max_depth: int | None = DEFAULT_MAX_DEPTH
         self.user_agent = DEFAULT_USER_AGENT
         self.respect_robots = True
+        self.checkpoint_interval_pages = 10
+        self.max_attempts_per_url = 3
+        self.frontier_enabled = True
+        self.last_checkpoint: dict[str, Any] = {}
         self._queue_path = Path(queue_path) if queue_path else None
         self._robots_cache = _BoundedLru(DEFAULT_MAX_TRACKED_DOMAINS)
         self._politeness = _BoundedLru(DEFAULT_MAX_TRACKED_DOMAINS)
@@ -441,6 +1009,32 @@ class PoliteCrawler:
                 f"crawler: 'respect_robots' must be a bool, got {respect!r}. "
                 "Startup validation failed."
             )
+        checkpoint_interval = config.get("checkpoint_interval_pages", 10)
+        if (
+            isinstance(checkpoint_interval, bool)
+            or not isinstance(checkpoint_interval, int)
+            or checkpoint_interval <= 0
+        ):
+            raise ConfigError(
+                "crawler: 'checkpoint_interval_pages' must be a positive int, "
+                f"got {checkpoint_interval!r}. Startup validation failed."
+            )
+        max_attempts = config.get("max_attempts_per_url", 3)
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or max_attempts < 1
+        ):
+            raise ConfigError(
+                "crawler: 'max_attempts_per_url' must be an int >= 1, "
+                f"got {max_attempts!r}. Startup validation failed."
+            )
+        frontier_enabled = config.get("frontier_enabled", True)
+        if not isinstance(frontier_enabled, bool):
+            raise ConfigError(
+                f"crawler: 'frontier_enabled' must be a bool, "
+                f"got {frontier_enabled!r}. Startup validation failed."
+            )
         self.timeout_s = float(timeout)
         self.crawl_delay_s = float(delay)
         self.max_pages = config.get("max_pages", DEFAULT_MAX_PAGES)
@@ -454,54 +1048,183 @@ class PoliteCrawler:
         self.default_max_depth = default_depth
         self.user_agent = user_agent.strip()
         self.respect_robots = respect
+        self.checkpoint_interval_pages = checkpoint_interval
+        self.max_attempts_per_url = max_attempts
+        self.frontier_enabled = frontier_enabled
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
         self._politeness = _BoundedLru(self.max_tracked_domains)
 
     # -- public crawl ----------------------------------------------------
 
-    def crawl(self, seed_urls: list[str]) -> list[Document]:
-        """Fetch seeds (following discovered links) into raw Documents."""
+    def crawl(
+        self,
+        seed_urls: list[str],
+        *,
+        frontier_store: Any | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        crawl_id: str = "default",
+        checkpoint_interval: int | None = None,
+        on_link: Callable[[str, int], None] | None = None,
+    ) -> list[Document]:
+        """Fetch seeds (following discovered links) into raw Documents.
+
+        The persistent path (``frontier_store`` is a
+        ``storage/frontier.py::FrontierStore``) replaces the in-memory
+        deque: seeds are enqueued (deduped by normalized URL), ``active``
+        rows from an interrupted crawl are requeued first, stored
+        ETag/Last-Modified validators re-seed the conditional map, and a
+        checkpoint row is written every ``checkpoint_interval`` pages and
+        once at the end (phase ``paused`` when ``should_stop`` fired,
+        else ``done``). Calling crawl again with the same store resumes:
+        ``done`` rows are never dequeued, so fetched URLs are not
+        refetched. Without a store the legacy in-memory behavior holds.
+        """
+        from openlens.storage.frontier import (
+            PHASE_DONE,
+            PHASE_PAUSED,
+            PHASE_RUNNING,
+            CrawlCheckpoint,
+        )
+
         stats = CrawlStats()
         self.last_stats = stats
+        self.last_checkpoint = {}
         # One robots fetch per host per crawl: the cache lives only here.
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
-        frontier = BoundedFrontier(self.max_queued_urls, path=self._queue_path)
-        try:
+        store = frontier_store if self.frontier_enabled else None
+        interval = (
+            checkpoint_interval
+            if checkpoint_interval is not None
+            else self.checkpoint_interval_pages
+        )
+        if store is not None:
+            # Lease-aware startup recovery: only expired (or legacy
+            # ownerless) ``active`` rows return to ``queued``; rows with a
+            # live heartbeat from another worker are never stolen. On
+            # stores without lease support this degrades to the legacy
+            # unconditional ``requeue_active``.
+            store.reap_expired_leases()
+            if hasattr(store, "validators"):
+                for key, validators in store.validators().items():
+                    headers: dict[str, str] = {}
+                    if validators.get("etag"):
+                        headers["If-None-Match"] = validators["etag"]
+                    if validators.get("last_modified"):
+                        headers["If-Modified-Since"] = validators["last_modified"]
+                    if headers:
+                        self._conditional[key] = headers
+            for seed in seed_urls:
+                if isinstance(seed, str) and seed.strip():
+                    store.enqueue(seed.strip(), 0)
+            frontier: Any = PersistentFrontier(
+                store, self.max_queued_urls, on_push=on_link
+            )
+            try:
+                preloaded = store.pending(
+                    limit=self.max_queued_urls + len(seed_urls) + 1
+                )
+            except Exception:
+                preloaded = []
             depths: dict[str, int] = {}
+            for queued_entry in preloaded:
+                depths.setdefault(normalize_url(queued_entry.url), queued_entry.depth)
+            for seed in seed_urls:
+                if isinstance(seed, str) and seed.strip():
+                    depths.setdefault(normalize_url(seed.strip()), 0)
+        else:
+            frontier = BoundedFrontier(self.max_queued_urls, path=self._queue_path)
+            depths = {}
             for seed in seed_urls:
                 if not isinstance(seed, str) or not seed.strip():
                     continue
                 cleaned = seed.strip()
                 frontier.push(cleaned)
                 depths.setdefault(normalize_url(cleaned), 0)
+        stopped = False
+
+        def _save_checkpoint(phase: str) -> None:
+            if store is None:
+                return
+            checkpoint = CrawlCheckpoint(
+                crawl_id=crawl_id,
+                seeds=[s for s in seed_urls if isinstance(s, str) and s.strip()],
+                phase=phase,
+                pages_attempted=attempts,
+                pages_indexed=len(documents),
+                frontier_size=len(frontier),
+                stats=vars(stats),
+            )
+            with contextlib.suppress(Exception):
+                store.save_checkpoint(checkpoint)
+            self.last_checkpoint = {
+                "crawl_id": checkpoint.crawl_id,
+                "phase": phase,
+                "pages_attempted": attempts,
+                "pages_indexed": len(documents),
+                "frontier_size": len(frontier),
+                "stats": dict(vars(stats)),
+            }
+
+        try:
             stats.evicted = frontier.evicted
             documents: list[Document] = []
             seen: set[str] = set()
             attempts = 0
+            if store is not None:
+                _save_checkpoint(PHASE_RUNNING)
             while len(frontier) > 0 and attempts < self.max_pages:
-                raw = frontier.pop()
-                if raw is None:
-                    break
+                if should_stop is not None:
+                    with contextlib.suppress(Exception):
+                        if should_stop():
+                            stopped = True
+                            break
+                if store is not None:
+                    entry = frontier.pop_entry()
+                    if entry is None:
+                        break
+                    raw = entry.url
+                    entry_depth = entry.depth
+                    entry_attempts = entry.attempts
+                else:
+                    raw = frontier.pop()
+                    if raw is None:
+                        break
+                    entry_depth = None
+                    entry_attempts = 0
                 if normalize_url(raw) in seen:
                     continue
                 seen.add(normalize_url(raw))
                 host = urllib.parse.urlsplit(raw).hostname or ""
                 host = host.lower()
-                depth = depths.get(normalize_url(raw), 0)
+                if entry_depth is not None:
+                    depth = entry_depth
+                    depths[normalize_url(raw)] = depth
+                else:
+                    depth = depths.get(normalize_url(raw), 0)
                 if self._denied(host):
                     stats.skipped_domain += 1
+                    if store is not None:
+                        store.mark_failed(raw, "denied by deny_domains")
                     continue
                 if not self._policy_allowed(host):
                     stats.skipped_policy += 1
+                    if store is not None:
+                        store.mark_failed(raw, "denied by domain policy")
                     continue
                 if not self._policy_exempt(host) and not self._domain_allowed(host):
                     stats.skipped_domain += 1
+                    if store is not None:
+                        store.mark_failed(raw, "domain not allowlisted")
                     continue
                 if not self._depth_allowed(host, depth):
                     stats.skipped_depth += 1
+                    if store is not None:
+                        store.mark_failed(raw, "depth cap exceeded")
                     continue
                 if self.respect_robots and not self._allowed_by_robots(raw):
                     stats.skipped_robots += 1
+                    if store is not None:
+                        store.mark_failed(raw, "disallowed by robots.txt")
                     continue
                 self._wait_polite(host.lower(), raw)
                 attempts += 1
@@ -509,26 +1232,52 @@ class PoliteCrawler:
                     page = self._fetch_bounded(raw)
                 except CrawlError:
                     stats.timeouts += 1
+                    if store is not None:
+                        store.mark_failed(raw, "fetch timeout")
+                        if entry_attempts + 1 < self.max_attempts_per_url:
+                            store.requeue(raw)
                     continue
                 except Exception:
                     stats.errors += 1
+                    if store is not None:
+                        store.mark_failed(raw, "fetch error")
+                        if entry_attempts + 1 < self.max_attempts_per_url:
+                            store.requeue(raw)
                     continue
                 if page is None:
+                    if store is not None:
+                        store.mark_failed(raw, "empty fetch")
                     continue
                 if page.status == 304:
                     stats.skipped_not_modified += 1
+                    if store is not None:
+                        store.mark_done(raw)
                     continue
                 if page.status != 200:
                     stats.errors += 1
+                    if store is not None:
+                        store.mark_failed(raw, f"http {page.status}")
+                        if entry_attempts + 1 < self.max_attempts_per_url:
+                            store.requeue(raw)
                     continue
                 if page.bytes_aborted:
                     stats.aborted_bytes += 1
+                    if store is not None:
+                        store.mark_failed(raw, "max_bytes abort")
                     continue
                 if not self._content_type_allowed(page.content_type):
                     stats.skipped_content_type += 1
+                    if store is not None:
+                        store.mark_failed(raw, "content-type skipped")
                     continue
                 stats.fetched += 1
                 documents.append(self._to_document(page))
+                if store is not None:
+                    store.mark_done(
+                        raw,
+                        etag=page.headers.get("etag"),
+                        last_modified=page.headers.get("last-modified"),
+                    )
                 if page.content_type.startswith("text/html"):
                     for link in self._extract_links(page):
                         if normalize_url(link) not in seen:
@@ -542,11 +1291,17 @@ class PoliteCrawler:
                             key = normalize_url(link)
                             if key not in depths or child_depth < depths[key]:
                                 depths[key] = child_depth
-                            frontier.push(link)
+                            if store is not None:
+                                frontier.push(link, depths[key])
+                            else:
+                                frontier.push(link)
+                if store is not None and interval > 0 and attempts % interval == 0:
+                    _save_checkpoint(PHASE_RUNNING)
             stats.evicted = frontier.evicted
+            _save_checkpoint(PHASE_PAUSED if stopped else PHASE_DONE)
             return documents
         finally:
-            if self._queue_path is None:
+            if store is None and self._queue_path is None:
                 frontier.close()
 
     # -- politeness ------------------------------------------------------
@@ -709,7 +1464,11 @@ class PoliteCrawler:
         conditional = self._conditional.get(normalize_url(url), {})
         headers.update(conditional)
         try:
-            with httpx.Client(timeout=self.timeout_s, headers=headers) as c:
+            with httpx.Client(
+                timeout=self.timeout_s,
+                headers=headers,
+                follow_redirects=True,
+            ) as c:
                 client = c
                 with client.stream("GET", url) as response:
                     content_type = (
@@ -729,6 +1488,7 @@ class PoliteCrawler:
                         chunks.append(chunk)
                     final_url = str(response.url)
                     flat = {k.lower(): v for k, v in response.headers.items()}
+                    chain = [str(item.url) for item in response.history]
                     if response.status_code == 200:
                         self._remember_conditional(url, flat)
                     return _FetchedPage(
@@ -738,6 +1498,8 @@ class PoliteCrawler:
                         body=b"".join(chunks),
                         headers=flat,
                         bytes_aborted=aborted,
+                        requested_url=url,
+                        redirect_chain=chain,
                     )
         except CrawlError:
             raise
@@ -801,10 +1563,33 @@ class PoliteCrawler:
             metadata["etag"] = page.headers["etag"]
         if page.headers.get("last-modified"):
             metadata["last_modified"] = page.headers["last-modified"]
+            published = published_from_last_modified(page.headers["last-modified"])
+            if published is not None:
+                metadata["published"] = published
+        if page.content_type.startswith("text/html"):
+            # Never raises: extract_page_attributes returns {} on bad input.
+            metadata.update(extract_page_attributes(text))
+        if page.redirect_chain:
+            metadata["redirect_chain"] = list(page.redirect_chain)
+        if page.requested_url and page.url != page.requested_url:
+            metadata["final_url"] = page.url
+        # ``domain_age_days`` stays absent until a WHOIS/registration
+        # source exists: the offline crawler never fabricates an age, and
+        # the trust scorer treats a missing age as neutral.
+        booking = metadata.get("booking_url")
+        if isinstance(booking, str) and booking and page.url:
+            metadata["booking_url"] = urllib.parse.urljoin(page.url, booking)
+        content = text
+        if page.content_type.startswith("text/html"):
+            # Snippets, FTS, and model prompts consume prose, not markup:
+            # store the visible text, never the raw tags/scripts/styles.
+            cleaned = extract_visible_text(text)
+            if cleaned:
+                content = cleaned
         return Document(
             id=normalize_url(page.url) or page.url,
             title=title,
-            content=text,
+            content=content,
             url=page.url,
             metadata=metadata,
         )

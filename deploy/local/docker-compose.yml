@@ -1,4 +1,5 @@
-# OpenLens local stack: backend API, frontend app, OpenSearch tool.
+# OpenLens local stack: backend API, frontend app, Postgres store,
+# and pgAdmin browser UI (phpMyAdmin-style login for Postgres).
 name: openlens-local
 
 services:
@@ -9,13 +10,32 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
-      OPENSEARCH_HOST: http://opensearch:9200
-      BING_API_KEY: ${BING_API_KEY:-}
+      OPENLENS_PG_HOST: postgres
+      OPENLENS_PG_PORT: 5432
+      OPENLENS_PG_DBNAME: ${POSTGRES_DB:-openlens}
+      OPENLENS_PG_USER: ${POSTGRES_USER:-openlens}
+      OPENLENS_PG_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      OPENLENS_REDIS_URL: redis://redis:6379/0
+      OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
+      OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092,kafka-2:19092,kafka-3:19092}
+      OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
+      OPENLENS_KAFKA_GROUP_ID: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
       MODEL_NAME: ${MODEL_NAME:-muse-spark-1.3}
     volumes:
       - openlens-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
       interval: 10s
@@ -38,23 +58,260 @@ services:
     networks:
       - openlens
 
-  opensearch:
-    image: opensearchproject/opensearch:2
-    environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-Openlens!2026Local}
+  admin-frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.admin-frontend
+      args:
+        VITE_OPENLENS_API_URL: ${VITE_OPENLENS_API_URL:-}
     ports:
-      - "${OPENSEARCH_PORT:-9200}:9200"
+      - "${ADMIN_FRONTEND_PORT:-3001}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - openlens
+
+  # Distributed-crawl worker: same image as `backend`. Every replica
+  # joins the same Kafka consumer group (`crawlers`), so the
+  # `crawl.urls` topic assigns each URL to exactly one live worker.
+  # Scale with:
+  #
+  #   docker compose -f deploy/local/docker-compose.yml up --build -d --scale crawler=3
+  #
+  # The container runs two foreground pieces: the heartbeat reporter
+  # (`python -m openlens.indexing.worker`) so the dashboard Workers
+  # view shows every replica, and the Kafka consume loop
+  # (`crawl-worker --queue kafka`), which is PID 1 and owns SIGTERM.
+  # `OPENLENS_WORKER_ID` is intentionally left empty so each replica
+  # auto-resolves a unique `{hostname}-{pid}-{rand}` id (Compose gives
+  # every replica its own hostname). Set it explicitly only to pin one
+  # replica's identity. Postgres keeps documents, checkpoints, settings,
+  # and the seen-set; size `max_connections` as N * (pool_size * 2).
+  crawler:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.backend
+    command: ["sh", "-c", "python -m openlens.indexing.worker & exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
     volumes:
-      - opensearch-data:/usr/share/opensearch/data
+      - openlens-data:/app/data
+    environment:
+      OPENLENS_API_URL: http://backend:8000
+      OPENLENS_PG_HOST: postgres
+      OPENLENS_PG_PORT: 5432
+      OPENLENS_PG_DBNAME: ${POSTGRES_DB:-openlens}
+      OPENLENS_PG_USER: ${POSTGRES_USER:-openlens}
+      OPENLENS_PG_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      OPENLENS_REDIS_URL: redis://redis:6379/0
+      OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
+      OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092,kafka-2:19092,kafka-3:19092}
+      OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
+      OPENLENS_KAFKA_GROUP_ID: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}
+      OPENLENS_CRAWL_ID: ${OPENLENS_CRAWL_ID:-default}
+      OPENLENS_WORKER_ID: ${OPENLENS_WORKER_ID:-}
+      OPENLENS_HEARTBEAT_INTERVAL_S: ${OPENLENS_HEARTBEAT_INTERVAL_S:-40}
+      OPENLENS_FRONTIER_ADMIN_TOKEN: ${OPENLENS_FRONTIER_ADMIN_TOKEN:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
+      MODEL_NAME: ${MODEL_NAME:-muse-spark-1.3}
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - openlens
+
+  # Kafka KRaft cluster (3 brokers, combined broker+controller mode, no
+  # Zookeeper). Internal traffic uses INTERNAL://*:19092 (service DNS);
+  # host debugging uses EXTERNAL localhost:9092/9094/9095. Topics
+  # auto-create with 12 partitions so up to 12 crawler replicas each get
+  # their own partition share. PLAINTEXT throughout: local dev only.
+  kafka-1:
+    image: apache/kafka:3.9.0
+    hostname: kafka-1
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - openlens
+
+  kafka-2:
+    image: apache/kafka:3.9.0
+    hostname: kafka-2
+    ports:
+      - "9094:9092"
+    environment:
+      CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:19092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - openlens
+
+  # Kafka monitor UI (Kafbat/kafka-ui): topics, consumer-group lag,
+  # and message browser for the crawl.urls queue. Local dev only —
+  # bound to localhost with no login, like the rest of this stack.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:19092,kafka-2:19092,kafka-3:19092
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    networks:
+      - openlens
+
+  kafka-3:
+    image: apache/kafka:3.9.0
+    hostname: kafka-3
+    ports:
+      - "9095:9092"
+    environment:
+      CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:19092,EXTERNAL://localhost:9095
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - openlens
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      POSTGRES_DB: ${POSTGRES_DB:-openlens}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-openlens} -d $${POSTGRES_DB:-openlens}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - openlens
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@openlens.io}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-openlens}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - openlens
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     networks:
       - openlens
 
 volumes:
   openlens-data:
-  opensearch-data:
+  pgdata:
+  pgadmin-data:
+  redis-data:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
 
 networks:
   openlens:

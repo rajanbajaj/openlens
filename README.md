@@ -1,7 +1,7 @@
 # OpenLens
 
-Plug-and-play search engine skeleton: search backends (custom index,
-OpenSearch, external APIs) and AI backends are swappable via config, with
+Plug-and-play search engine skeleton: the local custom index
+(SQLite FTS5) and AI backends are swappable via config, with
 filtering, ranking, and enrichment owned by independent plugins behind stable
 interfaces (`src/openlens/core/interfaces.py` + `core/context.py`).
 
@@ -48,13 +48,33 @@ VITE_OPENLENS_API_URL=http://127.0.0.1:8000 npm run dev
 Other commands (all from `frontend/`): `npm test` (vitest),
 `npm run lint`, `npm run format:check`, `npm run build` (`tsc` + vite).
 
+## Admin frontend
+
+The admin app (`admin-frontend/`, dev port `5174`, compose port
+`${ADMIN_FRONTEND_PORT:-3001}`) hosts the URL-frontier dashboard
+(queue/pause/resume/checkpoint/settings/workers/token login) plus the
+models/providers/ranking/query/plugins editors. It mirrors the user
+frontend's toolchain (same scripts, Tailwind v4 pattern, per-app orval
+output in its own `src/api/generated/`):
+
+```bash
+cd admin-frontend && npm ci && npm run dev -- --port 5174
+```
+
+Every mutation reuses the existing `X-Admin-Token` gate
+(`OPENLENS_FRONTIER_ADMIN_TOKEN`); no second auth scheme exists. The
+models/providers/ranking/query/plugins editors target the pending
+`GET/PUT /api/v1/admin/config/*` routes and show file defaults with a
+notice until those routes land; regenerate the admin OpenAPI snapshot
+(`admin-frontend/openapi/README.md`) only when backend routes change.
+
 ## Run the tests
 
 ```bash
 uv run pytest tests/unit tests/integration
 ```
 
-Offline only: no network, no API keys, no OpenSearch cluster. Tests use fakes.
+Offline only: no network, no API keys, no external cluster. Tests use fakes.
 
 ## Config overview
 
@@ -87,16 +107,17 @@ set the ones for the backends you turn on.
 | `ANTHROPIC_API_KEY` | (none — required when enabled) | Key for the `claude` model backend |
 | `MUSE_API_KEY` | (none — required when enabled) | Key for the `muse` model backend |
 | `LOCAL_MODEL_ENDPOINT` | `http://localhost:11434` | Endpoint for the `local` model backend |
-| `BING_API_KEY` | (none — required when enabled) | Key for the `bing` search provider (`configs/providers.yaml`) |
-| `MYENGINE_URL` / `MYENGINE_API_KEY` | (commented example only) | Endpoint/key for a custom `http`-type provider |
-| `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | (commented example only) | Basic-auth credentials for the `opensearch` provider |
 | `OPENLENS_MYSQL_HOST` / `OPENLENS_MYSQL_PORT` / `OPENLENS_MYSQL_DATABASE` / `OPENLENS_MYSQL_USER` / `OPENLENS_MYSQL_PASSWORD` | `localhost` / `3306` / `openlens` / `root` / (empty) | MySQL storage backend (`storage.mysql` in `configs/default.yaml`) |
 | `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD` | `localhost` / `5432` / `openlens` / `postgres` / (empty) | Postgres storage backend (`storage.postgres` in `configs/default.yaml`) |
 | `OPENLENS_REDIS_URL` | `redis://localhost:6379/0` | Redis cache backend (`cache.redis` in `configs/default.yaml`) |
 | `VITE_OPENLENS_API_URL` | dev `http://localhost:8000`, prod same-origin | Backend URL baked into the frontend (`frontend/src/api/client.ts`) |
 | `OPENLENS_SMOKE_URL` | (unset — test skipped) | Target for the opt-in live-backend frontend smoke test |
-| `BACKEND_PORT` / `FRONTEND_PORT` / `OPENSEARCH_PORT` | `8000` / `3000` / `9200` | Published ports in `deploy/local/docker-compose.yml` |
-| `OPENSEARCH_INITIAL_ADMIN_PASSWORD` | (see `deploy/local/.env.example`) | First-boot admin password required by the OpenSearch image |
+| `OPENLENS_WORKER_ID` / `OPENLENS_CRAWL_ID` / `OPENLENS_HEARTBEAT_INTERVAL_S` / `OPENLENS_API_URL` | (auto `{hostname}-{pid}-{rand}`) / `default` / `40` / `http://localhost:8000` | Crawler worker identity, shared-queue crawl id, heartbeat period (s), and backend URL for heartbeats (`src/openlens/indexing/worker.py`; compose crawler uses `http://backend:8000`) |
+| `OPENLENS_FRONTIER_ADMIN_TOKEN` | (empty — local dev stays open) | Gate for mutating `/api/v1/frontier/*` and `/api/v1/admin/config/*` via the `X-Admin-Token` header; worker heartbeats use the same token (`src/openlens/indexing/worker.py`) |
+| `OPENLENS_KAFKA_ENABLED` / `OPENLENS_KAFKA_BOOTSTRAP_SERVERS` / `OPENLENS_KAFKA_TOPIC` / `OPENLENS_KAFKA_GROUP_ID` | `false` / `localhost:9092` / `crawl.urls` / `crawlers` | Kafka URL queue for distributed crawling (`kafka` in `configs/default.yaml`); compose enables it with `kafka-1..3:19092`. Needs the `kafka` extra (`uv sync --extra kafka`). PLAINTEXT: local dev only |
+| `BACKEND_PORT` / `FRONTEND_PORT` / `ADMIN_FRONTEND_PORT` / `POSTGRES_PORT` / `PGADMIN_PORT` / `REDIS_PORT` | `8000` / `3000` / `3001` / `5432` / `5050` / `6379` | Published ports in `deploy/local/docker-compose.yml` |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `openlens` / `openlens` / `openlens` | Postgres superuser, password, and database (also wired into the backend as `OPENLENS_PG_*` in `deploy/local/docker-compose.yml`) |
+| `PGADMIN_DEFAULT_EMAIL` / `PGADMIN_DEFAULT_PASSWORD` | `admin@openlens.io` / `openlens` | pgAdmin browser login (`deploy/local/.env.example`) |
 
 Rules: never commit a real key. Copy the root `.env.example` to `.env`
 and export it before running (the loader reads process env only —
@@ -115,27 +136,40 @@ A bare `${VAR}` with no value and no `:-default` fails startup via
 ## Storage backends
 
 `storage.backend` in `configs/default.yaml` is the single switch
-(`sqlite` | `mysql` | `postgres`, default `sqlite`); per-backend
+(`sqlite` | `mysql` | `postgres`, shipped default `postgres`); per-backend
 connection fields live under `storage.sqlite` / `storage.mysql` /
 `storage.postgres`. An unknown backend or a non-mapping section fails
-startup validation loudly via `ConfigError`.
+startup validation loudly via `ConfigError`. (With no `storage:`
+section at all, the code falls back to SQLite — the offline default
+used by tests.)
 
 | Backend | Fields |
 |---|---|
 | `sqlite` | `db_path` (default `data/openlens.db`; `:memory:` for ephemeral). The legacy provider-entry `db_path` still works as the fallback when `storage.sqlite.db_path` is unset; a config with no `storage:` section at all still boots SQLite. |
 | `mysql` | `host` / `port` (default `3306`) / `database` (`db` alias accepted) / `user` / `password` / `table` / `charset` / `pool_size` / `connect_timeout` / `checkout_timeout`. Conventional env vars `OPENLENS_MYSQL_HOST` / `OPENLENS_MYSQL_PORT` / `OPENLENS_MYSQL_DATABASE` / `OPENLENS_MYSQL_USER` / `OPENLENS_MYSQL_PASSWORD`. |
-| `postgres` | `host` / `port` (default `5432`) / `dbname` (`database` / `db` aliases accepted) / `user` / `password` / `schema` / `table` / `pool_size` / `connect_timeout` / `checkout_timeout`. Conventional env vars `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD`. |
+| `postgres` | `host` / `port` (default `5432`) / `dbname` (`database` / `db` aliases accepted) / `user` / `password` / `schema` / `table` / `pool_size` / `connect_timeout` / `checkout_timeout`. Conventional env vars `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD` / `OPENLENS_PG_POOL_SIZE` / `OPENLENS_PG_CONNECT_TIMEOUT` / `OPENLENS_PG_CHECKOUT_TIMEOUT`. |
 
 ```yaml
 storage:
-  backend: sqlite
-  sqlite:
-    db_path: "data/openlens.db"
+  backend: postgres
+  postgres:
+    host: "${OPENLENS_PG_HOST:-localhost}"
+    port: "${OPENLENS_PG_PORT:-5432}"
+    dbname: "${OPENLENS_PG_DBNAME:-openlens}"
+    user: "${OPENLENS_PG_USER:-postgres}"
+    password: "${OPENLENS_PG_PASSWORD:-}"
+    table: "documents"
 ```
 
-Server backends need their driver-only extras
-(`pip install openlens[mysql]` for `pymysql`, `pip install
-openlens[postgres]` for `psycopg` v3); SQLite has zero extra
+The local Docker stack (`deploy/local/docker-compose.yml`) runs this
+Postgres plus a pgAdmin browser UI; the backend service points at it
+via `OPENLENS_PG_HOST=postgres`. Tables are created on first connect
+(`CREATE TABLE IF NOT EXISTS`), so a fresh volume boots cleanly and
+the seed corpus is indexed on startup.
+
+Postgres is the default store and its driver (`psycopg` v3, binary
+wheel) ships in the base install. MySQL stays an extra
+(`pip install openlens[mysql]` for `pymysql`); SQLite has zero extra
 dependencies. Drivers lazy-import, so unconfigured backends add no
 import-time dependency — instantiating without the driver raises
 `ProviderError(UNAVAILABLE)`, never a raw `ImportError`, and connection
@@ -169,6 +203,30 @@ chunk (default 500, no cross-chunk atomicity), upsert on repeated ids,
 `delete` of a missing id returns `False`, and `metadata` round-trips as
 a parsed dict.
 
+Shared-queue coordination: each process holds two pools (documents +
+frontier, `pool_size` connections each, so ~10 server connections by
+default); N crawler workers hold N times that — size Postgres
+`max_connections` accordingly. Claimed URLs carry an owner lease
+(`frontier.lease_ttl_s`, default 120s; heartbeat every TTL/3); only
+expired leases are requeued, so a restarting worker never steals live
+rows. Per-domain politeness (`domain_politeness`) and worker liveness
+(`crawl_workers`) are shared rows in the same Postgres schema; on
+SQLite (offline/tests) coordination is process-local — multi-process
+crawls require Postgres. Identity resolves from `OPENLENS_WORKER_ID`
+or `{hostname}-{pid}-{rand}`.
+
+Kafka URL queue (distributed mode): with `kafka.enabled`, frontier
+seeds and discovered links flow through the `crawl.urls` topic
+(keyed by normalized URL) instead of the store claim path. Every
+`crawl-worker --queue kafka` replica joins the same consumer group
+(`OPENLENS_KAFKA_GROUP_ID`, default `crawlers`), so Kafka assigns each
+URL to exactly one live worker — `--scale crawler=N` fans out with no
+extra coordination. Delivery is at-least-once: offsets commit only
+after a URL is crawled and indexed, and duplicates collapse in the
+Postgres seen-set (normalized-URL primary key; `done` rows are never
+refetched). Committed offsets are the resume checkpoint; the
+store-backed claim path stays as the offline/test fallback.
+
 ## Pipeline
 
 Every request flows through 10 stages (`PipelineStage` in
@@ -193,43 +251,23 @@ uv run python -m openlens.cli config validate
 uv run python -m openlens.cli providers health
 ```
 
-### Blue-green search index
+### Search index
 
-One OpenSearch cluster serves through the `openlens` alias while each
-crawl fills a fresh timestamped stage index (`openlens_YYYYMMDDHHMMSS`).
-Promoting a verified stage index is one atomic alias flip — no app
-restart, no data copy, instant rollback. The SQL store stays canonical;
-the CLI loads it into stage and manages the lifecycle:
+The Postgres store (via the `custom_index` provider) is the default
+index. Crawl into it and reindex in place:
 
 ```bash
-uv run python -m openlens.cli index add seed-urls...   # crawl -> SQL store
-uv run python -m openlens.cli opensearch stage          # fresh stage index
-uv run python -m openlens.cli opensearch load           # SQL store -> stage
-uv run python -m openlens.cli opensearch verify --index openlens_<stamp>
-uv run python -m openlens.cli opensearch promote --index openlens_<stamp>
-uv run python -m openlens.cli opensearch rollback --index openlens_<prior>
-uv run python -m openlens.cli opensearch prune          # drop old indices
+uv run python -m openlens.cli index add seed-urls...   # crawl -> Postgres store
+uv run python -m openlens.cli index reindex seed-urls...  # rebuild
 ```
 
-(`load` targets the newest stage index, creating one when none exists;
-serving reads the alias, so running servers need no restart after a
-flip — only the short result-cache TTL can briefly serve pre-flip hits.)
-
-Moving an index between clusters (local <-> remote over an `ssh -L`
-tunnel) copies mappings first, then documents with ids preserved, so
-reruns overwrite instead of duplicating:
-
-```bash
-ssh -L 19201:localhost:9200 you@remote-host   # one terminal
-OPENSEARCH_SOURCE_USER=... OPENSEARCH_SOURCE_PASSWORD=... \
-OPENSEARCH_DEST_USER=... OPENSEARCH_DEST_PASSWORD=... \
-uv run python -m openlens.cli opensearch migrate \
-  --source http://localhost:9201 --dest http://localhost:9200 \
-  --index openlens_20261028
-```
-
-Credentials travel via environment variables only — they are never
-logged, returned, or echoed on failure.
+The backend needs a reachable Postgres (see
+`deploy/local/docker-compose.yml`); without one it fails fast with
+`ProviderError(UNAVAILABLE)`. Serving reads the store directly, so
+running servers need no restart after a reindex — only the short
+result-cache TTL can briefly serve pre-reindex hits. Credentials travel
+via environment variables only — they are never logged, returned, or
+echoed on failure.
 
 ### Observe
 

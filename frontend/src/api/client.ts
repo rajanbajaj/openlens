@@ -36,6 +36,7 @@ export interface SearchOptions {
   offset?: number;
   filters?: Record<string, unknown>;
   providerPrefs?: ProviderPrefs | null;
+  history?: string[];
 }
 
 /**
@@ -66,6 +67,9 @@ export function buildSearchBody(options: SearchOptions): SearchRequest {
   };
   if (options.providerPrefs !== undefined && options.providerPrefs !== null) {
     body.provider_prefs = options.providerPrefs;
+  }
+  if (options.history !== undefined && options.history.length > 0) {
+    body.history = options.history;
   }
   return body;
 }
@@ -139,6 +143,30 @@ export function offsetForPage(page: number, limit: number): number {
 export function pageForOffset(offset: number, limit: number): number {
   if (limit <= 0) return 1;
   return Math.floor(Math.max(0, offset) / limit) + 1;
+}
+
+/** One numbered slot in the pagination control; `'gap'` renders an ellipsis. */
+export type PageItem = number | 'gap';
+
+/**
+ * Numbered page slots for 1-based `page` out of `total` pages: first,
+ * last, and a ±1 window around the current page, with `'gap'`
+ * markers where ranges are elided. Small totals list fully.
+ */
+export function pageItems(page: number, total: number): PageItem[] {
+  const totalPages_ = Math.max(0, Math.floor(total));
+  if (totalPages_ <= 0) return [];
+  const current = Math.min(Math.max(1, Math.floor(page)), totalPages_);
+  const wanted = new Set<number>([1, totalPages_, current - 1, current, current + 1]);
+  const slots = [...wanted].filter((n) => n >= 1 && n <= totalPages_).sort((a, b) => a - b);
+  const items: PageItem[] = [];
+  for (const slot of slots) {
+    if (items.length > 0 && slot - (items[items.length - 1] as number) > 1) {
+      items.push('gap');
+    }
+    items.push(slot);
+  }
+  return items;
 }
 
 /** Debounce delay for as-you-type suggestions (plan contract). */
@@ -257,3 +285,10 @@ export function prefetchPage(
     () => null,
   );
 }
+
+/**
+ * URL-frontier and configuration editing live in the admin app, not
+ * here: this client exposes only search, suggestions, feedback, and
+ * pagination helpers. Frontier/worker mutations stay admin-only via
+ * the backend `X-Admin-Token` gate.
+ */

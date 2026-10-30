@@ -52,7 +52,43 @@ DEFAULT_CHUNK_SIZE = 500
 
 #: Stored metadata keys that survive updates/reindex even when the
 #: incoming document does not carry them (the ranker reads these).
-RANKING_METADATA_KEYS = ("trusted", "recency_score")
+#:
+#: Beyond the legacy ``trusted`` / ``recency_score`` pair this covers
+#: every key the offline crawler extractor may emit
+#: (``indexing/crawler.py::EXTRACTED_METADATA_KEYS``) so incremental
+#: updates and full reindex runs never drop ranker inputs. Derived
+#: purely from indexed data: no network, no external engines.
+RANKING_METADATA_KEYS = (
+    "trusted",
+    "recency_score",
+    "published",
+    "author",
+    "section",
+    "language",
+    "price",
+    "currency",
+    "availability",
+    "brand",
+    "rating",
+    "rating_count",
+    "isbn",
+    "license",
+    "publisher",
+    "ingredients",
+    "cuisine",
+    "dietary_tags",
+    "allergens",
+    "total_minutes",
+    "sponsored",
+    "content_safety",
+    "final_url",
+    "redirect_chain",
+    "domain_age_days",
+    "booking_url",
+    "style",
+    "size",
+    "occasion",
+)
 
 
 @dataclass
@@ -130,6 +166,12 @@ def run_index(
     repository: DocumentRepository,
     config: dict[str, Any] | None = None,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    *,
+    crawler: PoliteCrawler | None = None,
+    frontier_store: Any | None = None,
+    should_stop: Any | None = None,
+    crawl_id: str = "default",
+    on_link: Any | None = None,
 ) -> IndexStats:
     """Crawl seeds and incrementally index the results (CLI entry point).
 
@@ -138,10 +180,28 @@ def run_index(
     ``indexing:`` config section, crawl, then
     :meth:`DocumentIndexer.index_incremental`. Unknown config keys are
     rejected by ``PoliteCrawler.configure``.
+
+    Pass a configured ``crawler`` to reuse one (e.g. with a queue path);
+    otherwise one is built from ``config``. Pass ``frontier_store`` (a
+    ``storage/frontier.py::FrontierStore``) plus optional ``should_stop``
+    to crawl through the persistent frontier with pause/resume and
+    checkpointing; ``crawl_id`` names the checkpoint row.
     """
-    crawler = PoliteCrawler()
-    crawler.configure(dict(config or {}))
-    docs = crawler.crawl(list(seed_urls))
+    active = crawler if crawler is not None else PoliteCrawler()
+    if crawler is None:
+        active.configure(dict(config or {}))
+    if frontier_store is None and should_stop is None and crawl_id == "default":
+        # Legacy call shape: keeps old monkeypatched/subclassed crawl
+        # overrides working (they may accept only seed_urls).
+        docs = active.crawl(list(seed_urls))
+    else:
+        docs = active.crawl(
+            list(seed_urls),
+            frontier_store=frontier_store,
+            should_stop=should_stop,
+            crawl_id=crawl_id,
+            on_link=on_link,
+        )
     return DocumentIndexer(repository).index_incremental(docs, chunk_size)
 
 

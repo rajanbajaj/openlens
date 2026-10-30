@@ -34,29 +34,6 @@ providers:
     # backend is contacted. Set true plus an enabled `models:` backend
     # to fuse the embedding signal via RRF (fail-open on any error).
     semantic_enabled: false
-  opensearch:
-    enabled: false
-    type: opensearch
-    hosts: ["${OPENSEARCH_HOST:-http://localhost:9200}"]
-    # `index` may be a concrete index or a serving alias. The blue-green
-    # lifecycle (`opensearch_index:` below + `cli opensearch ...`) serves
-    # through the `openlens` alias, so promotion never touches this file.
-    index: openlens
-    timeout_s: 5
-    verify_certs: true
-
-# Blue-green OpenSearch lifecycle (single cluster, timestamped stage
-# indices, one serving alias). Operated via the `opensearch` CLI group:
-# stage -> load -> verify -> promote -> prune; rollback flips the alias
-# back; migrate copies one index between endpoints (local <-> remote over
-# an `ssh -L` tunnel, auth via OPENSEARCH_{SOURCE,DEST}_{USER,PASSWORD}
-# environment variables — never commit credentials).
-opensearch_index:
-  hosts: ["${OPENSEARCH_HOST:-http://localhost:9200}"]
-  alias: openlens
-  index_prefix: openlens
-  timeout_s: 5
-  verify_certs: true
 
 # Document store backend selection (db-connectors plan, step 4).
 # `storage.backend` is the single switch (`sqlite` | `mysql` |
@@ -67,8 +44,20 @@ opensearch_index:
 # need their optional extras (`pip install openlens[mysql]` /
 # `openlens[postgres]`); drivers lazy-import, so unconfigured backends
 # add no import-time dependency.
+#
+# Storage decision: Postgres is the default store (see
+# `deploy/local/docker-compose.yml`, which runs it plus a pgAdmin UI).
+# SQLite stays as the zero-dependency offline fallback (code default
+# when no `storage:` section exists) and for tests. Maps are out of
+# scope (no geo index, no map UI; travel stays text filters). All
+# backends carry the same crawler-truth indexed columns
+# (`content_type`, `published`) plus full-text search over
+# `title`/`content`, with the vertical remainder in metadata JSON; only
+# those columns are promoted because the crawler emits no vertical
+# (product/hotel/book/recipe) fields. AI capabilities stay on the
+# `models:` backends (configs/models.yaml).
 storage:
-  backend: sqlite
+  backend: postgres
   sqlite:
     db_path: "data/openlens.db"
   mysql:
@@ -85,6 +74,12 @@ storage:
     user: "${OPENLENS_PG_USER:-postgres}"
     password: "${OPENLENS_PG_PASSWORD:-}"
     table: "documents"
+    # Connection pool shared by the document + frontier stores. Each store
+    # opens its own pool, so one process holds ~2 * pool_size server
+    # connections; N workers hold N times that (see README pool math).
+    pool_size: "${OPENLENS_PG_POOL_SIZE:-5}"
+    connect_timeout: "${OPENLENS_PG_CONNECT_TIMEOUT:-5}"
+    checkout_timeout: "${OPENLENS_PG_CHECKOUT_TIMEOUT:-5.0}"
 
 # Pipeline plugins, toggled without core edits. Entries are
 # `{name, enabled, config?}` resolved via the plugin registry.
@@ -141,6 +136,21 @@ plugins:
   - name: commerce-reranker
     enabled: false
     config: {}
+  # Integrity pack (IMPL-2): safety/privacy/fairness/news-trust/sponsored
+  # signals scored purely from indexed metadata + indexed text. Opt-in:
+  # disabled by default so shipped behavior is unchanged.
+  - name: integrity-scorer
+    enabled: false
+    config: {}
+  - name: opinion-detector
+    enabled: false
+    config: {}
+  # AI summary (Cat10): opt-in, disabled by default so shipped behavior
+  # is unchanged. Needs an enabled `models:` backend (configs/models.yaml);
+  # without one the engine omits AI plugins rather than falling back.
+  - name: ai-summary
+    enabled: false
+    config: {}
 
 ranking:
   default_profile: "default"
@@ -151,12 +161,17 @@ ranking:
 # entry and NOT run inside the post-retrieval pipeline. Shapes mirror the
 # stage-owned dataclasses: `normalizer` {max_length, on_overflow},
 # `intent` {keywords, tie_priority, semantic_*}, `expansion`
-# {synonym_sets, max_added_terms}. Suggested modes are validated against
-# `get_profile` at startup; `child-safe` is never suggested, only explicit.
+# {synonym_sets, max_added_terms, expand_rewrite}, `context`
+# {enabled, max_history_terms}. Context history is request-scoped and
+# never persisted; `child-safe` is never suggested, only explicit.
+# Suggested modes are validated against `get_profile` at startup.
 query:
   normalizer:
     max_length: 1000
     on_overflow: truncate
+  context:
+    enabled: false
+    max_history_terms: 20
   intent:
     keywords:
       navigational: ["login", "signin", "sign in", "signup", "homepage", "official", "website", "portal", "download", "app"]
@@ -178,6 +193,10 @@ query:
       computing: ["laptop", "laptops", "notebook"]
       pricing: ["cheap", "affordable", "budget"]
     max_added_terms: 8
+    # Optional single string-rewrite variant (one synonym substituted per
+    # expandable base term, arity preserved). Off by default: the
+    # structured OR-of-ANDs variant fan-out is served instead.
+    expand_rewrite: false
 
 # Ingestion policies for the polite crawler + incremental indexer
 # (crawler-index plan, step 4). Consumed by `PoliteCrawler.configure()`
@@ -214,16 +233,57 @@ indexing:
   #   blocked.example.net: {allow: false}
   default_max_depth: null
 
+# Persistent URL frontier (frontier plan). `frontier.enabled` gates the
+# persistent crawl path (`PoliteCrawler.crawl(..., frontier_store=...)`):
+# when true, seeds live in the `frontier_queue` table (normalized URL
+# primary key), checkpoints in `crawl_checkpoints`, and these settings
+# in `frontier_settings` (DB row wins once written; values below are the
+# seed defaults). Tables are created alongside `documents` on every
+# backend (SQLite executescript + Postgres DDL); no new service needed.
+frontier:
+  enabled: ${OPENLENS_FRONTIER_ENABLED:-true}
+  crawl_id: "default"
+  checkpoint_interval_pages: ${OPENLENS_FRONTIER_CKPT_PAGES:-10}
+  max_attempts_per_url: 3
+  queue_table: "frontier_queue"
+  checkpoint_table: "crawl_checkpoints"
+  # Shared-queue coordination (storage/frontier.py). Lease TTL must exceed
+  # the slowest fetch (timeout_s + max crawl-delay); workers heartbeat
+  # every TTL/3 and the reaper recovers expired claims.
+  lease_ttl_s: "${OPENLENS_LEASE_TTL_S:-120}"
+  heartbeat_interval_s: "${OPENLENS_HEARTBEAT_INTERVAL_S:-40}"
+  reaper_interval_s: "${OPENLENS_REAPER_INTERVAL_S:-30}"
+
+# Kafka-backed URL queue for distributed crawling (kafka plan).
+# `kafka.enabled` switches seed/URL distribution to the `crawl.urls`
+# topic: every crawler replica joins the same consumer group
+# (`group_id`), so Kafka assigns each URL to exactly one live worker
+# and `docker compose up --scale crawler=N` fans out with no extra
+# coordination. Postgres keeps documents, checkpoints, settings, and
+# the seen-set (normalized-URL dedup makes redeliveries no-ops), so the
+# store-backed claim path stays as the offline/test fallback.
+# Disabled by default — set OPENLENS_KAFKA_ENABLED=true in compose to
+# turn it on. Brokers speak PLAINTEXT (local dev only, no auth).
+kafka:
+  enabled: ${OPENLENS_KAFKA_ENABLED:-false}
+  bootstrap_servers: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}
+  topic: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
+  group_id: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}
+  publish_timeout_s: 5.0
+  poll_timeout_s: 1.0
+
 # Search-result cache (caching-audit plan). `cache.backend` is the single
-# switch (`memory` | `sqlite` | `redis`, default `memory`); `enabled: false`
-# turns caching off. Exactly one pipeline hook caches the final ranked
-# list post-filtering, so safety can never be bypassed; TTL bounds
-# staleness (cross-process index writes rely on TTL expiry), `cache purge`
-# drops everything manually. Missing/unreachable drivers warn and run
-# uncached, never crash boot.
+# switch (`memory` | `sqlite` | `redis`, shipped default `redis` — see
+# `deploy/local/docker-compose.yml`); `enabled: false` turns caching off.
+# Exactly one pipeline hook caches the final ranked list post-filtering,
+# so safety can never be bypassed; TTL bounds staleness (cross-process
+# index writes rely on TTL expiry), `cache purge` drops everything
+# manually. Missing/unreachable backends warn and run uncached, never
+# crash boot (the code falls back to `memory` when no `cache:` section
+# exists).
 cache:
   enabled: true
-  backend: memory
+  backend: redis
   ttl_s: 120
   max_entries: 1000
   sqlite:

@@ -11,15 +11,18 @@ dependencies = [
   "uvicorn>=0.30",
   "pyyaml>=6",
   "httpx>=0.27",
-  "opensearch-py>=2",
+  # Postgres is the default store, so its driver ships in the base
+  # install (binary wheel, no system libpq needed).
+  "psycopg[binary]>=3.1",
+  # Redis is the default cache backend, so its driver ships too.
+  "redis>=5",
 ]
 
 [project.optional-dependencies]
-# Cache backends (task 21). Drivers stay lazy: a default install imports
-# neither. Task 19 storage extras (driver-only; SQLite stays zero-dep).
-redis = ["redis>=5"]
+# MySQL stays an extra (driver-only). Cache/storage drivers stay
+# lazy-imported, so unconfigured backends add no import-time cost.
 mysql = ["pymysql>=1.1"]
-postgres = ["psycopg[binary]>=3.1"]
+kafka = ["kafka-python-ng>=2.1.0"]
 
 [build-system]
 requires = ["hatchling"]

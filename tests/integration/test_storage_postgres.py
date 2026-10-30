@@ -287,6 +287,31 @@ def test_chunked_bulk_write_and_validation(store):
 
 
 @needs_pg
+def test_hash_exists_tracks_ingested_content(store):
+    from openlens.storage.repository import content_hash_of
+
+    assert store.hash_exists(content_hash_of("hello world content")) is False
+    store.add_document(_doc())
+    assert store.hash_exists(content_hash_of("hello world content")) is True
+    assert store.hash_exists(content_hash_of("unseen content")) is False
+
+
+@needs_pg
+def test_update_document_rewrites_row_and_hash(store):
+    from openlens.storage.repository import content_hash_of
+
+    assert store.update_document(_doc()) is False
+    store.add_document(_doc())
+    updated = _doc(title="goodbye moon", content="goodbye moon content")
+    assert store.update_document(updated) is True
+    fetched = store.get("d1")
+    assert fetched is not None
+    assert fetched.content == "goodbye moon content"
+    assert store.hash_exists(content_hash_of("goodbye moon content")) is True
+    assert store.hash_exists(content_hash_of("hello world content")) is False
+
+
+@needs_pg
 def test_close_is_idempotent(store):
     store.add_document(_doc())
     store.close()

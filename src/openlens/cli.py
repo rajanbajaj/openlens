@@ -1,6 +1,6 @@
 """Operator CLI: ``python -m openlens.cli`` (stdlib ``argparse`` only).
 
-Five command groups, all offline-capable except ``opensearch``:
+Four command groups, all offline-capable:
 
 - ``search "query"`` — run one search through the real Engine and print
   the response (JSON by default, ``--pretty`` for humans).
@@ -10,9 +10,6 @@ Five command groups, all offline-capable except ``opensearch``:
   pretending to succeed.
 - ``config validate`` — validate a config file without serving anything.
 - ``providers health`` — per-provider reachability table, no network.
-- ``opensearch (stage|load|verify|promote|rollback|status|prune|migrate)`` —
-  blue-green index lifecycle on a reachable cluster (the only group that
-  needs the network).
 
 The CLI reuses :func:`openlens.main.load_app_config` and
 :func:`openlens.main.build_engine` — there is no second boot path.
@@ -24,14 +21,11 @@ unit tests monkeypatch; they are looked up at call time on purpose.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import openlens.indexing as indexing_api
-import openlens.indexing.opensearch_stage as stage_api
 from openlens.api.schemas import SearchResponseSchema
 from openlens.config import load_config
 from openlens.core.interfaces import Engine, ProviderPrefs, SearchRequest
@@ -40,6 +34,7 @@ from openlens.main import (
     _log_search,
     build_engine,
     load_app_config,
+    load_effective_config,
 )
 from openlens.observability.logging import configure_logging
 from openlens.observability.request_id import new_request_id
@@ -117,6 +112,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_sub.set_defaults(func=_cmd_config_validate)
 
+    worker_cmd = commands.add_parser(
+        "crawl-worker",
+        help="Run one standalone crawler worker (claim, fetch, mark done).",
+    )
+    worker_cmd.add_argument(
+        "seeds",
+        nargs="*",
+        help="Seed URLs to crawl (also enqueued when the frontier resumes).",
+    )
+    worker_cmd.add_argument(
+        "--crawl-id",
+        default="default",
+        help="Checkpoint row name (resume with the same id to avoid refetch).",
+    )
+    worker_cmd.add_argument(
+        "--worker-id",
+        default=None,
+        help="Worker identity (defaults to OPENLENS_WORKER_ID or host-pid-id).",
+    )
+    worker_cmd.add_argument(
+        "--chunk-size",
+        type=int,
+        default=500,
+        help="Index write chunk size (positive integer).",
+    )
+    worker_cmd.add_argument(
+        "--queue",
+        choices=("store", "kafka"),
+        default="store",
+        help=(
+            "URL queue backend: 'store' drains the persistent frontier "
+            "store until exhausted; 'kafka' consumes the shared crawl.urls "
+            "topic until stopped (distributed mode)."
+        ),
+    )
+    worker_cmd.set_defaults(func=_cmd_crawl_worker)
+
     cache_cmd = commands.add_parser("cache", help="Manage the search-result cache.")
     cache_sub = cache_cmd.add_subparsers(dest="cache_command", required=True)
     purge_sub = cache_sub.add_parser(
@@ -140,57 +172,6 @@ def build_parser() -> argparse.ArgumentParser:
         "health", help="Per-provider reachability table (offline)."
     )
     health_sub.set_defaults(func=_cmd_providers_health)
-
-    os_cmd = commands.add_parser(
-        "opensearch",
-        help="Blue-green OpenSearch lifecycle (needs a reachable cluster).",
-    )
-    os_sub = os_cmd.add_subparsers(dest="opensearch_command", required=True)
-    stage_sub = os_sub.add_parser(
-        "stage", help="Create a fresh timestamped stage index."
-    )
-    stage_sub.add_argument("--crawl-id", default=None)
-    stage_sub.set_defaults(func=_cmd_opensearch_stage)
-    load_sub = os_sub.add_parser(
-        "load", help="Bulk-load the SQL store into a stage index."
-    )
-    load_sub.add_argument("--index", default=None)
-    load_sub.add_argument("--chunk-size", type=int, default=500)
-    load_sub.add_argument("--crawl-id", default=None)
-    load_sub.set_defaults(func=_cmd_opensearch_load)
-    verify_sub = os_sub.add_parser("verify", help="Verify a stage index is servable.")
-    verify_sub.add_argument("--index", required=True)
-    verify_sub.add_argument("--min-docs", type=int, default=1)
-    verify_sub.set_defaults(func=_cmd_opensearch_verify)
-    promote_sub = os_sub.add_parser(
-        "promote", help="Atomically point the serving alias at an index."
-    )
-    promote_sub.add_argument("--index", required=True)
-    promote_sub.set_defaults(func=_cmd_opensearch_promote)
-    rollback_sub = os_sub.add_parser(
-        "rollback", help="Point the serving alias back at a prior index."
-    )
-    rollback_sub.add_argument("--index", required=True)
-    rollback_sub.set_defaults(func=_cmd_opensearch_promote)
-    status_sub = os_sub.add_parser(
-        "status", help="Show the serving alias targets and doc counts."
-    )
-    status_sub.set_defaults(func=_cmd_opensearch_status)
-    prune_sub = os_sub.add_parser(
-        "prune", help="Delete superseded stage indices (never the live one)."
-    )
-    prune_sub.add_argument("--keep", type=int, default=2)
-    prune_sub.set_defaults(func=_cmd_opensearch_prune)
-    migrate_sub = os_sub.add_parser(
-        "migrate",
-        help="Copy one index between endpoints (local <-> remote over SSH).",
-    )
-    migrate_sub.add_argument("--source", required=True)
-    migrate_sub.add_argument("--dest", required=True)
-    migrate_sub.add_argument("--index", required=True)
-    migrate_sub.add_argument("--as", dest="as_index", default=None)
-    migrate_sub.add_argument("--chunk-size", type=int, default=500)
-    migrate_sub.set_defaults(func=_cmd_opensearch_migrate)
     return parser
 
 
@@ -309,6 +290,62 @@ def _cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_crawl_worker(args: argparse.Namespace) -> int:
+    """Run one crawler worker (store drain or Kafka consume loop)."""
+    from openlens.indexing.worker import run_kafka_worker, run_standalone_worker
+
+    chunk_size = getattr(args, "chunk_size", 500)
+    if (
+        not isinstance(chunk_size, int)
+        or isinstance(chunk_size, bool)
+        or chunk_size < 1
+    ):
+        print("error: --chunk-size must be a positive integer", file=sys.stderr)
+        return FAILURE_EXIT
+    try:
+        # Effective config (file + DB-persisted admin docs, fail-open
+        # offline): admin-persisted `indexing` edits reach the worker.
+        config = load_effective_config()
+    except Exception as exc:
+        print(f"error: cannot load config: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    if not config:
+        print("error: no config found", file=sys.stderr)
+        return FAILURE_EXIT
+    queue = getattr(args, "queue", "store") or "store"
+    try:
+        if queue == "kafka":
+            counts = run_kafka_worker(
+                list(getattr(args, "seeds", []) or []),
+                config,
+                worker_id=getattr(args, "worker_id", None),
+                crawl_id=getattr(args, "crawl_id", "default") or "default",
+                chunk_size=chunk_size,
+            )
+            print(
+                "crawl-worker done: "
+                f"received={counts['received']} "
+                f"added={counts['added']} updated={counts['updated']}"
+            )
+            return 0
+        stats = run_standalone_worker(
+            list(getattr(args, "seeds", []) or []),
+            config,
+            worker_id=getattr(args, "worker_id", None),
+            crawl_id=getattr(args, "crawl_id", "default") or "default",
+            chunk_size=chunk_size,
+        )
+    except Exception as exc:
+        print(f"error: crawl-worker failed: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    print(
+        f"crawl-worker done: added={stats.added} "
+        f"updated={stats.updated} skipped_unchanged={stats.skipped_unchanged} "
+        f"skipped_duplicates={stats.skipped_duplicates}"
+    )
+    return 0
+
+
 def _cmd_config_validate(args: argparse.Namespace) -> int:
     if args.config is not None:
         path = Path(args.config)
@@ -383,203 +420,6 @@ def _cmd_providers_health(args: argparse.Namespace) -> int:  # noqa: ARG001
     for name in sorted(statuses):
         state = "reachable" if statuses[name] else "unreachable"
         print(f"{name.ljust(width)}  {state}")
-    return 0
-
-
-def _stage_setup() -> tuple[dict[str, Any], dict[str, Any], Any] | None:
-    """Load config, validate ``opensearch_index:``, build the client.
-
-    Returns (app config, stage settings, client), or None after printing
-    the failure (callers return FAILURE_EXIT).
-    """
-    try:
-        config = load_app_config()
-    except Exception as exc:
-        print(f"error: cannot load config: {exc}", file=sys.stderr)
-        return None
-    try:
-        settings = stage_api.validate_section(config.get("opensearch_index", None))
-    except Exception as exc:
-        print(f"error: invalid opensearch_index section: {exc}", file=sys.stderr)
-        return None
-    try:
-        client = stage_api.build_client(
-            settings["hosts"],
-            settings["username"],
-            settings["password"],
-            settings["verify_certs"],
-            settings["timeout_s"],
-        )
-    except Exception as exc:
-        print(f"error: cannot connect to opensearch: {exc}", file=sys.stderr)
-        return None
-    return config, settings, client
-
-
-def _cmd_opensearch_stage(args: argparse.Namespace) -> int:
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    _, settings, client = setup
-    try:
-        name = stage_api.create_stage_index(client, settings["index_prefix"])
-    except Exception as exc:
-        print(f"error: stage failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    print(f"stage ready: {name}")
-    return 0
-
-
-def _cmd_opensearch_load(args: argparse.Namespace) -> int:
-    if args.chunk_size < 1:
-        print("error: --chunk-size must be a positive integer", file=sys.stderr)
-        return FAILURE_EXIT
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    config, settings, client = setup
-    try:
-        repository = _open_repository(config)
-        total = repository.count()
-    except Exception as exc:
-        print(f"error: cannot open index: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    if total == 0:
-        print("error: store holds 0 documents; nothing to load", file=sys.stderr)
-        return FAILURE_EXIT
-    index = args.index
-    try:
-        if index is None:
-            index = stage_api.latest_stage_index(client, settings["index_prefix"])
-        if index is None:
-            index = stage_api.create_stage_index(client, settings["index_prefix"])
-        crawl_id = args.crawl_id or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        written = stage_api.bulk_load(
-            client,
-            index,
-            stage_api.iter_store_documents(repository, args.chunk_size),
-            crawl_id,
-            args.chunk_size,
-        )
-        served = stage_api.finalize_stage(client, index)
-        stage_api.verify_stage(client, index, min_docs=1)
-    except Exception as exc:
-        print(f"error: load failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    finally:
-        repository.close()
-    print(f"loaded {written} document(s) into {index} (servable: {served})")
-    return 0
-
-
-def _cmd_opensearch_verify(args: argparse.Namespace) -> int:
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    _, _, client = setup
-    try:
-        total = stage_api.verify_stage(client, args.index, args.min_docs)
-    except Exception as exc:
-        print(f"error: verify failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    print(f"verify OK: {args.index} serves {total} document(s)")
-    return 0
-
-
-def _cmd_opensearch_promote(args: argparse.Namespace) -> int:
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    _, settings, client = setup
-    alias = settings["alias"]
-    try:
-        previous = stage_api.promote(client, alias, args.index)
-    except Exception as exc:
-        print(f"error: promote failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    print(f"alias {alias} now serves {args.index}")
-    if previous:
-        print(f"previous: {', '.join(previous)} (kept for rollback)")
-    print(
-        "note: cached results up to the cache TTL may predate the flip; "
-        "`cache purge` clears sqlite/redis backends (restart clears "
-        "in-process memory caches)"
-    )
-    return 0
-
-
-def _cmd_opensearch_status(args: argparse.Namespace) -> int:  # noqa: ARG001
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    _, settings, client = setup
-    alias = settings["alias"]
-    try:
-        targets = stage_api.alias_targets(client, alias)
-    except Exception as exc:
-        print(f"error: status failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    if not targets:
-        print(f"alias {alias} points nowhere (no promoted index yet)")
-        return 0
-    for target in targets:
-        try:
-            total = int(client.count(index=target).get("count", 0))
-        except Exception:  # noqa: BLE001 — count is best-effort display
-            total = -1
-        print(f"{alias} -> {target} ({total} document(s))")
-    return 0
-
-
-def _cmd_opensearch_prune(args: argparse.Namespace) -> int:
-    if args.keep < 0:
-        print("error: --keep must be zero or a positive integer", file=sys.stderr)
-        return FAILURE_EXIT
-    setup = _stage_setup()
-    if setup is None:
-        return FAILURE_EXIT
-    _, settings, client = setup
-    try:
-        deleted = stage_api.prune(
-            client, settings["index_prefix"], settings["alias"], args.keep
-        )
-    except Exception as exc:
-        print(f"error: prune failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    if deleted:
-        print(f"pruned: {', '.join(deleted)}")
-    else:
-        print("nothing to prune")
-    return 0
-
-
-def _cmd_opensearch_migrate(args: argparse.Namespace) -> int:
-    if args.chunk_size < 1:
-        print("error: --chunk-size must be a positive integer", file=sys.stderr)
-        return FAILURE_EXIT
-    dest_index = args.as_index or args.index
-    try:
-        source = stage_api.build_client(
-            [args.source],
-            os.environ.get("OPENSEARCH_SOURCE_USER"),
-            os.environ.get("OPENSEARCH_SOURCE_PASSWORD"),
-            True,
-            60,
-        )
-        dest = stage_api.build_client(
-            [args.dest],
-            os.environ.get("OPENSEARCH_DEST_USER"),
-            os.environ.get("OPENSEARCH_DEST_PASSWORD"),
-            True,
-            60,
-        )
-        written = stage_api.copy_index(
-            source, dest, args.index, dest_index, args.chunk_size
-        )
-    except Exception as exc:
-        print(f"error: migrate failed: {exc}", file=sys.stderr)
-        return FAILURE_EXIT
-    print(f"migrated {written} document(s): {args.index} -> {dest_index}")
     return 0
 
 

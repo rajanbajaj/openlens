@@ -1,0 +1,423 @@
+"""Kafka-backed URL queue for distributed crawling.
+
+One topic (default ``crawl.urls``) carries URL messages; every crawler
+replica joins the same consumer group, so Kafka assigns each URL to
+exactly one live worker and competing replicas never fetch the same
+page. The message key is the normalized URL, so repeat sightings of one
+URL land on the same partition in order.
+
+Delivery is at-least-once: the consumer commits an offset only after
+the URL was crawled and indexed. Duplicates (rebalance, retry) collapse
+in the Postgres frontier store, whose normalized-URL primary key makes
+re-enqueue a no-op and whose ``done`` rows are never refetched.
+
+No broker, no problem at import time: the ``kafka`` driver is imported
+lazily inside the constructors, and every missing-driver or
+unreachable-broker failure surfaces as ``ProviderError(UNAVAILABLE)``
+so callers (API resume, CLI worker) degrade or fail loud instead of
+crashing at import.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
+
+from openlens.core.interfaces import ConfigError, ProviderError
+from openlens.indexing.crawler import normalize_url
+
+#: Driver import path (``kafka-python-ng`` provides the ``kafka`` package).
+_DRIVER_MODULE = "kafka"
+
+#: Error code used on every surface from this module (mirrors storage/...).
+_PROVIDER_NAME = "kafka_queue"
+
+#: Defaults mirroring the ``kafka:`` config section shape.
+DEFAULT_TOPIC = "crawl.urls"
+DEFAULT_GROUP_ID = "crawlers"
+DEFAULT_PUBLISH_TIMEOUT_S = 5.0
+DEFAULT_POLL_TIMEOUT_S = 1.0
+
+
+@dataclass(frozen=True)
+class KafkaMessage:
+    """One consumed URL message (offset committed separately)."""
+
+    url: str
+    depth: int = 0
+
+
+def _coerce_enabled(value: Any) -> bool:
+    """Coerce an ``enabled`` flag (env resolution stringifies scalars).
+
+    Config env substitution (``config.py``) replaces ``${VAR:-default}``
+    on raw text, so YAML booleans arrive as ``"true"``/``"false"`` strings
+    (same as ``frontier.enabled``). Mirror the ``_is_truthy`` precedent
+    from ``plugins/user_restrictions.py``; anything else fails closed.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value in (0, 1):
+            return value == 1
+        raise ConfigError(f"Config 'kafka.enabled' must be a boolean, got {value!r}.")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no", ""):
+            return False
+    raise ConfigError(f"Config 'kafka.enabled' must be a boolean, got {value!r}.")
+
+
+def validate_kafka_section(section: Any) -> dict[str, Any]:
+    """Validate the ``kafka:`` config section (fail-closed, like the rest).
+
+    Unknown keys are rejected; ``enabled: false`` (or a missing section)
+    disables Kafka and keeps the store-backed queue. Returns the
+    normalized section with defaults filled.
+    """
+    if section is None:
+        return {}
+    if not isinstance(section, Mapping):
+        raise ConfigError("Config section 'kafka' must be a mapping.")
+    known = {
+        "enabled",
+        "bootstrap_servers",
+        "topic",
+        "group_id",
+        "publish_timeout_s",
+        "poll_timeout_s",
+    }
+    unknown = sorted(set(section) - known)
+    if unknown:
+        raise ConfigError(
+            f"Unknown 'kafka' keys: {', '.join(unknown)}. "
+            f"Known: {', '.join(sorted(known))}."
+        )
+    normalized: dict[str, Any] = {
+        "enabled": False,
+        "bootstrap_servers": ["localhost:9092"],
+        "topic": DEFAULT_TOPIC,
+        "group_id": DEFAULT_GROUP_ID,
+        "publish_timeout_s": DEFAULT_PUBLISH_TIMEOUT_S,
+        "poll_timeout_s": DEFAULT_POLL_TIMEOUT_S,
+    }
+    if "enabled" in section:
+        normalized["enabled"] = _coerce_enabled(section["enabled"])
+    if "bootstrap_servers" in section:
+        raw = section["bootstrap_servers"]
+        if isinstance(raw, str):
+            servers = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, list) and all(isinstance(p, str) for p in raw):
+            servers = [part.strip() for part in raw]
+        else:
+            raise ConfigError(
+                "Config 'kafka.bootstrap_servers' must be a "
+                "comma-separated string or a list of strings."
+            )
+        servers = [part for part in servers if part]
+        if not servers:
+            raise ConfigError(
+                "Config 'kafka.bootstrap_servers' must name at least one broker."
+            )
+        normalized["bootstrap_servers"] = servers
+    for key in ("topic", "group_id"):
+        if key in section:
+            value = section[key]
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"Config 'kafka.{key}' must be a non-empty string.")
+            normalized[key] = value.strip()
+    for key in ("publish_timeout_s", "poll_timeout_s"):
+        if key in section:
+            value = section[key]
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or value <= 0
+            ):
+                raise ConfigError(f"Config 'kafka.{key}' must be a positive number.")
+            normalized[key] = float(value)
+    return normalized
+
+
+def kafka_enabled(config: Mapping[str, Any] | None) -> bool:
+    """True when the app config enables the Kafka queue with brokers set."""
+    if not isinstance(config, Mapping):
+        return False
+    try:
+        section = validate_kafka_section(config.get("kafka"))
+    except ConfigError:
+        return False
+    return bool(section.get("enabled")) and bool(section.get("bootstrap_servers"))
+
+
+def kafka_section(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Normalized ``kafka:`` section ({} when absent/invalid)."""
+    if not isinstance(config, Mapping):
+        return {}
+    try:
+        return validate_kafka_section(config.get("kafka"))
+    except ConfigError:
+        return {}
+
+
+def _load_driver() -> tuple[Any, Any]:
+    """Import the driver pair (module, KafkaError); UNAVAILABLE when absent."""
+    try:
+        import kafka  # type: ignore[import-not-found]
+
+        from kafka.errors import KafkaError  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ProviderError(
+            "Kafka driver is not installed; install the kafka extra to "
+            "use the Kafka queue backend",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.UNAVAILABLE,
+        ) from exc
+    return kafka, KafkaError
+
+
+def _error(message: str, exc: Exception | None = None) -> ProviderError:
+    return ProviderError(
+        message,
+        provider_name=_PROVIDER_NAME,
+        code=ProviderError.UNAVAILABLE,
+    )
+
+
+class KafkaQueue:
+    """Thin Kafka URL queue: ``publish`` seeds/links, ``poll``/``commit`` consume.
+
+    Pass ``producer``/``consumer_factory`` fakes in tests to stay offline;
+    otherwise the driver is imported lazily here (never at module import).
+    ``poll`` returns ``None`` on an idle timeout; every broker failure
+    raises ``ProviderError(UNAVAILABLE)``.
+    """
+
+    def __init__(
+        self,
+        *,
+        bootstrap_servers: list[str],
+        topic: str = DEFAULT_TOPIC,
+        group_id: str = DEFAULT_GROUP_ID,
+        publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
+        poll_timeout_s: float = DEFAULT_POLL_TIMEOUT_S,
+        producer: Any | None = None,
+        consumer_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        if not bootstrap_servers:
+            raise _error("Kafka queue needs at least one bootstrap server.")
+        if not topic.strip():
+            raise _error("Kafka queue needs a non-empty topic.")
+        self._topic = topic
+        self._publish_timeout_s = publish_timeout_s
+        self._poll_timeout_s = poll_timeout_s
+        self._consumer_factory = consumer_factory
+        self._consumer: Any | None = None
+        self._pending_record: Any | None = None
+        if producer is None:
+            kafka, kafka_error = _load_driver()
+            self._kafka_error: Any = kafka_error
+            try:
+                producer = kafka.KafkaProducer(
+                    bootstrap_servers=list(bootstrap_servers),
+                    key_serializer=lambda key: key.encode("utf-8"),
+                    value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+                    acks="all",
+                    retries=3,
+                    max_block_ms=int(publish_timeout_s * 1000),
+                    request_timeout_ms=int(publish_timeout_s * 1000),
+                )
+            except Exception as exc:
+                raise _error(
+                    f"cannot create Kafka producer for {bootstrap_servers}: {exc}"
+                ) from exc
+        else:
+            self._kafka_error = Exception
+        self._producer = producer
+        self._group_id = group_id
+        self._bootstrap_servers = list(bootstrap_servers)
+
+    @classmethod
+    def from_config(
+        cls,
+        section: Mapping[str, Any],
+        *,
+        producer: Any | None = None,
+        consumer_factory: Callable[[], Any] | None = None,
+    ) -> "KafkaQueue":
+        """Build from a validated ``kafka:`` section (test fakes injectable)."""
+        normalized = validate_kafka_section(section)
+        return cls(
+            bootstrap_servers=list(normalized["bootstrap_servers"]),
+            topic=str(normalized["topic"]),
+            group_id=str(normalized["group_id"]),
+            publish_timeout_s=float(normalized["publish_timeout_s"]),
+            poll_timeout_s=float(normalized["poll_timeout_s"]),
+            producer=producer,
+            consumer_factory=consumer_factory,
+        )
+
+    @classmethod
+    def from_app_config(
+        cls,
+        config: Mapping[str, Any] | None,
+        *,
+        producer: Any | None = None,
+        consumer_factory: Callable[[], Any] | None = None,
+    ) -> "KafkaQueue":
+        """Build from the top-level app config (reads ``kafka:``)."""
+        section = config.get("kafka") if isinstance(config, Mapping) else None
+        return cls.from_config(
+            section if isinstance(section, Mapping) else {},
+            producer=producer,
+            consumer_factory=consumer_factory,
+        )
+
+    # -- produce ---------------------------------------------------------
+
+    def publish(self, url: str, depth: int = 0) -> bool:
+        """Publish one URL (keyed by normalized URL). False when blank.
+
+        Raises ``ProviderError(UNAVAILABLE)`` when the broker rejects or
+        times out, so callers can fall back to the store queue.
+        """
+        if not isinstance(url, str) or not url.strip():
+            return False
+        cleaned = url.strip()
+        try:
+            future = self._producer.send(
+                self._topic,
+                key=normalize_url(cleaned),
+                value={"url": cleaned, "depth": int(depth)},
+            )
+            future.get(timeout=self._publish_timeout_s)
+        except Exception as exc:
+            if isinstance(exc, self._kafka_error):
+                raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
+            raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
+        return True
+
+    # -- consume ----------------------------------------------------------
+
+    def _consumer_instance(self) -> Any:
+        if self._consumer is None:
+            if self._consumer_factory is not None:
+                self._consumer = self._consumer_factory()
+            else:
+                kafka, _ = _load_driver()
+                try:
+                    self._consumer = kafka.KafkaConsumer(
+                        self._topic,
+                        bootstrap_servers=list(self._bootstrap_servers),
+                        group_id=self._group_id,
+                        enable_auto_commit=False,
+                        auto_offset_reset="earliest",
+                        key_deserializer=lambda raw: raw.decode("utf-8") if raw else "",
+                        value_deserializer=lambda raw: json.loads(raw.decode("utf-8")),
+                    )
+                except Exception as exc:
+                    raise _error(
+                        f"cannot create Kafka consumer for '{self._topic}': {exc}"
+                    ) from exc
+        return self._consumer
+
+    def check_available(self, timeout_s: float = 5.0) -> bool:
+        """True when a broker answers (fail-fast pre-flight for the CLI)."""
+        try:
+            consumer = self._consumer_instance()
+            connected = consumer.bootstrap_connected()
+        except Exception:
+            return False
+        if connected:
+            return True
+        try:
+            import time as _time
+
+            deadline = _time.monotonic() + max(0.0, timeout_s)
+            while _time.monotonic() < deadline:
+                _time.sleep(0.2)
+                try:
+                    if consumer.bootstrap_connected():
+                        return True
+                except Exception:
+                    return False
+        except Exception:
+            return False
+        return False
+
+    def poll(self) -> KafkaMessage | None:
+        """Return the next URL message, or None on an idle timeout.
+
+        Raises ``ProviderError(UNAVAILABLE)`` when the broker is
+        unreachable, so the worker loop can fail loud instead of
+        busy-spinning on nothing.
+        """
+        try:
+            batches = self._consumer_instance().poll(
+                timeout_ms=int(self._poll_timeout_s * 1000)
+            )
+        except Exception as exc:
+            raise _error(f"Kafka poll on '{self._topic}' failed: {exc}") from exc
+        records: list[Any] = []
+        try:
+            for batch in batches.values():
+                records.extend(batch)
+        except AttributeError:
+            records = list(batches or [])
+        if not records:
+            self._pending_record = None
+            return None
+        record = records[0]
+        self._pending_record = record
+        value = getattr(record, "value", None)
+        if isinstance(value, Mapping):
+            url = str(value.get("url", "") or "")
+            try:
+                depth = int(value.get("depth", 0) or 0)
+            except (TypeError, ValueError):
+                depth = 0
+        else:
+            url, depth = str(value or ""), 0
+        if not url.strip():
+            return None
+        return KafkaMessage(url=url.strip(), depth=depth)
+
+    def commit(self) -> None:
+        """Commit the last polled offset (call after a successful crawl)."""
+        if self._consumer is None or self._pending_record is None:
+            return
+        try:
+            self._consumer.commit()
+        except Exception as exc:
+            raise _error(f"Kafka commit on '{self._topic}' failed: {exc}") from exc
+        finally:
+            self._pending_record = None
+
+    def close(self) -> None:
+        """Flush/close producer and consumer (best effort)."""
+        producer, self._producer = self._producer, None
+        if producer is not None:
+            with contextlib.suppress(Exception):
+                producer.flush(timeout=self._publish_timeout_s)
+            with contextlib.suppress(Exception):
+                producer.close(timeout=self._publish_timeout_s)
+        consumer, self._consumer = self._consumer, None
+        if consumer is not None:
+            with contextlib.suppress(Exception):
+                consumer.close(autocommit=False)
+
+
+def open_kafka_queue(
+    config: Mapping[str, Any] | None,
+    *,
+    producer: Any | None = None,
+    consumer_factory: Callable[[], Any] | None = None,
+) -> KafkaQueue:
+    """Build the queue from app config (test fakes injectable)."""
+    return KafkaQueue.from_app_config(
+        config, producer=producer, consumer_factory=consumer_factory
+    )

@@ -68,6 +68,8 @@ from typing import Any
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
+from openlens.storage.frontier import ordered_postgres_frontier_schema
+from openlens.storage.repository import content_hash_of, doc_columns
 
 _PROVIDER_NAME = "custom_index"
 
@@ -108,8 +110,20 @@ def _to_tsquery_text(fts_query: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _doc_to_row(doc: Document) -> tuple[str, str, str, str | None, str]:
-    return (doc.id, doc.title, doc.content, doc.url, json.dumps(doc.metadata or {}))
+def _doc_to_row(
+    doc: Document,
+) -> tuple[str, str, str, str | None, str, str | None, str | None, str]:
+    content_type, published = doc_columns(doc)
+    return (
+        doc.id,
+        doc.title,
+        doc.content,
+        doc.url,
+        json.dumps(doc.metadata or {}),
+        content_type,
+        published,
+        content_hash_of(doc.content),
+    )
 
 
 def _row_to_document(row: tuple[Any, ...]) -> Document:
@@ -123,6 +137,15 @@ def _row_to_document(row: tuple[Any, ...]) -> Document:
         except (ValueError, TypeError):
             parsed = {}
         metadata = parsed if isinstance(parsed, dict) else {}
+    # Promoted indexed columns (positions 5/6 when selected) stay
+    # authoritative: surface them on the metadata view when the stored
+    # JSON predates the columns.
+    if len(row) > 6:
+        content_type, published = row[5], row[6]
+        if isinstance(content_type, str) and content_type:
+            metadata.setdefault("content_type", content_type)
+        if isinstance(published, str) and published:
+            metadata.setdefault("published", published)
     return Document(
         id=str(row[0]),
         title=str(row[1]),
@@ -308,12 +331,35 @@ class PostgresDocumentStore(DocumentStore):
             " content TEXT NOT NULL,"
             " url TEXT NULL,"
             " metadata JSONB NOT NULL DEFAULT '{}'::jsonb,"
-            " search_tsv tsvector"
+            " search_tsv tsvector,"
+            " content_type TEXT NULL,"
+            " published TEXT NULL"
             ")"
         )
         ddl_index = (
             f'CREATE INDEX IF NOT EXISTS "{index_name}"'  # noqa: S608
             f" ON {qualified} USING GIN (search_tsv)"
+        )
+        ddl_content_type = (
+            f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS content_type TEXT"  # noqa: S608
+        )
+        ddl_published = (
+            f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS published TEXT"  # noqa: S608
+        )
+        ddl_content_hash = (
+            f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS content_hash TEXT"  # noqa: S608
+        )
+        ddl_content_hash_idx = (
+            f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_content_hash"'  # noqa: S608
+            f" ON {qualified} (content_hash)"
+        )
+        ddl_content_type_idx = (
+            f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_content_type"'  # noqa: S608
+            f" ON {qualified} (content_type)"
+        )
+        ddl_published_idx = (
+            f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_published"'  # noqa: S608
+            f" ON {qualified} (published)"
         )
         backfill = (
             f"UPDATE {qualified} SET search_tsv ="  # noqa: S608
@@ -325,7 +371,19 @@ class PostgresDocumentStore(DocumentStore):
             try:
                 with conn.cursor() as cur:
                     cur.execute(ddl_table)
+                    # Tables, then coordination migrations, then indexes:
+                    # the raw DDL list puts idx_frontier_owner before the
+                    # ADD COLUMN migration, which fails on pre-coordination
+                    # databases with column "owner" does not exist.
+                    for stmt in ordered_postgres_frontier_schema(self._schema):
+                        cur.execute(stmt)
                     cur.execute(ddl_index)
+                    cur.execute(ddl_content_type)
+                    cur.execute(ddl_published)
+                    cur.execute(ddl_content_hash)
+                    cur.execute(ddl_content_type_idx)
+                    cur.execute(ddl_published_idx)
+                    cur.execute(ddl_content_hash_idx)
                     cur.execute(backfill)
                 conn.commit()
             except Exception as exc:
@@ -356,16 +414,23 @@ class PostgresDocumentStore(DocumentStore):
             # check; every value is a bound %s parameter.
             sql = (
                 f"INSERT INTO {self._qualified()}"  # noqa: S608
-                " (id, title, content, url, metadata, search_tsv)"
-                " VALUES (%s, %s, %s, %s, %s::jsonb,"
+                " (id, title, content, url, metadata,"
+                " content_type, published, content_hash, search_tsv)"
+                " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s,"
                 " to_tsvector('english', coalesce(%s, '')"
                 " || ' ' || coalesce(%s, '')))"
                 " ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title,"
                 " content = EXCLUDED.content, url = EXCLUDED.url,"
                 " metadata = EXCLUDED.metadata,"
+                " content_type = EXCLUDED.content_type,"
+                " published = EXCLUDED.published,"
+                " content_hash = EXCLUDED.content_hash,"
                 " search_tsv = EXCLUDED.search_tsv"
             )
-            params = [(r[0], r[1], r[2], r[3], r[4], r[1], r[2]) for r in chunk]
+            params = [
+                (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[1], r[2])
+                for r in chunk
+            ]
             with self._connection() as conn:
                 try:
                     with conn.cursor() as cur:
@@ -409,7 +474,8 @@ class PostgresDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
-                        f"SELECT id, title, content, url, metadata"  # noqa: S608
+                        f"SELECT id, title, content, url, metadata,"  # noqa: S608
+                        f" content_type, published"
                         f" FROM {self._qualified()} WHERE id = %s",
                         (doc_id,),
                     )
@@ -421,6 +487,72 @@ class PostgresDocumentStore(DocumentStore):
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
         return _row_to_document(row) if row is not None else None
+
+    def hash_exists(self, content_hash: str) -> bool:
+        """True when any document carries this content hash.
+
+        Rows predating the ``content_hash`` migration store NULL and never
+        match; the next crawl upserts them by id (which stamps the hash),
+        so the column self-heals without a backfill.
+        """
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    # S608 false positive: validated identifiers, bound %s.
+                    cur.execute(
+                        f"SELECT 1 FROM {self._qualified()}"  # noqa: S608
+                        " WHERE content_hash = %s LIMIT 1",
+                        (content_hash,),
+                    )
+                    row = cur.fetchone()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to look up content hash: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return row is not None
+
+    def update_document(self, doc: Document) -> bool:
+        """Rewrite a document by id (and its tsvector). False when missing."""
+        content_type, published = doc_columns(doc)
+        params = (
+            doc.title,
+            doc.content,
+            doc.url,
+            json.dumps(doc.metadata or {}),
+            content_hash_of(doc.content),
+            content_type,
+            published,
+            doc.title,
+            doc.content,
+            doc.id,
+        )
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    # S608 false positive: validated identifiers, bound %s.
+                    cur.execute(
+                        f"UPDATE {self._qualified()}"  # noqa: S608
+                        " SET title = %s, content = %s, url = %s,"
+                        " metadata = %s::jsonb, content_hash = %s,"
+                        " content_type = %s, published = %s,"
+                        " search_tsv = to_tsvector('english',"
+                        " coalesce(%s, '') || ' ' || coalesce(%s, ''))"
+                        " WHERE id = %s",
+                        params,
+                    )
+                    updated = bool(cur.rowcount and cur.rowcount > 0)
+                conn.commit()
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                raise ProviderError(
+                    f"failed to update document: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return updated
 
     def count(self) -> int:
         with self._connection() as conn:
@@ -447,7 +579,8 @@ class PostgresDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
-                        f"SELECT id, title, content, url, metadata"  # noqa: S608
+                        f"SELECT id, title, content, url, metadata,"  # noqa: S608
+                        f" content_type, published"
                         f" FROM {self._qualified()} ORDER BY id ASC"
                         " LIMIT %s OFFSET %s",
                         (limit, offset),
@@ -474,7 +607,7 @@ class PostgresDocumentStore(DocumentStore):
         # text and paging values are bound %s parameters.
         count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}"  # noqa: S608
         page_sql = (
-            f"SELECT id, title, content, url, metadata,"  # noqa: S608
+            f"SELECT id, title, content, url, metadata, content_type, published,"  # noqa: S608
             f" {rank} AS score FROM {self._qualified()}"
             f" WHERE {match}"
             " ORDER BY score DESC LIMIT %s OFFSET %s"
@@ -493,7 +626,9 @@ class PostgresDocumentStore(DocumentStore):
                     provider_name=_PROVIDER_NAME,
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
-        return [(_row_to_document(r), float(r[5])) for r in rows], total
+        # Score is the trailing column (index 7): the promoted
+        # content_type/published columns shifted it from the old spot.
+        return [(_row_to_document(r), float(r[7])) for r in rows], total
 
     def close(self) -> None:
         with self._state_lock:

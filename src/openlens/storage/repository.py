@@ -6,6 +6,8 @@ with a companion FTS5 index for full-text retrieval.
 
 from __future__ import annotations
 
+import datetime
+import email.utils
 import hashlib
 import json
 import sqlite3
@@ -25,6 +27,49 @@ _BUSY_TIMEOUT_MS = 5000
 def content_hash_of(content: str) -> str:
     """Canonical content hash: sha256 over the stored content bytes."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def published_from_last_modified(value: Any) -> Optional[str]:
+    """Normalize a stored ``last_modified`` value to ISO ``YYYY-MM-DD``.
+
+    Mirrors ``indexing/crawler.py::published_from_last_modified`` without
+    importing the indexing package: ISO dates pass through, HTTP dates are
+    parsed via ``email.utils``. Unparseable values yield ``None``.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if len(text) == 10:
+        try:
+            return datetime.date.fromisoformat(text).isoformat()
+        except ValueError:
+            pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed is None:
+        return None
+    return parsed.date().isoformat()
+
+
+def doc_columns(doc: Document) -> tuple[Any, Any]:
+    """Extract the promoted indexed columns from a Document's metadata.
+
+    Only crawler-truth keys are promoted: ``content_type`` (always emitted
+    by the crawler) and ``published`` (derived from ``last-modified`` at
+    ingest, falling back to a normalized ``last_modified`` here for
+    hand-built documents). No vertical/product/hotel/book/recipe fields
+    exist in crawler output, so none are promoted.
+    """
+    metadata = doc.metadata or {}
+    content_type = metadata.get("content_type")
+    if not isinstance(content_type, str) or not content_type:
+        content_type = None
+    published = metadata.get("published")
+    if not isinstance(published, str) or not published:
+        published = published_from_last_modified(metadata.get("last_modified"))
+    return content_type, published
 
 
 def normalize_url(url: Optional[str]) -> Optional[str]:
@@ -89,7 +134,9 @@ class DocumentRepository(DocumentStore):
                     url TEXT,
                     metadata TEXT NOT NULL DEFAULT '{}',
                     content_hash TEXT,
-                    url_norm TEXT
+                    url_norm TEXT,
+                    content_type TEXT,
+                    published TEXT
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     doc_id UNINDEXED, title, content
@@ -116,14 +163,41 @@ class DocumentRepository(DocumentStore):
             self._conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
         if "url_norm" not in columns:
             self._conn.execute("ALTER TABLE documents ADD COLUMN url_norm TEXT")
+        if "content_type" not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN content_type TEXT")
+        if "published" not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN published TEXT")
         rows = self._conn.execute(
-            "SELECT id, content, url FROM documents "
+            "SELECT id, content, url, metadata FROM documents "
             "WHERE content_hash IS NULL OR (url_norm IS NULL AND url IS NOT NULL)"
+            " OR content_type IS NULL OR published IS NULL"
         ).fetchall()
         for row in rows:
+            try:
+                backfill_meta: dict[str, Any] = json.loads(row["metadata"] or "{}")
+            except (ValueError, TypeError):
+                backfill_meta = {}
+            if not isinstance(backfill_meta, dict):
+                backfill_meta = {}
+            backfill_type = backfill_meta.get("content_type")
+            if not isinstance(backfill_type, str) or not backfill_type:
+                backfill_type = None
+            backfill_pub = backfill_meta.get("published")
+            if not isinstance(backfill_pub, str) or not backfill_pub:
+                backfill_pub = published_from_last_modified(
+                    backfill_meta.get("last_modified")
+                )
             self._conn.execute(
-                "UPDATE documents SET content_hash = ?, url_norm = ? WHERE id = ?",
-                (content_hash_of(row["content"]), normalize_url(row["url"]), row["id"]),
+                "UPDATE documents SET content_hash = ?, url_norm = ?,"
+                " content_type = COALESCE(?, content_type),"
+                " published = COALESCE(?, published) WHERE id = ?",
+                (
+                    content_hash_of(row["content"]),
+                    normalize_url(row["url"]),
+                    backfill_type,
+                    backfill_pub,
+                    row["id"],
+                ),
             )
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_url_norm "
@@ -132,6 +206,13 @@ class DocumentRepository(DocumentStore):
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_content_hash "
             "ON documents(content_hash)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_content_type "
+            "ON documents(content_type)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_published ON documents(published)"
         )
 
     def add_document(self, doc: Document) -> None:
@@ -154,14 +235,15 @@ class DocumentRepository(DocumentStore):
                 with self._lock, self._conn:
                     for doc in chunk:
                         metadata = json.dumps(doc.metadata or {})
+                        content_type, published = doc_columns(doc)
                         # S608 is a false positive here: every value below
                         # is a bound ? parameter; no user input is
                         # interpolated.
                         self._conn.execute(
                             "INSERT OR REPLACE INTO documents "  # noqa: S608
                             + "(id, title, content, url, metadata,"
-                            " content_hash, url_norm)"
-                            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            " content_hash, url_norm, content_type, published)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 doc.id,
                                 doc.title,
@@ -170,6 +252,8 @@ class DocumentRepository(DocumentStore):
                                 metadata,
                                 content_hash_of(doc.content),
                                 normalize_url(doc.url),
+                                content_type,
+                                published,
                             ),
                         )
                         self._conn.execute(
@@ -195,9 +279,11 @@ class DocumentRepository(DocumentStore):
         try:
             with self._lock, self._conn:
                 metadata = json.dumps(doc.metadata or {})
+                content_type, published = doc_columns(doc)
                 cursor = self._conn.execute(
                     "UPDATE documents SET title = ?, content = ?, url = ?,"
-                    " metadata = ?, content_hash = ?, url_norm = ?"
+                    " metadata = ?, content_hash = ?, url_norm = ?,"
+                    " content_type = ?, published = ?"
                     " WHERE id = ?",
                     (
                         doc.title,
@@ -206,6 +292,8 @@ class DocumentRepository(DocumentStore):
                         metadata,
                         content_hash_of(doc.content),
                         normalize_url(doc.url),
+                        content_type,
+                        published,
                         doc.id,
                     ),
                 )
@@ -290,7 +378,8 @@ class DocumentRepository(DocumentStore):
         try:
             with self._lock:
                 row = self._conn.execute(
-                    "SELECT id, title, content, url, metadata "
+                    "SELECT id, title, content, url, metadata, "
+                    + "content_type, published "
                     + "FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
@@ -314,7 +403,8 @@ class DocumentRepository(DocumentStore):
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT id, title, content, url, metadata FROM documents"
+                    "SELECT id, title, content, url, metadata,"
+                    " content_type, published FROM documents"
                     " ORDER BY id ASC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
@@ -369,6 +459,7 @@ class DocumentRepository(DocumentStore):
                 total = int(total_row["n"])
                 rows = self._conn.execute(
                     "SELECT d.id, d.title, d.content, d.url, d.metadata,"
+                    " d.content_type, d.published,"
                     " -bm25(documents_fts) AS score"
                     " FROM documents_fts"
                     " JOIN documents d ON d.id = documents_fts.doc_id"
@@ -397,6 +488,22 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         metadata: dict[str, Any] = json.loads(row["metadata"] or "{}")
     except (ValueError, TypeError):
         metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    # Promoted indexed columns stay authoritative: backfill the metadata
+    # view so readers see one shape whether the row predates the columns.
+    try:
+        column_type = row["content_type"]
+    except (IndexError, KeyError):
+        column_type = None
+    try:
+        column_published = row["published"]
+    except (IndexError, KeyError):
+        column_published = None
+    if isinstance(column_type, str) and column_type:
+        metadata.setdefault("content_type", column_type)
+    if isinstance(column_published, str) and column_published:
+        metadata.setdefault("published", column_published)
     return Document(
         id=row["id"],
         title=row["title"],
