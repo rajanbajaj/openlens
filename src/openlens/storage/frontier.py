@@ -1636,6 +1636,10 @@ class PostgresFrontierStore(FrontierStore):
                 self._pool.put(self._connect())
             raise
         else:
+            # See PostgresDocumentStore._release: reads must not return
+            # "idle in transaction" connections to the pool.
+            with contextlib.suppress(Exception):
+                conn.rollback()
             self._pool.put(conn)
 
     def _drain(self) -> None:

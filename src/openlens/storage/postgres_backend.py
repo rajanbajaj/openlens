@@ -285,6 +285,13 @@ class PostgresDocumentStore(DocumentStore):
             self._release(conn)
 
     def _release(self, conn: Any) -> None:
+        # End any read transaction before recycling: psycopg leaves
+        # successful SELECTs "idle in transaction", and the lingering
+        # AccessShare locks wedge all later DDL (boot migrations take
+        # AccessExclusive), freezing every request on the event loop.
+        # Rollback is a no-op for already-committed writers.
+        with contextlib.suppress(Exception):
+            conn.rollback()
         with self._state_lock:
             closed = self._closed
         if closed:
