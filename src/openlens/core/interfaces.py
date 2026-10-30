@@ -78,7 +78,14 @@ class ProviderPrefs:
 
 @dataclass
 class SearchRequest:
-    """A search request as issued to the Engine or a provider."""
+    """A search request as issued to the Engine or a provider.
+
+    ``history`` carries opt-in request-scoped prior queries (oldest
+    first) for context-aware expansion. It is never persisted: the
+    engine holds it only for the life of the request and no store,
+    log, or diagnostics payload may retain the raw strings beyond
+    the bounded derived terms.
+    """
 
     query: str
     mode: str = "default"
@@ -86,6 +93,7 @@ class SearchRequest:
     offset: int = 0
     filters: dict[str, Any] = field(default_factory=dict)
     provider_prefs: ProviderPrefs = field(default_factory=ProviderPrefs)
+    history: tuple[str, ...] = ()
 
 
 @dataclass
@@ -213,7 +221,7 @@ class ConfigError(OpenLensError, ValueError):
 
 
 class SearchProvider(ABC):
-    """Plug-and-play search backend (custom index, OpenSearch, external API)."""
+    """Plug-and-play search backend (local custom index)."""
 
     @property
     @abstractmethod

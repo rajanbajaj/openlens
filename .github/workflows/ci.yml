@@ -23,7 +23,7 @@ jobs:
       # both server backends; see tests/integration/test_storage_mysql.py
       # and test_storage_postgres.py. The driver extras below stay: the
       # non-live lazy-import/error-mapping tests still need them installed.
-      - run: uv sync --extra mysql --extra postgres --group dev
+      - run: uv sync --extra mysql --group dev
 
   frontend:
     runs-on: ubuntu-latest

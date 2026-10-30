@@ -1,10 +1,12 @@
 """Unit tests for the operator CLI (``openlens.cli``).
 
 All tests call :func:`openlens.cli.main` directly with an argv list (no
-network, no keys, no cluster). The engine, repository, and indexer entry
+keys, no cluster). The engine, repository, and indexer entry
 point are injected through the module's documented seams
 (``openlens.cli.build_engine``, ``openlens.cli.DocumentRepository``,
-``openlens.indexing.run_index``).
+``openlens.indexing.run_index``). The two `config validate` tests run
+against the shipped default config and need the local Postgres store;
+they skip when it is unreachable.
 """
 
 from __future__ import annotations
@@ -31,6 +33,26 @@ from openlens.core.interfaces import (
     SearchRequest,
     SearchResponse,
     SearchResult,
+)
+
+
+def _shipped_postgres_reachable() -> bool:
+    """True when the shipped default store (local Postgres) answers.
+
+    The shipped `configs/default.yaml` selects the Postgres backend, so
+    `config validate` on it needs a live server; offline runs skip.
+    """
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", 5432), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+needs_postgres = pytest.mark.skipif(
+    not _shipped_postgres_reachable(), reason="no local postgres server"
 )
 
 
@@ -254,6 +276,7 @@ def test_index_list_reports_repository_count(
     assert "7" in capsys.readouterr().out
 
 
+@needs_postgres
 def test_config_validate_passes_on_default_yaml(
     capsys: CaptureFixture[str],
 ) -> None:
@@ -282,6 +305,7 @@ def test_config_validate_rejects_semantically_bad_config(
     assert "Traceback" not in capsys.readouterr().err
 
 
+@needs_postgres
 def test_config_validate_does_not_boot_server(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:

@@ -19,6 +19,16 @@ re-parse raw metadata):
 - ``perspective``: lower-cased ``str`` label, default ``"unknown"`` when
   missing or blank. Unparseable (non-string) values keep the raw value
   plus a warning.
+- ``license``/``author``/``cuisine``/``isbn``/``publisher``: stripped
+  ``str`` or ``None`` (missing). Unparseable values keep the raw value
+  plus a warning.
+- ``ingredients``/``dietary_tags``/``allergens``: ``list[str]`` of
+  lower-cased stripped names, else ``[]`` (missing). A comma-separated
+  string is split; unparseable values keep the raw value plus a warning.
+- ``rating``: float when parseable, else ``None`` (missing).
+- ``rating_count``: int when parseable, else ``None`` (missing).
+- ``brand``/``availability``/``booking_url``/``style``/``size``/
+  ``occasion``: stripped ``str``, else ``None`` (missing).
 
 Missing attributes degrade to the documented neutral sentinels above.
 Unparseable values keep the raw value plus a warning and never raise.
@@ -38,7 +48,30 @@ from openlens.core.interfaces import PipelineStage, PluginType
 from openlens.plugins.base import BasePlugin
 
 _MISSING: frozenset[str] = frozenset(
-    {"price", "currency", "location", "facilities", "published", "perspective"}
+    {
+        "price",
+        "currency",
+        "location",
+        "facilities",
+        "published",
+        "perspective",
+        "rating",
+        "rating_count",
+        "brand",
+        "availability",
+        "booking_url",
+        "style",
+        "size",
+        "occasion",
+        "license",
+        "author",
+        "cuisine",
+        "isbn",
+        "publisher",
+        "ingredients",
+        "dietary_tags",
+        "allergens",
+    }
 )
 
 _PUBLISHED_FORMATS: tuple[str, ...] = (
@@ -154,6 +187,76 @@ def _normalize_perspective(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
+def _normalize_rating(value: Any) -> tuple[Any, bool]:
+    """Rating float or None (missing); raw kept plus warning when odd."""
+    if value is None:
+        return None, True
+    if isinstance(value, bool):
+        return value, False
+    if isinstance(value, (int, float)):
+        return float(value), True
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return None, True
+        try:
+            return float(text), True
+        except ValueError:
+            return value, False
+    return value, False
+
+
+def _normalize_rating_count(value: Any) -> tuple[Any, bool]:
+    """Rating-count int or None (missing); raw kept plus warning when odd."""
+    if value is None:
+        return None, True
+    if isinstance(value, bool):
+        return value, False
+    if isinstance(value, (int, float)):
+        return int(value), True
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return None, True
+        try:
+            return int(float(text)), True
+        except ValueError:
+            return value, False
+    return value, False
+
+
+def _normalize_tag_list(value: Any) -> tuple[Any, bool]:
+    """Lower-cased stripped name list, or [] (missing)."""
+    if value is None:
+        return [], True
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return [], True
+        return [part.strip().lower() for part in text.split(",") if part.strip()], True
+    if isinstance(value, (list, tuple)):
+        normalized: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                normalized.append(item.strip().lower())
+            else:
+                return value, False
+        return normalized, True
+    return value, False
+
+
+def _normalize_text_field(value: Any) -> tuple[Any, bool]:
+    """Stripped string or None (missing); raw kept plus warning when odd."""
+    if value is None:
+        return None, True
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None, True
+        return text, True
+    return value, False
+
+
 _NORMALIZERS = {
     "price": (_normalize_price, "price"),
     "currency": (_normalize_currency, "currency"),
@@ -161,6 +264,22 @@ _NORMALIZERS = {
     "facilities": (_normalize_facilities, "facilities"),
     "published": (_normalize_published, "published"),
     "perspective": (_normalize_perspective, "perspective"),
+    "rating": (_normalize_rating, "rating"),
+    "rating_count": (_normalize_rating_count, "rating_count"),
+    "brand": (_normalize_text_field, "brand"),
+    "availability": (_normalize_text_field, "availability"),
+    "booking_url": (_normalize_text_field, "booking_url"),
+    "style": (_normalize_text_field, "style"),
+    "size": (_normalize_text_field, "size"),
+    "occasion": (_normalize_text_field, "occasion"),
+    "license": (_normalize_text_field, "license"),
+    "author": (_normalize_text_field, "author"),
+    "cuisine": (_normalize_text_field, "cuisine"),
+    "isbn": (_normalize_text_field, "isbn"),
+    "publisher": (_normalize_text_field, "publisher"),
+    "ingredients": (_normalize_tag_list, "ingredients"),
+    "dietary_tags": (_normalize_tag_list, "dietary_tags"),
+    "allergens": (_normalize_tag_list, "allergens"),
 }
 
 

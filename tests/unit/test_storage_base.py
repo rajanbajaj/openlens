@@ -330,7 +330,7 @@ def test_legacy_db_without_hash_columns_migrates(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# list_documents (offline export seam for the OpenSearch bulk loader)
+# list_documents (stable-order offline export seam for paginated reads)
 # ---------------------------------------------------------------------------
 
 

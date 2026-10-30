@@ -27,7 +27,7 @@ export function Drawer({
   return (
     <section
       aria-label={triggerLabel.replace(/^(Show|Hide)\s+/, '')}
-      className="ol-drawer"
+      className="ol-drawer mt-ol-l rounded-ol-l border border-ol-glass-border px-ol-m py-ol-l shadow-[0_4px_30px_rgb(0_0_0/0.1)] backdrop-blur-[12px]"
       onKeyDown={(event: React.KeyboardEvent) => {
         if (event.key === 'Escape' && open) onToggle();
       }}

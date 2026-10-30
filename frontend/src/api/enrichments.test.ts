@@ -5,6 +5,7 @@ import {
   resultAiDigest,
   resultAlsoFrom,
   resultCommerce,
+  resultConfidence,
   resultSignals,
   resultStoryId,
   resultUnderstanding,
@@ -34,6 +35,13 @@ describe('enrichment readers', () => {
       ['trust', 0.55],
       ['freshness', 0.5],
     ]);
+  });
+
+  it('reads confidence in range, null when absent or out of range', () => {
+    expect(resultConfidence({ confidence: 0.83 })).toBe(0.83);
+    expect(resultConfidence({})).toBeNull();
+    expect(resultConfidence({ confidence: 'high' })).toBeNull();
+    expect(resultConfidence({ confidence: 1.5 })).toBeNull();
   });
 
   it('reads story grouping, federation attribution, and commerce attributes', () => {

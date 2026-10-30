@@ -78,14 +78,18 @@ def build_cache_key(
     provider_names: list[str] | tuple[str, ...],
     ranking_profile: str,
     fetch_limit: int,
+    history: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """Build the fixed-length cache key for one fetch-depth search.
 
     Every input that can change the ranked list is in the canonical
     payload — including the restriction filters (user scoping) and the
     configured provider set — so a hit is always safe to serve.
+    Request-scoped history joins the payload only when non-empty (it
+    feeds context-aware expansion); empty history keeps the legacy key
+    so existing cached pages stay addressable.
     """
-    canonical = {
+    canonical: dict[str, Any] = {
         "filters": _canonical(filters or {}),
         "mode": mode,
         "prefs": _canonical(provider_prefs or {}),
@@ -94,6 +98,8 @@ def build_cache_key(
         "query": normalized_query,
         "depth": fetch_limit,
     }
+    if history:
+        canonical["history"] = _canonical(list(history))
     raw = json.dumps(
         canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     )

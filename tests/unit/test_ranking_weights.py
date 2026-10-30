@@ -104,6 +104,11 @@ def test_missing_signals_default_to_neutral_without_keyerror() -> None:
         + profile.diversity_weight
         + profile.perspective_weight
         + profile.commerce_weight
+        + profile.safety_weight
+        + profile.privacy_weight
+        + profile.fairness_weight
+        + profile.news_trust_weight
+        + profile.sponsored_weight
     )
     assert score == pytest.approx(profile.relevance_weight * 1.0 + expected_offset)
 

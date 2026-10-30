@@ -1,8 +1,8 @@
 """Smoke tests for the Wave-1b provider system.
 
-All tests are offline: fakes stand in for every backend, and the
-network-backed adapters (OpenSearch, Bing) are exercised only for config
-validation, response mapping, and offline-safe failure modes.
+All tests are offline: fakes stand in for every backend. Third-party
+search APIs and the OpenSearch adapter were removed: only the local
+custom_index backend ships.
 """
 
 from __future__ import annotations
@@ -24,9 +24,7 @@ from openlens.core.interfaces import (
 from openlens.providers import registry
 from openlens.providers.base import BaseSearchProvider
 from openlens.providers.capabilities import describe
-from openlens.providers.external import BingSearchProvider
 from openlens.providers.manager import ProviderManager
-from openlens.providers.opensearch import OpenSearchProvider
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +103,7 @@ def test_disabled_providers_are_absent():
         _config(
             primary="fast",
             fast={"type": "fake_fast", "enabled": True},
-            search_cluster={"type": "opensearch", "enabled": False},
+            search_cluster={"type": "fake_fast", "enabled": False},
         )
     )
     assert manager.provider_names == ["fast"]
@@ -236,23 +234,6 @@ def test_invalid_timeout_rejected(bad_timeout: Any):
         provider.configure({"timeout_s": bad_timeout})
 
 
-def test_opensearch_requires_hosts():
-    provider = OpenSearchProvider()
-    with pytest.raises(ConfigError):
-        provider.configure({})
-    with pytest.raises(ConfigError):
-        provider.configure({"hosts": []})
-
-
-def test_bing_requires_api_key_but_accepts_dummy_offline():
-    provider = BingSearchProvider()
-    with pytest.raises(ConfigError):
-        provider.configure({})  # no endpoint/api_key
-    with pytest.raises(ConfigError):
-        provider.configure({"api_key": ""})  # empty key when enabled
-    provider.configure({"api_key": "dummy"})  # no raise; no network touched
-
-
 # ---------------------------------------------------------------------------
 # Bounded timeouts, error wrapping, health checks
 # ---------------------------------------------------------------------------
@@ -324,55 +305,32 @@ def test_provider_latency_recorded_in_context():
 # ---------------------------------------------------------------------------
 
 
-def test_bing_parse_payload_mapping():
-    provider = BingSearchProvider()
-    provider.configure({"api_key": "dummy"})
-    payload = {
-        "webPages": {
-            "value": [
-                {"id": "1", "name": "T", "url": "https://t.example", "snippet": "S"},
-                {"name": "No URL", "snippet": "S2"},
-            ]
-        }
-    }
-    results = provider.parse_payload(payload, SearchRequest(query="q"))
-    assert len(results) == 2
-    assert results[0].url == "https://t.example"
-    assert results[0].provider == "bing"
-    assert results[0].original_score == results[0].final_score == 1.0
-    assert results[1].original_score < results[0].original_score  # rank decay
-
-
-def test_opensearch_offline_safe_without_cluster():
-    provider = OpenSearchProvider()
-    provider.configure({"hosts": ["http://localhost:1"], "timeout_s": 1})
-    assert provider.health_check() is False  # no raise, no hang
-    with pytest.raises(ProviderError):
-        provider.search(SearchRequest(query="q"))
-
-
-def test_external_health_check_false_without_config():
-    provider = BingSearchProvider()  # never configured
-    assert provider.health_check() is False
-
-
 def test_capabilities_known_types():
-    assert describe("opensearch").requires_network is True
-    assert describe("bing").requires_auth is True
     assert describe("custom_index").requires_network is False
     assert describe("whatever-unknown").name == "unknown"
 
 
-def test_shipped_yaml_disables_network_providers(tmp_path: Path):
+def test_removed_external_types_unknown():
+    # Third-party search APIs and the OpenSearch adapter were removed:
+    # the registry must not resolve them anymore.
+    from openlens.providers.registry import get
+
+    for removed in ("bing", "http", "external", "opensearch"):
+        with pytest.raises(ConfigError):
+            get(removed)
+
+
+def test_shipped_yaml_has_no_network_providers(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[2]
     yaml_path = repo_root / "configs" / "providers.yaml"
     loaded = load_config(yaml_path)
     section = loaded["providers"]
     assert section["strategy"] == "single"
-    assert section["opensearch"]["enabled"] is False
-    assert section["bing"]["enabled"] is False
-    # The whole file loads with no secrets set: disabled entries need no keys.
-    assert section["bing"]["api_key"] == ""
+    # OpenSearch and third-party search APIs were removed: no
+    # opensearch/bing/http entries ship; custom_index serves alone.
+    assert "opensearch" not in section
+    assert "bing" not in section
+    assert "http" not in section
 
     # Same file boots a manager once the retrieval wave's type exists;
     # until then, its entry name still resolves to a registered test fake.

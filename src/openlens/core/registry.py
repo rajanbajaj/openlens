@@ -33,6 +33,8 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "diversity-reranker": "openlens.plugins.diversity_reranker:DiversityReranker",
     "news-reranker": "openlens.plugins.news_reranker:NewsReranker",
     "commerce-reranker": "openlens.plugins.commerce_reranker:CommerceReranker",
+    "integrity-scorer": "openlens.plugins.integrity_scorer:IntegrityScorer",
+    "opinion-detector": "openlens.plugins.opinion_detector:OpinionDetector",
     "ranker": "openlens.ranking.ranker:Ranker",
 }
 

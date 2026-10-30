@@ -58,6 +58,7 @@ from typing import Any
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
+from openlens.storage.repository import doc_columns
 
 _PROVIDER_NAME = "custom_index"
 
@@ -87,8 +88,19 @@ def _check_table(table: str) -> str:
     return table
 
 
-def _doc_to_row(doc: Document) -> tuple[str, str, str, str | None, str]:
-    return (doc.id, doc.title, doc.content, doc.url, json.dumps(doc.metadata or {}))
+def _doc_to_row(
+    doc: Document,
+) -> tuple[str, str, str, str | None, str, str | None, str | None]:
+    content_type, published = doc_columns(doc)
+    return (
+        doc.id,
+        doc.title,
+        doc.content,
+        doc.url,
+        json.dumps(doc.metadata or {}),
+        content_type,
+        published,
+    )
 
 
 def _row_to_document(row: Mapping[str, Any]) -> Document:
@@ -98,6 +110,14 @@ def _row_to_document(row: Mapping[str, Any]) -> Document:
         metadata = {}
     if not isinstance(metadata, dict):
         metadata = {}
+    # Promoted indexed columns stay authoritative: surface them on the
+    # metadata view when the stored JSON predates the columns.
+    content_type = row.get("content_type") if isinstance(row, Mapping) else None
+    if isinstance(content_type, str) and content_type:
+        metadata.setdefault("content_type", content_type)
+    published = row.get("published") if isinstance(row, Mapping) else None
+    if isinstance(published, str) and published:
+        metadata.setdefault("published", published)
     return Document(
         id=str(row["id"]),
         title=str(row["title"]),
@@ -278,13 +298,18 @@ class MySQLDocumentStore(DocumentStore):
             " `content` MEDIUMTEXT NOT NULL,"
             " `url` TEXT NULL,"
             " `metadata` MEDIUMTEXT NOT NULL,"
-            " FULLTEXT KEY `ftx_title_content` (`title`, `content`)"
+            " `content_type` TEXT NULL,"
+            " `published` TEXT NULL,"
+            " FULLTEXT KEY `ftx_title_content` (`title`, `content`),"
+            " KEY `idx_content_type` (`content_type`(191)),"
+            " KEY `idx_published` (`published`(10))"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         with self._connection() as conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute(ddl)
+                    self._migrate(cur)
                 conn.commit()
             except Exception as exc:
                 with contextlib.suppress(Exception):
@@ -296,6 +321,61 @@ class MySQLDocumentStore(DocumentStore):
                 ) from exc
 
     # -- DocumentStore contract ----------------------------------------
+
+    def _migrate(self, cur: Any) -> None:
+        """Idempotent migration: crawler-truth columns + indexes.
+
+        Safe on a fresh table (DDL already has the columns) and on a
+        pre-existing table (missing columns/indexes are added). Existing
+        rows keep their stored metadata JSON; new writes fill the
+        columns going forward.
+        """
+        cur.execute(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS"
+            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+            (self._table,),
+        )
+        existing: set[str] = set()
+        for item in cur.fetchall():
+            if isinstance(item, Mapping):
+                name = item.get("COLUMN_NAME", item.get("column_name", ""))
+            else:
+                name = item[0]
+            existing.add(str(name).lower())
+        if "content_type" not in existing:
+            cur.execute(
+                "ALTER TABLE `" + self._table + "`"  # noqa: S608
+                " ADD COLUMN `content_type` TEXT NULL"
+            )
+        if "published" not in existing:
+            cur.execute(
+                "ALTER TABLE `" + self._table + "`"  # noqa: S608
+                " ADD COLUMN `published` TEXT NULL"
+            )
+        cur.execute(
+            "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS"
+            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+            (self._table,),
+        )
+        indexes: set[str] = set()
+        for item in cur.fetchall():
+            if isinstance(item, Mapping):
+                name = item.get("INDEX_NAME", item.get("index_name", ""))
+            else:
+                name = item[0]
+            indexes.add(str(name).lower())
+        if "idx_content_type" not in indexes:
+            cur.execute(
+                "CREATE INDEX `idx_content_type` ON `"  # noqa: S608
+                + self._table
+                + "` (`content_type`(191))"
+            )
+        if "idx_published" not in indexes:
+            cur.execute(
+                "CREATE INDEX `idx_published` ON `"  # noqa: S608
+                + self._table
+                + "` (`published`(10))"
+            )
 
     def add_document(self, doc: Document) -> None:
         self.add_documents([doc])
@@ -313,11 +393,13 @@ class MySQLDocumentStore(DocumentStore):
             # Validated table name; every value is a bound %s parameter.
             sql = (
                 "INSERT INTO `" + self._table + "`"  # noqa: S608
-                " (id, title, content, url, metadata)"
-                " VALUES (%s, %s, %s, %s, %s)"
+                " (id, title, content, url, metadata, content_type, published)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
                 " ON DUPLICATE KEY UPDATE title = VALUES(title),"
                 " content = VALUES(content), url = VALUES(url),"
-                " metadata = VALUES(metadata)"
+                " metadata = VALUES(metadata),"
+                " content_type = VALUES(content_type),"
+                " published = VALUES(published)"
             )
             with self._connection() as conn:
                 try:
@@ -362,7 +444,8 @@ class MySQLDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # Validated table name; doc_id is a bound %s parameter.
                     cur.execute(
-                        "SELECT id, title, content, url, metadata"  # noqa: S608
+                        "SELECT id, title, content, url, metadata,"  # noqa: S608
+                        " content_type, published"
                         " FROM `" + self._table + "` WHERE id = %s",
                         (doc_id,),
                     )
@@ -400,7 +483,8 @@ class MySQLDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # Validated table name; limit/offset are bound parameters.
                     cur.execute(
-                        "SELECT id, title, content, url, metadata"  # noqa: S608
+                        "SELECT id, title, content, url, metadata,"  # noqa: S608
+                        " content_type, published"
                         " FROM `" + self._table + "` ORDER BY id ASC"
                         " LIMIT %s OFFSET %s",
                         (limit, offset),
@@ -430,7 +514,7 @@ class MySQLDocumentStore(DocumentStore):
             + match_against
         )
         page_sql = (
-            "SELECT id, title, content, url, metadata, "  # noqa: S608
+            "SELECT id, title, content, url, metadata, content_type, published, "  # noqa: S608
             + match_against
             + " AS score FROM `"
             + self._table

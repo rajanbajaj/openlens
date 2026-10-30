@@ -22,12 +22,13 @@ Matching tiers, cheapest first (per hit):
    preferred form; raw regex only ever comes from trusted config, never
    from per-request input).
 
-Allowlist (default-deny) mode is active ONLY when
-``context.request.mode == "child-safe"`` — no other mode implies it.
+Allowlist (default-deny) mode is active when
+``context.request.mode == "child-safe"`` or the per-request
+``safety_preset`` filter is ``"strict"`` — no other mode implies it.
 In that mode a hit passes only when its host is allowlisted or its URL
 matches an allowed URL pattern, and blocklist hits are still excluded
-(block wins over allow). Outside ``child-safe`` the allowlists are
-inert. With no allowlist configured, ``child-safe`` denies everything.
+(block wins over allow). Otherwise the allowlists are inert. With no
+allowlist configured, default-deny denies everything.
 
 Config keys (all lists of strings unless noted):
 
@@ -285,6 +286,12 @@ class SafetyFilter(BasePlugin):
                 mandatory=True,
             )
         child_safe = context.request.mode == _CHILD_SAFE_MODE
+        filters = context.request.filters or {}
+        strict_preset = (
+            isinstance(filters.get("safety_preset"), str)
+            and filters["safety_preset"].strip().lower() == "strict"
+        )
+        default_deny = child_safe or strict_preset
         kept = []
         removed = 0
         for result in context.results:
@@ -293,7 +300,7 @@ class SafetyFilter(BasePlugin):
             if self._is_blocked(result.title, result.snippet, url, host):
                 removed += 1
                 continue
-            if child_safe and not self._is_allowed(url, host):
+            if default_deny and not self._is_allowed(url, host):
                 removed += 1
                 continue
             kept.append(result)

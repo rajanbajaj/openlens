@@ -46,6 +46,7 @@ from openlens.observability.request_id import REQUEST_ID_HEADER, resolve_request
 from openlens.providers.manager import STRATEGY_SECTION_KEYS, ProviderManager
 from openlens.ranking.profiles import RankingProfile, load_profiles
 from openlens.retrieval.query_processor import extract_query_section
+from openlens.storage.app_config import apply_db_config_overlay, open_app_config_store
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent.parent / "configs" / "default.yaml"
@@ -189,6 +190,23 @@ def load_app_config(path: str | Path | None = None) -> dict[str, Any]:
                     config = {**config, "models": section}
             return config
     return {}
+
+
+def load_effective_config(path: str | Path | None = None) -> dict[str, Any]:
+    """Load the file config, then overlay DB-persisted config docs.
+
+    Precedence: YAML files (+ ``${VAR}`` resolution, sibling
+    ``models.yaml`` merge) lose to any ``app_config_docs`` row written
+    via the admin API. Stores that cannot be reached degrade to the
+    file config unchanged, so offline/tests boot exactly as before.
+    """
+    config = load_app_config(path)
+    if not config:
+        return config
+    try:
+        return apply_db_config_overlay(config, open_app_config_store(config))
+    except Exception:  # noqa: BLE001 — file fallback must never fail boot
+        return config
 
 
 def _manager_section(config: dict[str, Any]) -> dict[str, Any]:
@@ -529,12 +547,18 @@ class _ObservedEngine(Engine):
 
 def _boot_default_engine() -> Optional[Engine]:
     """Build the engine from the default config; None when it cannot boot."""
-    config = load_app_config()
+    config = load_effective_config()
     if not config:
         return None
     try:
         return build_engine(config)
-    except Exception:  # noqa: BLE001 — boot must never crash; API reports 503
+    except Exception as exc:  # noqa: BLE001 — boot must never crash; API reports 503
+        # Log the cause: without this the API only reports a generic 503
+        # ("search engine is not configured") with no hint that the store
+        # (usually Postgres) was unreachable at startup.
+        stdlib_logging.getLogger(__name__).warning(
+            "default engine boot failed; search will report 503: %s", exc
+        )
         return None
 
 
@@ -553,7 +577,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         if booted is not None:
             app.state.engine = _ObservedEngine(booted)
             try:
-                app.state.config = load_app_config() or {}
+                app.state.config = load_effective_config() or {}
             except (ConfigError, OSError):
                 pass
     yield
@@ -567,10 +591,20 @@ def create_app(engine: Optional[Engine] = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Request-Id"],
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Request-Id",
+            "X-Admin-Token",
+        ],
     )
     app.state.config = load_app_config()
+    # Configured doc store for the admin config API. Construction performs
+    # no I/O (both backends connect lazily), so importing this module and
+    # calling create_app stay side-effect free; the file-backed config
+    # above remains the source of truth until a doc row wins via overlay.
+    app.state.app_config_store = open_app_config_store(app.state.config)
     obs_logging.configure_logging(app.state.config)
     if _metrics_enabled(app.state.config):
         get_registry().enable()

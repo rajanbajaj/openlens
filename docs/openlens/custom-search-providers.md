@@ -1,15 +1,15 @@
 # Integrating a Custom Search Engine with OpenLens
 
-This is the reference for search-engine authors whose backend — a custom
-index, a managed cluster, or a third-party HTTP API — should be retrievable
-through OpenLens. You implement one Python class; OpenLens handles selection,
-timeouts, fallback, filtering, ranking, and API serving around it.
+This is the reference for search-engine authors whose local backend
+should be retrievable through OpenLens. You implement one Python class;
+OpenLens handles selection, timeouts, fallback, filtering, ranking, and
+API serving around it.
 
 Start from the contracts in `src/openlens/core/interfaces.py`
 (`SearchProvider`, `SearchRequest`, `SearchResult`, `ProviderError`) and the
-working examples in `src/openlens/providers/` (`custom_index.py` for a local
-backend, `opensearch.py` for a managed cluster, `external.py` for a
-third-party HTTP API).
+working example in `src/openlens/providers/` (`custom_index.py`, the local
+SQLite FTS5 backend). Only local backends ship; third-party HTTP search
+APIs and the OpenSearch adapter were removed (offline-first).
 
 ## The interface: four members
 

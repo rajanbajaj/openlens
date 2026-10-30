@@ -61,10 +61,17 @@ class QueryExpansion:
 
 @dataclass
 class QueryExpanderConfig:
-    """Stage-owned expansion config; synonym sets live in this dict."""
+    """Stage-owned expansion config; synonym sets live in this dict.
+
+    ``expand_rewrite`` is OFF by default: when true the expander also
+    offers a single string-rewrite variant (one synonym substituted per
+    expandable base term) for callers that want an alongside query
+    string next to the structured term sets.
+    """
 
     synonym_sets: dict[str, list[str]] = field(default_factory=dict)
     max_added_terms: int = DEFAULT_MAX_ADDED_TERMS
+    expand_rewrite: bool = False
 
     def __post_init__(self) -> None:
         if not self.synonym_sets:
@@ -116,11 +123,50 @@ class QueryExpander:
         if not isinstance(synonym_sets, dict):
             raise ConfigError("Expansion 'synonym_sets' must be a mapping.")
         max_added = config.get("max_added_terms", DEFAULT_MAX_ADDED_TERMS)
+        expand_rewrite = config.get("expand_rewrite", False)
+        if not isinstance(expand_rewrite, bool):
+            raise ConfigError("Expansion 'expand_rewrite' must be a bool.")
         self.config = QueryExpanderConfig(
             synonym_sets={k: list(v) for k, v in synonym_sets.items()},
             max_added_terms=max_added,
+            expand_rewrite=expand_rewrite,
         )
         self._configure_from_dataclass(self.config)
+
+    def rewrite(self, normalized_query: str) -> str | None:
+        """Optional single string-rewrite variant; None when disabled.
+
+        Returns None unless ``expand_rewrite`` is enabled. Each base
+        term that belongs to a synonym set is substituted with the
+        first alphabetical set member absent from the query; the arity
+        (AND-term count) is preserved so downstream ``parse_query``
+        keeps its semantics. Returns None when no term is replaceable.
+        """
+        if not self.config.expand_rewrite:
+            return None
+        if not isinstance(normalized_query, str):
+            raise TypeError(
+                f"normalized_query must be str, got {type(normalized_query).__name__}"
+            )
+        base_terms = normalized_query.split()
+        if not base_terms:
+            return None
+        present = set(base_terms)
+        rewritten: list[str] = []
+        changed = False
+        for token in base_terms:
+            replacement = token
+            for set_id in self._term_to_sets.get(token, []):
+                candidates = sorted(self._sets[set_id] - present)
+                if candidates:
+                    replacement = candidates[0]
+                    break
+            if replacement != token:
+                changed = True
+            rewritten.append(replacement)
+        if not changed:
+            return None
+        return " ".join(rewritten)
 
     def expand(self, normalized_query: str) -> QueryExpansion:
         """Expand normalized query terms; deterministic order, hard-capped."""

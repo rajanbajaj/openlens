@@ -110,7 +110,15 @@ describe('ResultCard transparency', () => {
   it('keeps trust warnings visually distinct from reasons', () => {
     render(<ResultCard result={RICH_RESULT} />);
     fireEvent.click(screen.getByRole('button', { name: /show warnings/i }));
-    expect(screen.getByTestId('result-warnings-block')).toHaveClass('ol-warnings');
+    expect(screen.getByTestId('result-warnings-block')).toHaveClass(
+      'mt-ol-s',
+      'rounded-ol-s',
+      'border',
+      'border-ol-warn',
+      'bg-ol-warn-wash',
+      'px-ol-m',
+      'py-ol-s',
+    );
     expect(screen.getByTestId('result-warnings')).toHaveTextContent('trust: unknown domain');
   });
 });
@@ -118,10 +126,10 @@ describe('ResultCard transparency', () => {
 describe('ResultCard hierarchy', () => {
   it('demotes commerce and understanding lines to secondary meta text', () => {
     render(<ResultCard result={RICH_RESULT} />);
-    expect(screen.getByTestId('result-snippet')).not.toHaveClass('ol-result-meta');
-    expect(screen.getByTestId('result-attributes')).toHaveClass('ol-result-meta');
-    expect(screen.getByTestId('result-understanding')).toHaveClass('ol-result-meta');
-    expect(screen.getByTestId('result-meta')).toHaveClass('ol-result-meta');
+    expect(screen.getByTestId('result-snippet')).not.toHaveClass('text-ol-s', 'text-ol-ink-soft');
+    expect(screen.getByTestId('result-attributes')).toHaveClass('text-ol-s', 'text-ol-ink-soft');
+    expect(screen.getByTestId('result-understanding')).toHaveClass('text-ol-s', 'text-ol-ink-soft');
+    expect(screen.getByTestId('result-meta')).toHaveClass('text-ol-s', 'text-ol-ink-soft');
   });
 
   it('renders signals in display order with labelled bars', () => {
@@ -154,7 +162,53 @@ describe('ResultCard hierarchy', () => {
     fireEvent.click(screen.getByRole('button', { name: /show reasons/i }));
     const reasons = screen.getByTestId('result-reasons');
     expect(reasons).toHaveTextContent('matches query');
-    expect(reasons.parentElement).not.toHaveClass('ol-warnings');
+    expect(reasons.parentElement).not.toHaveClass('border-ol-warn', 'bg-ol-warn-wash');
+  });
+});
+
+describe('ResultCard reporting', () => {
+  it('files report_incorrect and report_suspicious through onReport', () => {
+    const calls: Array<{ action: string; id: string }> = [];
+    render(
+      <ResultCard
+        result={RICH_RESULT}
+        onReport={(action, result) => calls.push({ action, id: result.id })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('result-report-incorrect'));
+    fireEvent.click(screen.getByTestId('result-report-suspicious'));
+    expect(calls).toEqual([
+      { action: 'report_incorrect', id: 'r1' },
+      { action: 'report_suspicious', id: 'r1' },
+    ]);
+  });
+
+  it('labels both report buttons for assistive technology', () => {
+    render(<ResultCard result={RICH_RESULT} onReport={() => {}} />);
+    expect(screen.getByTestId('result-report-incorrect')).toHaveAttribute(
+      'aria-label',
+      'Report incorrect classification for Acme Headphones',
+    );
+    expect(screen.getByTestId('result-report-suspicious')).toHaveAttribute(
+      'aria-label',
+      'Report suspicious website for Acme Headphones',
+    );
+  });
+});
+
+describe('ResultCard confidence', () => {
+  it('shows the backend confidence when the metadata carries one', () => {
+    render(
+      <ResultCard
+        result={{ ...RICH_RESULT, metadata: { ...RICH_RESULT.metadata, confidence: 0.83 } }}
+      />,
+    );
+    expect(screen.getByTestId('result-confidence')).toHaveTextContent('Confidence: 0.83');
+  });
+
+  it('omits the confidence line when the backend stamped none', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    expect(screen.queryByTestId('result-confidence')).not.toBeInTheDocument();
   });
 });
 

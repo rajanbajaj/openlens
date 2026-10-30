@@ -154,6 +154,23 @@ def test_factory_validation() -> None:
     assert SUPPORTED_CACHE_BACKENDS == frozenset({"memory", "sqlite", "redis"})
 
 
+def test_shipped_default_yaml_selects_redis_cache() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    with (repo_root / "configs" / "default.yaml").open(encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    cache = config.get("cache", {})
+    assert cache.get("backend") == "redis", (
+        "[configs/default.yaml] shipped default cache must be redis"
+    )
+    assert set(cache.get("redis", {})) >= {"url"}, (
+        "[configs/default.yaml] cache.redis must carry the url field"
+    )
+
+
 def test_factory_redis_without_driver_is_unavailable() -> None:
     try:
         import redis  # noqa: F401

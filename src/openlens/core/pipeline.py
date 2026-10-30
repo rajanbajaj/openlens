@@ -143,14 +143,23 @@ def assemble_explanations(context: SearchContext) -> SearchContext:
 
     ``original_score`` is never modified here; every result keeps its
     provider signal alongside the ranked ``final_score`` plus at least one
-    human-readable reason.
+    human-readable reason. Also stamps a deterministic ``confidence``
+    float in ``[0, 1]`` into each result's metadata: the min-max
+    normalized final-score margin across this request's ranked list
+    (1.0 for a lone hit). Engine-local by construction — no model, no
+    cross-request state — so identical result sets always agree.
     """
+    scores = [result.final_score for result in context.results]
+    floor = min(scores) if scores else 0.0
+    span = (max(scores) if scores else 0.0) - floor
     for result in context.results:
         if not result.reasons:
             result.reasons.append(
                 f"provider score {result.original_score:.3f}, "
                 f"ranked score {result.final_score:.3f}"
             )
+        confidence = 1.0 if span <= 0.0 else (result.final_score - floor) / span
+        result.metadata["confidence"] = round(max(0.0, min(1.0, confidence)), 3)
     return context
 
 

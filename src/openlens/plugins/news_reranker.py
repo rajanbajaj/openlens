@@ -52,6 +52,7 @@ from openlens.plugins._signals import (
     set_signal,
 )
 from openlens.plugins.base import BasePlugin
+from openlens.retrieval.claim_extract import extract_claims
 
 #: Signal key written into ``result.metadata["signals"]``.
 SIGNAL_NAME = "perspective"
@@ -247,18 +248,26 @@ class NewsReranker(BasePlugin):
         signals = perspective_signals(count, groups, perspectives, credibilities)
         member_story: dict[int, str] = {}
         story_groups: dict[str, dict[str, Any]] = {}
+        corpus_views = {view for view in perspectives if view != UNKNOWN_PERSPECTIVE}
         for number, group in enumerate(groups):
             story_id = f"story-{number}"
             for pos in group:
                 member_story[pos] = story_id
+            present = sorted({perspectives[pos] for pos in group})
             story_groups[story_id] = {
                 "members": [results[pos].id for pos in group],
-                "perspectives": sorted({perspectives[pos] for pos in group}),
+                "perspectives": present,
+                "missing_perspectives": sorted(
+                    corpus_views - set(present) - {UNKNOWN_PERSPECTIVE}
+                ),
             }
         context.metadata["story_groups"] = story_groups
         for pos, result in enumerate(results):
             if pos < count:
                 value = set_signal(result, SIGNAL_NAME, signals[pos])
+                claims = extract_claims(result.title, result.snippet)
+                if claims:
+                    result.metadata["key_claims"] = claims
                 assigned = member_story.get(pos)
                 if assigned is not None:
                     result.metadata["story_id"] = assigned
@@ -266,6 +275,11 @@ class NewsReranker(BasePlugin):
                         f"perspective {value:.2f} in {assigned} "
                         f"('{perspectives[pos]}' view)"
                     )
+                    missing = story_groups[assigned].get("missing_perspectives") or []
+                    if missing:
+                        result.reasons.append(
+                            f"missing perspectives in {assigned}: {', '.join(missing)}"
+                        )
                 else:
                     result.metadata.pop("story_id", None)
                     result.reasons.append(

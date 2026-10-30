@@ -58,6 +58,8 @@ def _query_entry(processed: ProcessedQuery) -> dict[str, Any]:
             term.term: term.source for term in processed.added[:QUERY_ENTRY_CAP]
         },
         "reasons": list(processed.reasons[:QUERY_ENTRY_CAP]),
+        "history_terms": list(processed.history_terms[:QUERY_ENTRY_CAP]),
+        "rewrite_variant": processed.rewrite_variant,
     }
 
 
@@ -418,6 +420,10 @@ class SearchEngine(Engine):
                 continue
             seen.add(variant)
             variants.append((variant, added.term, added.source))
+        rewrite = (processed.rewrite_variant or "").strip()
+        if rewrite and rewrite not in seen:
+            seen.add(rewrite)
+            variants.append((rewrite, rewrite, "expand_rewrite"))
         return variants
 
     def _merge_expansion_hits(
@@ -519,7 +525,10 @@ class SearchEngine(Engine):
         # records the suggestion separately); otherwise the suggested mode
         # is the effective one. Unknown explicit modes fail loudly here via
         # get_profile, never silently misrank downstream.
-        processed = self._query_processor.process(request.query, mode=request.mode)
+        history = tuple(request.history or ())
+        processed = self._query_processor.process(
+            request.query, mode=request.mode, history=history
+        )
         provider_request = (
             request
             if processed.effective_mode == request.mode
@@ -548,6 +557,7 @@ class SearchEngine(Engine):
                 normalized_query=processed.normalized,
                 mode=processed.effective_mode,
                 filters=dict(request.filters),
+                history=list(history) if history else None,
                 provider_prefs=(
                     {
                         "include": list(prefs.include),

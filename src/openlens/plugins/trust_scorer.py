@@ -39,6 +39,56 @@ DISTRUSTED_BASE = 0.2
 HTTPS_BONUS = 0.05
 DOMAIN_AGE_BONUS = 0.05
 
+#: Domains younger than this (days) count as newly registered.
+NEW_DOMAIN_DAYS = 30
+
+#: Penalty for newly-registered or lookalike (typosquat) domains.
+NEW_DOMAIN_PENALTY = 0.25
+TYPOSQUAT_PENALTY = 0.25
+
+#: Maximum edit distance that still counts as a lookalike.
+TYPOSQUAT_MAX_DISTANCE = 1
+
+
+def levenshtein_distance(first: str, second: str) -> int:
+    """Bounded edit distance; early-exits above ``TYPOSQUAT_MAX_DISTANCE``."""
+    if first == second:
+        return 0
+    if abs(len(first) - len(second)) > TYPOSQUAT_MAX_DISTANCE:
+        return TYPOSQUAT_MAX_DISTANCE + 1
+    previous = list(range(len(second) + 1))
+    for i, first_char in enumerate(first, start=1):
+        current = [i]
+        row_min = i
+        for j, second_char in enumerate(second, start=1):
+            cost = 0 if first_char == second_char else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > TYPOSQUAT_MAX_DISTANCE:
+            return TYPOSQUAT_MAX_DISTANCE + 1
+        previous = current
+    return previous[-1]
+
+
+def is_typosquat(domain: str, trusted: frozenset[str]) -> str | None:
+    """Return the trusted domain ``domain`` resembles, or None.
+
+    Deterministic and offline: compares the registrable part (first
+    label pair) against the operator-configured trusted tiers with an
+    edit distance of 1, ignoring exact matches. No network, no WHOIS.
+    """
+    if not domain or domain in trusted:
+        return None
+    candidate = domain.split(".")[0] if "." in domain else domain
+    for entry in trusted:
+        other = entry.split(".")[0] if "." in entry else entry
+        if candidate != other and levenshtein_distance(candidate, other) <= (
+            TYPOSQUAT_MAX_DISTANCE
+        ):
+            return entry
+    return None
+
 
 def is_https_url(url: str | None) -> bool:
     """True only when ``url`` carries an ``https`` scheme."""
@@ -151,9 +201,28 @@ class TrustScorer(BasePlugin):
             value += HTTPS_BONUS
             notes.append("https")
         age = metadata.get("domain_age_days")
-        if isinstance(age, int) and not isinstance(age, bool) and age >= 0:
-            value += DOMAIN_AGE_BONUS
-            notes.append(f"domain age {age}d")
+        if isinstance(age, bool):
+            age = None
+        if isinstance(age, float) and age.is_integer():
+            age = int(age)
+        if isinstance(age, int) and age >= 0:
+            if age < NEW_DOMAIN_DAYS:
+                value -= NEW_DOMAIN_PENALTY
+                notes.append(f"newly registered ({age}d old)")
+            else:
+                value += DOMAIN_AGE_BONUS
+                notes.append(f"domain age {age}d")
+        if "xn--" in domain:
+            value -= TYPOSQUAT_PENALTY
+            notes.append("punycode domain; possible lookalike")
+        else:
+            trusted_only = frozenset(
+                name for name, kind in self._tiers.items() if kind == "trusted"
+            )
+            lookalike = is_typosquat(domain, trusted_only)
+            if lookalike is not None:
+                value -= TYPOSQUAT_PENALTY
+                notes.append(f"possible typosquat of '{lookalike}'")
         value = clamp_signal(value)
         return value, f"trust: {'; '.join(notes)} -> {value:.2f}"
 

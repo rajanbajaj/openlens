@@ -84,6 +84,114 @@ export function resultCommerce(metadata: Record<string, unknown>): CommerceAttri
   };
 }
 
+/** `metadata.sponsored` crawler-truth flag (CAT6 label-sponsored). */
+export function resultSponsored(metadata: Record<string, unknown>): boolean {
+  return metadata['sponsored'] === true;
+}
+
+/**
+ * Deterministic ranking confidence stamped by the backend explanation
+ * stage (`metadata.confidence`, 0..1). Returns null when absent or
+ * out of range so the UI degrades to the score-only layout.
+ */
+export function resultConfidence(metadata: Record<string, unknown>): number | null {
+  const value = asFiniteNumber(metadata['confidence']);
+  if (value === null || value < 0 || value > 1) return null;
+  return value;
+}
+
+export interface ShoppingRating {
+  rating: number | null;
+  ratingCount: number | null;
+}
+
+/** Normalized rating attributes (CAT6 rating display/filter). */
+export function resultRating(metadata: Record<string, unknown>): ShoppingRating {
+  const rawCount = metadata['rating_count'];
+  return {
+    rating: asFiniteNumber(metadata['rating']),
+    ratingCount:
+      typeof rawCount === 'number' && Number.isFinite(rawCount) ? Math.trunc(rawCount) : null,
+  };
+}
+
+export interface ShoppingDetails {
+  brand: string | null;
+  availability: string | null;
+  bookingUrl: string | null;
+  style: string | null;
+  size: string | null;
+  occasion: string | null;
+}
+
+/** Normalized shopping detail attributes (CAT6 attributes/booking/style). */
+export function resultShoppingDetails(metadata: Record<string, unknown>): ShoppingDetails {
+  const stringOrNull = (value: unknown): string | null =>
+    typeof value === 'string' && value !== '' ? value : null;
+  return {
+    brand: stringOrNull(metadata['brand']),
+    availability: stringOrNull(metadata['availability']),
+    bookingUrl: stringOrNull(metadata['booking_url']),
+    style: stringOrNull(metadata['style']),
+    size: stringOrNull(metadata['size']),
+    occasion: stringOrNull(metadata['occasion']),
+  };
+}
+
+export interface BookAttributes {
+  license: string | null;
+  author: string | null;
+  isbn: string | null;
+  publisher: string | null;
+}
+
+/** Normalized book attributes (T8 license/author display and filtering). */
+export function resultBook(metadata: Record<string, unknown>): BookAttributes {
+  const stringOrNull = (value: unknown): string | null =>
+    typeof value === 'string' && value !== '' ? value : null;
+  return {
+    license: stringOrNull(metadata['license']),
+    author: stringOrNull(metadata['author']),
+    isbn: stringOrNull(metadata['isbn']),
+    publisher: stringOrNull(metadata['publisher']),
+  };
+}
+
+export interface FoodAttributes {
+  cuisine: string | null;
+  ingredients: string[];
+  dietaryTags: string[];
+  allergens: string[];
+}
+
+/** Normalized recipe attributes (T9 cuisine/dietary/allergen display and filtering). */
+export function resultFood(metadata: Record<string, unknown>): FoodAttributes {
+  const stringOrNull = (value: unknown): string | null =>
+    typeof value === 'string' && value !== '' ? value : null;
+  const lowerList = (value: unknown): string[] => {
+    if (typeof value === 'string') return value ? [value] : [];
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is string => typeof item === 'string');
+  };
+  return {
+    cuisine: stringOrNull(metadata['cuisine']),
+    ingredients: lowerList(metadata['ingredients']),
+    dietaryTags: lowerList(metadata['dietary_tags']),
+    allergens: lowerList(metadata['allergens']),
+  };
+}
+
+/** Advisory fact/opinion label (CAT4 opinion separation). */
+export function resultOpinion(metadata: Record<string, unknown>): string | null {
+  const opinion = metadata['opinion'];
+  return typeof opinion === 'string' && opinion !== '' ? opinion : null;
+}
+
+/** Deterministic key-claim spans attached by the news reranker (CAT4). */
+export function resultKeyClaims(metadata: Record<string, unknown>): string[] {
+  return asStringArray(metadata['key_claims']);
+}
+
 export interface AiDigest {
   summary: string;
   perspectives: string[];

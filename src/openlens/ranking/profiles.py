@@ -38,6 +38,11 @@ class RankingProfile:
     diversity_weight: float = 0.0
     perspective_weight: float = 0.0
     commerce_weight: float = 0.0
+    safety_weight: float = 0.0
+    privacy_weight: float = 0.0
+    fairness_weight: float = 0.0
+    news_trust_weight: float = 0.0
+    sponsored_weight: float = 0.0
 
 
 BUILTIN_PROFILES: dict[str, RankingProfile] = {
@@ -48,6 +53,10 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         freshness_weight=0.25,
         preference_weight=1.0,
         diversity_weight=0.25,
+        safety_weight=0.5,
+        privacy_weight=0.5,
+        fairness_weight=0.25,
+        sponsored_weight=0.5,
     ),
     "child-safe": RankingProfile(
         name="child-safe",
@@ -58,6 +67,10 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         freshness_weight=0.0,
         preference_weight=0.0,
         diversity_weight=0.25,
+        safety_weight=1.5,
+        privacy_weight=1.0,
+        fairness_weight=1.0,
+        sponsored_weight=1.0,
     ),
     "news": RankingProfile(
         name="news",
@@ -68,6 +81,11 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         preference_weight=0.0,
         diversity_weight=0.25,
         perspective_weight=1.0,
+        safety_weight=0.5,
+        privacy_weight=0.25,
+        fairness_weight=0.5,
+        news_trust_weight=1.5,
+        sponsored_weight=1.0,
     ),
     "shopping": RankingProfile(
         name="shopping",
@@ -79,6 +97,10 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         preference_weight=1.0,
         diversity_weight=0.25,
         commerce_weight=1.5,
+        safety_weight=0.5,
+        privacy_weight=0.25,
+        fairness_weight=0.25,
+        sponsored_weight=0.25,
     ),
     "travel": RankingProfile(
         name="travel",
@@ -90,6 +112,10 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         preference_weight=1.0,
         diversity_weight=0.25,
         commerce_weight=1.5,
+        safety_weight=0.5,
+        privacy_weight=0.25,
+        fairness_weight=0.25,
+        sponsored_weight=0.25,
     ),
 }
 
@@ -172,6 +198,11 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
         "diversity_weight",
         "perspective_weight",
         "commerce_weight",
+        "safety_weight",
+        "privacy_weight",
+        "fairness_weight",
+        "news_trust_weight",
+        "sponsored_weight",
     }
     unknown = set(data) - known
     if unknown:
@@ -194,6 +225,11 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
             diversity_weight=_signal_weight(data, "diversity_weight", name),
             perspective_weight=_signal_weight(data, "perspective_weight", name),
             commerce_weight=_signal_weight(data, "commerce_weight", name),
+            safety_weight=_signal_weight(data, "safety_weight", name),
+            privacy_weight=_signal_weight(data, "privacy_weight", name),
+            fairness_weight=_signal_weight(data, "fairness_weight", name),
+            news_trust_weight=_signal_weight(data, "news_trust_weight", name),
+            sponsored_weight=_signal_weight(data, "sponsored_weight", name),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(

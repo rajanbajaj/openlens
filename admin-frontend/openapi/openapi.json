@@ -1,0 +1,1386 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OpenLens",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search",
+        "operationId": "search_api_v1_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequestSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/suggest": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Suggest",
+        "description": "Prefix completions for `q` from index terms (static fallback).\n\nBlank `q` returns `[]` with 200. Never 500s: helper failures\ndegrade to `[]`.",
+        "operationId": "suggest_api_v1_suggest_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/feedback": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Feedback",
+        "description": "Record one anonymous feedback event as an in-process count.\n\nThe module-level tally is the canonical response source; when the\napp engine exposes ``record_feedback`` the event is mirrored there\ntoo (best-effort, never failing the request) so future ranking can\nconsume the counts.",
+        "operationId": "feedback_api_v1_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequestSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/prefs": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "List Prefs",
+        "description": "Return every saved preference set (values only, never queries).",
+        "operationId": "list_prefs_api_v1_prefs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedPrefsListResponseSchema"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Save Prefs",
+        "description": "Save (or replace) one named preference set.\n\nBounded to ``MAX_SAVED_PREFS`` entries; beyond that the request\nfails with 400 instead of growing the in-process store.",
+        "operationId": "save_prefs_api_v1_prefs_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedPrefsSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedPrefsResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/status": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Status",
+        "description": "Queue view + checkpoint + new-URL list for the dashboard.\n\nNever 500s on state problems: an unreadable snapshot degrades to\nthe empty status, mirroring the suggest endpoint's degrade rule.",
+        "operationId": "frontier_status_api_v1_frontier_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierStatusSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/pause": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Pause",
+        "description": "Pause crawling; the queue snapshot is preserved as-is.\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set (see\n`_frontier_admin_response`); reads stay open.",
+        "operationId": "frontier_pause_api_v1_frontier_pause_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierStatusSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/resume": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Resume",
+        "description": "Resume crawling, optionally replacing the queue with `seeds`.\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set: seed URLs\nchoose what gets crawled, so untrusted callers must not set them.",
+        "operationId": "frontier_resume_api_v1_frontier_resume_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierResumeSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierStatusSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/settings": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Get Settings",
+        "description": "Current frontier settings (config-seeded, then PUT-overridden).",
+        "operationId": "frontier_get_settings_api_v1_frontier_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierSettingsResponseSchema"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Put Settings",
+        "description": "Replace the frontier settings (strict body, unknown keys rejected).\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set.",
+        "operationId": "frontier_put_settings_api_v1_frontier_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierSettingsSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierSettingsResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/workers": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier List Workers",
+        "description": "List crawler workers recently heard from by this API replica.\n\nRead-only: stays open even when `OPENLENS_FRONTIER_ADMIN_TOKEN` is\nset. Only tracks workers heartbeating this replica (see\n`frontier_state.WORKER_STALE_AFTER_S`); entries older than the stale\nwindow are pruned on read.",
+        "operationId": "frontier_list_workers_api_v1_frontier_workers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierWorkersResponseSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/workers/heartbeat": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Worker Heartbeat",
+        "description": "Record one worker heartbeat and return the live worker list.\n\nWorker-control plane: admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN`\nis set (same gate as pause/resume/settings). Blank worker ids are\nrejected with 422 so anonymous rows can never enter the registry.",
+        "operationId": "frontier_worker_heartbeat_api_v1_frontier_workers_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierWorkerHeartbeatSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierWorkersResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/config/{doc}": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Config Get",
+        "description": "Return one effective config doc plus its winning layer.\n\nReads stay open (same rule as the frontier reads): a persisted row\nwins with ``source: db``; otherwise the YAML-backed file section is\nreturned with ``source: file``. Unknown doc keys fail with 404.",
+        "operationId": "admin_config_get_api_v1_admin_config__doc__get",
+        "parameters": [
+          {
+            "name": "doc",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminConfigDocResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Config Put",
+        "description": "Persist one config doc (strict body, validated like boot).\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set \u2014 reuses the\nexact frontier gate (`_frontier_admin_response`), no second auth\nscheme. The body is validated with the existing startup validators;\nanything the boot path would reject fails with 422. The write\nreplaces the row wholesale (version++); the running app's in-memory\nconfig is overlaid so reads stay consistent, and the next boot picks\nthe row up over the YAML seed.",
+        "operationId": "admin_config_put_api_v1_admin_config__doc__put",
+        "parameters": [
+          {
+            "name": "doc",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Doc"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminConfigPutSchema"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminConfigDocResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Healthz",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Healthz Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdminConfigDocResponseSchema": {
+        "properties": {
+          "doc": {
+            "type": "string",
+            "title": "Doc"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Body"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Version",
+            "default": 0
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "file"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc"
+        ],
+        "title": "AdminConfigDocResponseSchema",
+        "description": "GET/PUT /api/v1/admin/config/{doc} response body.\n\n``source`` names the winning layer: ``db`` when a row was written,\n``file`` for the YAML-backed fallback. ``version``/``updated_at``\nare the row audit fields (version 0 / null when no row exists)."
+      },
+      "AdminConfigPutSchema": {
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Body"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "title": "AdminConfigPutSchema",
+        "description": "PUT /api/v1/admin/config/{doc} body: one config doc section.\n\nThe wrapped mapping (or list, for the list-form ``plugins:``\nsection) is validated by the existing startup validators\n(models/providers/ranking/query/plugins); anything the boot path\nwould reject fails with 422. Extra top-level keys are rejected so no\nadjacent sections can be smuggled into a single-doc write."
+      },
+      "DiagnosticsSchema": {
+        "properties": {
+          "fallback_used": {
+            "type": "boolean",
+            "title": "Fallback Used",
+            "default": false
+          },
+          "provider_latencies_ms": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Provider Latencies Ms"
+          },
+          "provider_result_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Provider Result Counts"
+          },
+          "provider_costs_estimated": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Provider Costs Estimated"
+          },
+          "plugin_executions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Plugin Executions"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors"
+          },
+          "query": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Query"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "default": ""
+          },
+          "cache": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Cache"
+          }
+        },
+        "type": "object",
+        "title": "DiagnosticsSchema",
+        "description": "Per-request diagnostics embedded in the search response."
+      },
+      "FeedbackRequestSchema": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Doc Id"
+          },
+          "action": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Action"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "doc_id",
+          "action"
+        ],
+        "title": "FeedbackRequestSchema",
+        "description": "POST /api/v1/feedback body: anonymous (doc_id, action) counts only.\n\nExtra fields are rejected so no query text or identifiers can be\nsmuggled into the feedback store. `action` must name a canonical\nfeedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case\nvariants are normalized before validation. (Defined here because\nschemas.py is owned by wave0; the integrator may relocate it.)"
+      },
+      "FeedbackResponseSchema": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "action",
+          "count"
+        ],
+        "title": "FeedbackResponseSchema",
+        "description": "Feedback acknowledgement: the pair plus its in-process count."
+      },
+      "FrontierCheckpointSchema": {
+        "properties": {
+          "phase": {
+            "type": "string",
+            "title": "Phase",
+            "default": "idle"
+          },
+          "pages_attempted": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pages Attempted",
+            "default": 0
+          },
+          "pages_indexed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pages Indexed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierCheckpointSchema",
+        "description": "Latest crawl checkpoint summary."
+      },
+      "FrontierNewUrlSchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "added"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "FrontierNewUrlSchema",
+        "description": "One newly discovered URL surfaced by describe_refresh."
+      },
+      "FrontierQueueEntrySchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Depth"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "queued"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "depth"
+        ],
+        "title": "FrontierQueueEntrySchema",
+        "description": "One queued URL in the frontier dashboard view."
+      },
+      "FrontierResumeSchema": {
+        "properties": {
+          "seeds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seeds"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FrontierResumeSchema",
+        "description": "POST /api/v1/frontier/resume body: optional replacement seeds."
+      },
+      "FrontierSettingsResponseSchema": {
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/FrontierSettingsSchema"
+          }
+        },
+        "type": "object",
+        "required": [
+          "settings"
+        ],
+        "title": "FrontierSettingsResponseSchema",
+        "description": "GET/PUT /api/v1/frontier/settings response body."
+      },
+      "FrontierSettingsSchema": {
+        "properties": {
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Pages",
+            "default": 100
+          },
+          "max_queued_urls": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Queued Urls",
+            "default": 1000
+          },
+          "crawl_delay_s": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Crawl Delay S",
+            "default": 0.5
+          },
+          "default_max_depth": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Default Max Depth",
+            "default": 3
+          },
+          "respect_robots": {
+            "type": "boolean",
+            "title": "Respect Robots",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FrontierSettingsSchema",
+        "description": "Frontier crawl settings (strict: unknown keys rejected)."
+      },
+      "FrontierStatusSchema": {
+        "properties": {
+          "paused": {
+            "type": "boolean",
+            "title": "Paused",
+            "default": false
+          },
+          "queue": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierQueueEntrySchema"
+            },
+            "type": "array",
+            "title": "Queue"
+          },
+          "queue_depth": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Queue Depth"
+          },
+          "checkpoint": {
+            "$ref": "#/components/schemas/FrontierCheckpointSchema"
+          },
+          "new_urls": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierNewUrlSchema"
+            },
+            "type": "array",
+            "title": "New Urls"
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierWorkerSchema"
+            },
+            "type": "array",
+            "title": "Workers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "queue_depth"
+        ],
+        "title": "FrontierStatusSchema",
+        "description": "GET /api/v1/frontier/status response body."
+      },
+      "FrontierWorkerHeartbeatSchema": {
+        "properties": {
+          "worker_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Worker Id"
+          },
+          "crawl_id": {
+            "type": "string",
+            "maxLength": 256,
+            "title": "Crawl Id",
+            "default": "default"
+          },
+          "claimed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Claimed",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Status",
+            "default": "alive"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "worker_id"
+        ],
+        "title": "FrontierWorkerHeartbeatSchema",
+        "description": "POST /api/v1/frontier/workers/heartbeat body (strict)."
+      },
+      "FrontierWorkerSchema": {
+        "properties": {
+          "worker_id": {
+            "type": "string",
+            "title": "Worker Id"
+          },
+          "crawl_id": {
+            "type": "string",
+            "title": "Crawl Id",
+            "default": "default"
+          },
+          "last_seen": {
+            "type": "number",
+            "title": "Last Seen",
+            "default": 0.0
+          },
+          "claimed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Claimed",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "alive"
+          }
+        },
+        "type": "object",
+        "required": [
+          "worker_id"
+        ],
+        "title": "FrontierWorkerSchema",
+        "description": "One crawler worker recently heard from by this API replica."
+      },
+      "FrontierWorkersResponseSchema": {
+        "properties": {
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierWorkerSchema"
+            },
+            "type": "array",
+            "title": "Workers"
+          },
+          "worker_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Worker Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierWorkersResponseSchema",
+        "description": "GET /api/v1/frontier/workers response body."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ProviderPrefsSchema": {
+        "properties": {
+          "include": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Include"
+          },
+          "exclude": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Exclude"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary"
+          }
+        },
+        "type": "object",
+        "title": "ProviderPrefsSchema",
+        "description": "Optional per-query provider preferences on the wire."
+      },
+      "SavedPrefsListResponseSchema": {
+        "properties": {
+          "prefs": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Prefs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prefs"
+        ],
+        "title": "SavedPrefsListResponseSchema",
+        "description": "GET /api/v1/prefs response body: every saved set."
+      },
+      "SavedPrefsResponseSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "filters"
+        ],
+        "title": "SavedPrefsResponseSchema",
+        "description": "Acknowledgement for a saved preference set."
+      },
+      "SavedPrefsSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "maxProperties": 50,
+            "title": "Filters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "SavedPrefsSchema",
+        "description": "PUT /api/v1/prefs body: one named preference set.\n\nA saved set is a reusable ``filters`` mapping (preferred domains,\nweight overrides, safety preset, category terms) stored under\n``name``. Extra fields are rejected so no query text or identifiers\ncan be smuggled into the store."
+      },
+      "SearchRequestSchema": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Mode",
+            "default": "default"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          },
+          "provider_prefs": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderPrefsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "History"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequestSchema",
+        "description": "POST /api/v1/search request body."
+      },
+      "SearchResponseSchema": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultSchema"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions"
+          },
+          "spelling": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spelling"
+          },
+          "related": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Related"
+          },
+          "applied_filters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applied Filters"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/DiagnosticsSchema"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "mode",
+          "total"
+        ],
+        "title": "SearchResponseSchema",
+        "description": "POST /api/v1/search response body."
+      },
+      "SearchResultSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "snippet": {
+            "type": "string",
+            "title": "Snippet"
+          },
+          "original_score": {
+            "type": "number",
+            "title": "Original Score"
+          },
+          "final_score": {
+            "type": "number",
+            "title": "Final Score"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": ""
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "snippet",
+          "original_score",
+          "final_score"
+        ],
+        "title": "SearchResultSchema",
+        "description": "One normalized search hit on the wire."
+      },
+      "SuggestResponseSchema": {
+        "properties": {
+          "q": {
+            "type": "string",
+            "title": "Q"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "q"
+        ],
+        "title": "SuggestResponseSchema",
+        "description": "GET /api/v1/suggest response body: prefix completions for `q`."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -180,6 +180,13 @@ export function readNextOffset(response: unknown): number | null {
     : null;
 }
 
+/**
+ * URL-frontier shapes live in the admin app now: frontier guards and
+ * readers were removed here with the dashboard. The backend
+ * `/api/v1/frontier/*` routes and their `X-Admin-Token` mutation gate
+ * are unchanged.
+ */
+
 export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isRecord(value)) return false;
   if (!isRecord(value.error)) return false;

@@ -1,11 +1,13 @@
 """Provider-type registry: type name -> SearchProvider subclass.
 
-The registry maps *type* names (``opensearch``, ``bing``, ``custom_index``)
-to classes, never to instances. The manager instantiates one object per
-*enabled* config entry, so two entries may share a type. Builtin types are
-registered lazily via :func:`register_builtin_providers` to avoid import
-cycles and to keep hard dependencies (e.g. ``opensearch-py``) out of the
-import path until actually used.
+The registry maps *type* names (``custom_index``) to classes, never to
+instances. The manager instantiates one object per *enabled* config entry,
+so two entries may share a type. Builtin types are registered lazily via
+:func:`register_builtin_providers` to avoid import cycles.
+
+Only local backends ship: third-party HTTP search APIs and the
+OpenSearch adapter were removed (offline-first; no external search
+engine is contacted).
 """
 
 from __future__ import annotations
@@ -73,14 +75,6 @@ def register_builtin_providers(*, force: bool = False) -> None:
     global _BUILTINS_REGISTERED
     if _BUILTINS_REGISTERED and not force:
         return
-    from openlens.providers.external import BingSearchProvider
-    from openlens.providers.http import CustomApiSearchProvider
-    from openlens.providers.opensearch import OpenSearchProvider
-
-    register("opensearch", OpenSearchProvider)
-    register("bing", BingSearchProvider)
-    register("http", CustomApiSearchProvider)
-
     # The custom-index backend is owned by another wave; register it when its
     # module exists so configs can reference it without a hard dependency.
     try:

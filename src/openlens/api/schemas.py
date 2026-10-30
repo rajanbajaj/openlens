@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openlens.core.interfaces import SearchResponse as CoreResponse
 from openlens.core.interfaces import SearchResult as CoreResult
@@ -36,6 +36,10 @@ class SearchRequestSchema(BaseModel):
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)
     offset: int = Field(default=0, ge=0)
     provider_prefs: Optional[ProviderPrefsSchema] = None
+    # Opt-in request-scoped history (oldest first) for context-aware
+    # expansion. Never persisted server-side beyond the request; the
+    # backend honors it only when `query.context.enabled` is set.
+    history: list[str] = Field(default_factory=list, max_length=20)
     # Free-form filters passed through to the engine. The `prefer_` prefix
     # is reserved for advisory scoring boosts (never exclusion):
     # `prefer_domains: list[str]` (exact-or-subdomain match) and
@@ -56,6 +60,23 @@ class SearchRequestSchema(BaseModel):
         if not value.strip():
             raise ValueError("mode must not be blank")
         return value
+
+    @field_validator("history")
+    @classmethod
+    def history_entries_must_fit(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for entry in value:
+            if not isinstance(entry, str):
+                raise ValueError("history entries must be strings")
+            text = entry.strip()
+            if not text:
+                continue
+            if len(text) > MAX_QUERY_LENGTH:
+                raise ValueError(
+                    f"history entries must be at most {MAX_QUERY_LENGTH} characters"
+                )
+            cleaned.append(text)
+        return cleaned
 
 
 class SearchResultSchema(BaseModel):
@@ -179,6 +200,126 @@ class SearchResponseSchema(BaseModel):
             applied_filters=list(response.applied_filters),
             diagnostics=DiagnosticsSchema.from_core(response.diagnostics),
         )
+
+
+class FrontierQueueEntrySchema(BaseModel):
+    """One queued URL in the frontier dashboard view."""
+
+    url: str
+    depth: int = Field(ge=0)
+    status: str = "queued"
+
+
+class FrontierCheckpointSchema(BaseModel):
+    """Latest crawl checkpoint summary."""
+
+    phase: str = "idle"
+    pages_attempted: int = Field(default=0, ge=0)
+    pages_indexed: int = Field(default=0, ge=0)
+
+
+class FrontierNewUrlSchema(BaseModel):
+    """One newly discovered URL surfaced by describe_refresh."""
+
+    url: str
+    status: str = "added"
+
+
+class FrontierWorkerSchema(BaseModel):
+    """One crawler worker recently heard from by this API replica."""
+
+    worker_id: str
+    crawl_id: str = "default"
+    last_seen: float = 0.0
+    claimed: int = Field(default=0, ge=0)
+    status: str = "alive"
+
+
+class FrontierWorkerHeartbeatSchema(BaseModel):
+    """POST /api/v1/frontier/workers/heartbeat body (strict)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker_id: str = Field(min_length=1, max_length=256)
+    crawl_id: str = Field(default="default", max_length=256)
+    claimed: int = Field(default=0, ge=0)
+    status: str = Field(default="alive", max_length=64)
+
+
+class FrontierWorkersResponseSchema(BaseModel):
+    """GET /api/v1/frontier/workers response body."""
+
+    workers: list[FrontierWorkerSchema] = Field(default_factory=list)
+    worker_count: int = Field(default=0, ge=0)
+
+
+class FrontierStatusSchema(BaseModel):
+    """GET /api/v1/frontier/status response body."""
+
+    paused: bool = False
+    queue: list[FrontierQueueEntrySchema] = Field(default_factory=list)
+    queue_depth: int = Field(ge=0)
+    checkpoint: FrontierCheckpointSchema = Field(
+        default_factory=FrontierCheckpointSchema
+    )
+    new_urls: list[FrontierNewUrlSchema] = Field(default_factory=list)
+    workers: list[FrontierWorkerSchema] = Field(default_factory=list)
+
+
+class FrontierSettingsSchema(BaseModel):
+    """Frontier crawl settings (strict: unknown keys rejected)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_pages: int = Field(default=100, ge=1)
+    max_queued_urls: int = Field(default=1000, ge=1)
+    crawl_delay_s: float = Field(default=0.5, ge=0)
+    default_max_depth: int = Field(default=3, ge=0)
+    respect_robots: bool = True
+
+
+class FrontierSettingsResponseSchema(BaseModel):
+    """GET/PUT /api/v1/frontier/settings response body."""
+
+    settings: FrontierSettingsSchema
+
+
+class FrontierResumeSchema(BaseModel):
+    """POST /api/v1/frontier/resume body: optional replacement seeds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seeds: list[str] = Field(default_factory=list)
+
+
+class AdminConfigPutSchema(BaseModel):
+    """PUT /api/v1/admin/config/{doc} body: one config doc section.
+
+    The wrapped mapping (or list, for the list-form ``plugins:``
+    section) is validated by the existing startup validators
+    (models/providers/ranking/query/plugins); anything the boot path
+    would reject fails with 422. Extra top-level keys are rejected so no
+    adjacent sections can be smuggled into a single-doc write.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: dict[str, Any] | list[Any]
+
+
+class AdminConfigDocResponseSchema(BaseModel):
+    """GET/PUT /api/v1/admin/config/{doc} response body.
+
+    ``source`` names the winning layer: ``db`` when a row was written,
+    ``file`` for the YAML-backed fallback. ``version``/``updated_at``
+    are the row audit fields (version 0 / null when no row exists).
+    """
+
+    doc: str
+    body: dict[str, Any] | list[Any] = Field(default_factory=dict)
+    version: int = Field(default=0, ge=0)
+    updated_at: Optional[str] = None
+    source: str = "file"
 
 
 class ErrorDetailSchema(BaseModel):

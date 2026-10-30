@@ -107,8 +107,9 @@ describe('App wiring', () => {
 
     // Filters exist only after the first search (Google-style landing):
     // toggle in the now-mounted sidebar, resubmit, assert the wire call.
-    // `exclude_sponsored` is a UI concept only — the wire must carry the
-    // user-restrictions owned key (the backend 500s unknown filter keys).
+    // The sponsored toggle sends the backend `exclude_sponsored`
+    // reserved flag (hard-excludes crawler-truth sponsored hits) plus
+    // the legacy owned term filter for older backends.
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
     fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
     await waitFor(() => {
@@ -117,7 +118,10 @@ describe('App wiring', () => {
     const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.mode).toBe('shopping');
-    expect(body.filters).toEqual({ must_not_terms: ['sponsored'] });
+    expect(body.filters).toEqual({
+      exclude_sponsored: true,
+      must_not_terms: ['sponsored'],
+    });
     expect(body.offset).toBe(0);
 
     // Reasons expand and diagnostics drawer render.
@@ -200,6 +204,20 @@ describe('App wiring', () => {
     expect(document.activeElement).toBe(close);
     fireEvent.click(close);
     expect(screen.queryByTestId('library-drawer')).not.toBeInTheDocument();
+  });
+
+  it('exposes no frontier or admin UI and never calls frontier endpoints', async () => {
+    const fetchStub = mockFetchOnce(SHOPPING_ENVELOPE);
+    await runShoppingSearch();
+    await waitForResults();
+
+    // URL-frontier + configuration editing live in the admin app:
+    // no admin-token input, no frontier drawer, no frontier fetch.
+    expect(screen.queryByTestId('frontier-admin-token')).not.toBeInTheDocument();
+    expect(screen.queryByText(/frontier/i)).not.toBeInTheDocument();
+    expect(fetchStub.mock.calls.some(([url]) => String(url).includes('/api/v1/frontier/'))).toBe(
+      false,
+    );
   });
 
   it('prefetches the next page while idle once results land', async () => {

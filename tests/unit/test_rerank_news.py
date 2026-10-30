@@ -150,6 +150,7 @@ def test_story_groups_shape_internal_only() -> None:
         ctx.results[0].metadata["story_id"]: {
             "members": ["n1", "n2"],
             "perspectives": ["critical", "supporting"],
+            "missing_perspectives": [],
         }
     }
     assert "story_groups" not in ctx.diagnostics()

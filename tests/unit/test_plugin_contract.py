@@ -240,9 +240,8 @@ def test_conformance_unknown_dependency_rejected():
 
 
 def test_conformance_explanation_stage_guarantees_reasons():
-    # Adapter-mapped providers (opensearch, bing) emit empty reasons; the
-    # EXPLANATION stage must fill them so API responses always explain.
-    # See require_reasons=False in tests/unit/test_provider_contract.py.
+    # Even when a provider emits empty reasons, the EXPLANATION stage
+    # must fill them so API responses always explain.
     ctx = _context()
     for hit in ctx.results:
         hit.reasons = []

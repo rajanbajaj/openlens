@@ -152,6 +152,13 @@ def test_shipped_models_yaml_boots_without_ai() -> None:
         for key, entry in config["models"].items()
         if key != "primary" and isinstance(entry, dict)
     )
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", 5432), timeout=1):
+            pass
+    except OSError:
+        pytest.skip("no local postgres server")
     engine = build_engine(config)
     assert engine.model_manager is None
 

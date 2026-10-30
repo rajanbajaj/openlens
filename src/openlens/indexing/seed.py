@@ -15,14 +15,14 @@ SEED_DOCUMENTS: list[Document] = [
         metadata={"topic": "python"},
     ),
     Document(
-        id="doc-opensearch-bm25",
-        title="OpenSearch BM25 relevance tuning",
+        id="doc-sqlite-bm25",
+        title="SQLite FTS5 BM25 relevance tuning",
         content=(
-            "OpenSearch scores results with BM25. Tune k1 and b per field, add "
+            "SQLite FTS5 scores results with BM25. Tune k1 and b per field, add "
             "synonyms for product search, and compare against a baseline before "
             "shipping a new ranking profile."
         ),
-        url="https://example.com/opensearch-bm25",
+        url="https://example.com/sqlite-bm25",
         metadata={"topic": "search"},
     ),
     Document(

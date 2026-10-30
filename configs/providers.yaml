@@ -2,8 +2,9 @@
 #
 # Only entries with `enabled: true` are instantiated at startup; everything
 # else is skipped entirely (never constructed, never contacted over the
-# network). Both network-backed providers below ship disabled so the default
-# setup is fully offline-safe with no API keys required.
+# network). Only the local `custom_index` SQLite FTS5 backend ships;
+# third-party search APIs and the OpenSearch adapter were removed, so the
+# default setup is fully offline-safe with no keys.
 #
 # Per-entry keys:
 #   type:      provider-type name resolved via the provider registry
@@ -37,37 +38,3 @@ providers:
     enabled: true
     type: custom_index
     timeout_s: 5
-
-  opensearch:
-    enabled: false
-    type: opensearch
-    hosts:
-      - http://localhost:9200
-    index: openlens
-    timeout_s: 5
-    # username: ${OPENSEARCH_USER:-}
-    # password: ${OPENSEARCH_PASSWORD:-}
-    verify_certs: true
-
-  bing:
-    enabled: false
-    type: bing
-    # endpoint defaults to https://api.bing.microsoft.com/v7.0/search
-    # api_key resolves at load time; required when enabled.
-    api_key: ${BING_API_KEY:-}
-    timeout_s: 5
-
-  # myengine:
-  #   enabled: false
-  #   type: http
-  #   timeout_s: 5
-  #   endpoint: ${MYENGINE_URL:-}
-  #   method: GET                      # GET (query params) or POST (JSON body)
-  #   api_key: ${MYENGINE_API_KEY:-}   # required when enabled, like bing
-  #   auth_in: header                  # header or query
-  #   auth_name: X-Api-Key             # header/query-param name
-  #   params: { query: q, limit: count, offset: offset }   # GET param names
-  #   body: { query: q, limit: count, offset: offset }     # POST JSON shape
-  #   results_path: results            # dotted path to the hit list
-  #   fields: { id: id, title: title, snippet: text, url: link }
-  #   score: rank_decay                # or { field: score } for a numeric field

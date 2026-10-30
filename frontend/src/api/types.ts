@@ -30,6 +30,8 @@ export interface SearchRequest {
   filters: Record<string, unknown>;
   /** Federated provider hints; omitted when the user sets none. */
   provider_prefs?: ProviderPrefs | null;
+  /** Opt-in request-scoped prior queries (oldest first); omitted when empty. */
+  history?: string[];
 }
 
 /** One normalized search hit on the wire. */
@@ -147,6 +149,12 @@ export interface FeedbackResponse {
   action: string;
   count: number;
 }
+
+/**
+ * URL-frontier shapes live in the admin app now: the dashboard moved
+ * out of the user frontend. The backend `/api/v1/frontier/*` routes
+ * and their `X-Admin-Token` mutation gate are unchanged.
+ */
 
 /** Machine-readable error code plus a human-readable message. */
 export interface ErrorDetail {

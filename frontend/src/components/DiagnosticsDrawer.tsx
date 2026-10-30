@@ -66,7 +66,7 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
         panelId="diagnostics-panel"
         panelTestId="diagnostics-panel"
       >
-        <p data-testid="diagnostics-fallback">
+        <p data-testid="diagnostics-fallback" className="my-ol-s">
           {diagnostics.fallback_used ? <Badge>Degraded: fallback used</Badge> : <Badge>Live</Badge>}
         </p>
         {cache ? (
@@ -82,13 +82,16 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
             </Button>
           </p>
         ) : null}
-        <h4>Providers</h4>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Providers</h4>
         {providers.length === 0 ? (
           <p>No provider latencies reported</p>
         ) : (
-          <dl data-testid="diagnostics-latencies">
+          <dl
+            data-testid="diagnostics-latencies"
+            className="grid grid-cols-[auto_1fr] gap-x-ol-m gap-y-ol-xs m-0"
+          >
             {providers.map((provider) => (
-              <div key={provider}>
+              <div key={provider} className="contents">
                 <dt>{provider}</dt>
                 <dd>
                   {diagnostics.provider_latencies_ms[provider]} ms
@@ -103,11 +106,11 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
             ))}
           </dl>
         )}
-        <h4>Pipeline ({executions.length})</h4>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Pipeline ({executions.length})</h4>
         {executions.length === 0 ? (
           <p>No plugin executions</p>
         ) : (
-          <ol data-testid="diagnostics-plugins">
+          <ol data-testid="diagnostics-plugins" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
             {executions.map((execution, index) => (
               <li key={`${execution.plugin}-${index}`}>
                 <Badge>{execution.stage}</Badge> {execution.plugin} · {execution.status}
@@ -119,13 +122,16 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
         )}
         {provenance ? (
           <>
-            <h4>Query</h4>
-            <dl data-testid="diagnostics-query">
-              <div>
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Query</h4>
+            <dl
+              data-testid="diagnostics-query"
+              className="grid grid-cols-[auto_1fr] gap-x-ol-m gap-y-ol-xs m-0"
+            >
+              <div className="contents">
                 <dt>Intent</dt>
                 <dd>{provenance.intent}</dd>
               </div>
-              <div>
+              <div className="contents">
                 <dt>Mode</dt>
                 <dd>
                   {provenance.effective_mode}
@@ -135,7 +141,7 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
                 </dd>
               </div>
               {provenance.added_terms.length > 0 ? (
-                <div>
+                <div className="contents">
                   <dt>Expanded with</dt>
                   <dd>{provenance.added_terms.join(', ')}</dd>
                 </div>
@@ -143,19 +149,21 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
             </dl>
           </>
         ) : null}
-        <h4>Errors ({diagnostics.errors.length})</h4>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Errors ({diagnostics.errors.length})</h4>
         {diagnostics.errors.length === 0 ? (
           <p>No errors</p>
         ) : (
-          <ul data-testid="diagnostics-errors">
+          <ul data-testid="diagnostics-errors" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
             {diagnostics.errors.map((error) => (
               <li key={error}>{error}</li>
             ))}
           </ul>
         )}
-        <details data-testid="diagnostics-developer">
-          <summary>Developer details</summary>
-          <pre>{JSON.stringify(diagnostics, null, 2)}</pre>
+        <details data-testid="diagnostics-developer" className="mt-ol-s">
+          <summary className="cursor-pointer font-semibold text-ol-s">Developer details</summary>
+          <pre className="whitespace-pre-wrap break-words text-ol-s">
+            {JSON.stringify(diagnostics, null, 2)}
+          </pre>
         </details>
       </Drawer>
     </GlassPanel>

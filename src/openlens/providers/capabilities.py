@@ -31,27 +31,6 @@ KNOWN_CAPABILITIES: dict[str, ProviderCapabilities] = {
         requires_network=False,
         requires_auth=False,
     ),
-    "opensearch": ProviderCapabilities(
-        name="opensearch",
-        supports_pagination=True,
-        supports_filters=True,
-        requires_network=True,
-        requires_auth=False,
-    ),
-    "bing": ProviderCapabilities(
-        name="bing",
-        supports_pagination=True,
-        supports_filters=False,
-        requires_network=True,
-        requires_auth=True,
-    ),
-    "external": ProviderCapabilities(
-        name="external",
-        supports_pagination=True,
-        supports_filters=False,
-        requires_network=True,
-        requires_auth=True,
-    ),
 }
 
 _DEFAULT_CAPABILITIES = ProviderCapabilities(name="unknown")

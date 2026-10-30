@@ -112,20 +112,20 @@ export function ResultList({
   return (
     <section aria-label="Search results">
       {assistance}
-      <p data-testid="result-count" className="ol-result-count">
+      <p data-testid="result-count" className="text-ol-s text-ol-ink-soft">
         Showing {results.length} of {total} result{total === 1 ? '' : 's'}
       </p>
-      <ol className="ol-result-list">
+      <ol className="my-ol-m flex list-none flex-col gap-ol-m p-0">
         {groupByStory(results).map((group) =>
           group.heading ? (
             <li key={group.key}>
               <section
                 aria-label={group.heading}
                 data-testid="story-group"
-                className="ol-story-group"
+                className="border-t-2 border-ol-line pt-ol-s"
               >
-                <h2>{group.heading}</h2>
-                <ol className="ol-result-list">
+                <h2 className="m-0 mb-ol-s text-ol-m">{group.heading}</h2>
+                <ol className="my-ol-m flex list-none flex-col gap-ol-m p-0">
                   {group.members.map((result) => (
                     <li key={result.id}>
                       <ResultCard

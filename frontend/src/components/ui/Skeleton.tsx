@@ -10,9 +10,13 @@ export interface SkeletonProps {
  */
 export function Skeleton({ bars = 3 }: SkeletonProps) {
   return (
-    <div className="ol-skeleton" aria-hidden="true" data-testid="skeleton">
+    <div
+      className="ol-skeleton flex flex-col gap-ol-s my-ol-m"
+      aria-hidden="true"
+      data-testid="skeleton"
+    >
       {Array.from({ length: Math.max(1, bars) }, (_, index) => (
-        <div key={index} className="ol-skeleton-bar" />
+        <div key={index} className="ol-skeleton-bar h-[0.9rem] rounded-ol-s bg-white/45" />
       ))}
     </div>
   );

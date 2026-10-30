@@ -12,7 +12,62 @@
  * changed. Fallbacks stay flat + opaque where backdrop-filter is
  * unsupported, and text colors are dark ink on light glass so AA
  * pairs hold with or without blur.
+ *
+ * Tailwind v4 utilities are available alongside these tokens
+ * (see tailwindcss import below); new styling should prefer
+ * utilities, while the --ol-* contract stays untouched.
  */
+
+@import 'tailwindcss';
+
+@theme {
+  --color-ol-paper: #ffffff;
+  --color-ol-well: #eef2f7;
+  --color-ol-ink: #101828;
+  --color-ol-ink-soft: #344054;
+  --color-ol-line: rgb(255 255 255 / 0.45);
+  --color-ol-accent: #4f46e5;
+  --color-ol-accent-strong: #3730a3;
+  --color-ol-on-accent: #ffffff;
+  --color-ol-accent-wash: rgb(79 70 229 / 0.15);
+  --color-ol-error: #b91c1c;
+  --color-ol-error-wash: #fdecec;
+  --color-ol-warn: #92600a;
+  --color-ol-warn-wash: #fdf3e0;
+  --color-ol-ok: #166534;
+  --color-ol-ok-wash: #e8f5ec;
+  --color-ol-glass-wash: rgb(255 255 255 / 0.28);
+  --color-ol-glass-wash-strong: rgb(255 255 255 / 0.35);
+  --color-ol-glass-wash-well: rgb(255 255 255 / 0.22);
+  --color-ol-glass-fallback: #f8fafc;
+  --color-ol-glass-fallback-strong: #ffffff;
+  --color-ol-glass-fallback-well: #eef2f7;
+  --color-ol-glass-border: rgb(255 255 255 / 0.35);
+  --color-ol-glass-border-bright: rgb(255 255 255 / 0.55);
+
+  --font-ol: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --text-ol-s: 0.8125rem;
+  --text-ol-m: 1rem;
+  --text-ol-l: 1.25rem;
+  --text-ol-xl: 1.5rem;
+
+  --spacing-ol-xs: 0.25rem;
+  --spacing-ol-s: 0.5rem;
+  --spacing-ol-m: 1rem;
+  --spacing-ol-l: 1.5rem;
+  --spacing-ol-xl: 2.5rem;
+
+  --radius-ol-s: 4px;
+  --radius-ol-m: 6px;
+  --radius-ol-l: 8px;
+
+  --shadow-ol: 0 4px 30px rgb(0 0 0 / 0.1);
+  --shadow-ol-l: 0 8px 40px rgb(0 0 0 / 0.15), 0 0 32px rgb(255 255 255 / 0.25);
+
+  --blur-ol-s: 8px;
+  --blur-ol-m: 12px;
+  --blur-ol-l: 16px;
+}
 
 :root {
   color-scheme: light;
@@ -280,15 +335,6 @@ body::before {
   color: var(--ol-ink-soft);
 }
 
-.ol-result-list {
-  list-style: none;
-  margin: var(--ol-space-m) 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ol-space-m);
-}
-
 .ol-card {
   border: 1px solid rgb(255 255 255 / 0.2);
   border-radius: var(--ol-radius-m);
@@ -434,68 +480,10 @@ body::before {
   }
 }
 
-/* ---- Toasts ---- */
-
-.ol-toasts {
-  position: fixed;
-  bottom: var(--ol-space-l);
-  right: var(--ol-space-l);
-  display: flex;
-  flex-direction: column;
-  gap: var(--ol-space-s);
-  max-width: min(24rem, calc(100vw - 2 * var(--ol-space-l)));
-}
-
-.ol-toast {
-  background: rgb(16 24 40 / 0.85);
-  color: var(--ol-paper);
-  border: 1px solid rgb(255 255 255 / 0.2);
-  border-radius: var(--ol-radius-m);
-  box-shadow: var(--ol-shadow);
-  padding: var(--ol-space-s) var(--ol-space-m);
-  font-size: var(--ol-font-size-s);
-}
-
-/* ---- Score signal bars ---- */
-
-.ol-signal-bar {
-  display: inline-block;
-  width: 6rem;
-  height: 0.5rem;
-  vertical-align: middle;
-  background: rgb(255 255 255 / 0.35);
-  border: 1px solid var(--ol-glass-border);
-  border-radius: var(--ol-radius-s);
-  overflow: hidden;
-}
-
-.ol-signal-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--ol-accent);
-}
-
-/* ---- Trust-distinct warnings ---- */
-
-.ol-warnings {
-  border: 1px solid var(--ol-warn);
-  border-radius: var(--ol-radius-s);
-  background: var(--ol-warn-wash);
-  padding: var(--ol-space-s) var(--ol-space-m);
-  margin-top: var(--ol-space-s);
-}
-
-/* ---- Story groups ---- */
-
-.ol-story-group {
-  border-top: 2px solid rgb(255 255 255 / 0.45);
-  padding-top: var(--ol-space-s);
-}
-
-.ol-story-group > h2 {
-  font-size: var(--ol-font-size-m);
-  margin: 0 0 var(--ol-space-s);
-}
+/* ---- Toasts, signal bars, warnings, and story groups ----
+ * Migrated to Tailwind utilities (see Toast.tsx, ResultCard.tsx,
+ * ResultList.tsx); no custom rules remain for these surfaces.
+ */
 
 /* ---- Screen-reader-only live announcements ---- */
 

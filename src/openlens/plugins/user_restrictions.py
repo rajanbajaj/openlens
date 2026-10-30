@@ -39,11 +39,15 @@ Raise sites (pinned by the filter-pack plan):
   ``plugin_error``). Unknown keys are malformed per-request input.
 
 Forward compatibility (review D4): keys owned by later packs are
-accepted and passed through untouched — never consumed, never
-rejected, never type-checked here. That reservation is any ``prefer_*``
-key (scoring pack) plus ``max_price``, ``location``, and ``facilities``
-(rerank pack). Only keys outside the owned schema and that reservation
-are rejected.
+accepted and passed through — never rejected, never type-checked here.
+Any ``prefer_*`` key (scoring pack) plus ``max_price``, ``location``,
+``facilities``, ``brand``, ``style``, ``size``, and ``occasion`` are
+ordering-only hints consumed downstream by the commerce reranker.
+``exclude_sponsored``, ``min_rating``, ``exclude_over_budget``,
+``license``, ``author``, ``cuisine``, ``dietary_tags``,
+``ingredients``, and ``exclude_allergens`` are additionally
+hard-enforced here on crawler-truth metadata. Only keys outside the
+owned schema and that reservation are rejected.
 """
 
 from __future__ import annotations
@@ -86,10 +90,52 @@ _FILTER_KEY_TO_OPERATOR: dict[str, str] = {
 #: Filter keys owned (validated + consumed) by this plugin.
 OWNED_FILTER_KEYS: frozenset[str] = frozenset(_FILTER_KEY_TO_OPERATOR)
 
-#: Reserved consumer keys passed through untouched (review D4).
+#: Reserved consumer keys (review D4).
+#:
+#: ``exclude_sponsored``/``min_rating`` are hard-enforced here on the
+#: crawler-truth flags (``metadata["sponsored"]`` / ``metadata["rating"]``)
+#: so "exclude sponsored" and "minimum rating" remove hits instead of
+#: merely demoting them. The vertical keys below are likewise hard
+#: exclusion filters: ``exclude_over_budget`` gates ``max_price`` (off by
+#: default so bare ``max_price`` stays ordering-only for the commerce
+#: reranker), and ``license``/``author``/``cuisine``/``dietary_tags``/
+#: ``ingredients``/``exclude_allergens`` match book/recipe metadata.
+#: All vertical keys parse leniently (malformed values are ignored, never
+#: fail-closed). The remaining keys are consumed downstream by the
+#: commerce reranker for ordering.
+#:
+#: Control keys (validated fail-closed here, consumed downstream):
+#: ``personalize`` (bool, default true) opts out of preference boosts;
+#: ``weight_overrides`` (mapping) tunes ranking weights in the ranker;
+#: ``safety_preset`` (one of ``strict``/``balanced``/``standard``)
+#: selects a named safety policy (``strict`` arms default-deny
+#: allowlist enforcement in the safety filter for this request).
 RESERVED_FILTER_KEYS: frozenset[str] = frozenset(
-    {"max_price", "location", "facilities"}
+    {
+        "max_price",
+        "location",
+        "facilities",
+        "min_rating",
+        "exclude_sponsored",
+        "exclude_over_budget",
+        "brand",
+        "style",
+        "size",
+        "occasion",
+        "license",
+        "author",
+        "cuisine",
+        "dietary_tags",
+        "ingredients",
+        "exclude_allergens",
+        "personalize",
+        "weight_overrides",
+        "safety_preset",
+    }
 )
+
+#: Named safety policies selectable per request via ``safety_preset``.
+SAFETY_PRESET_VALUES: frozenset[str] = frozenset({"strict", "balanced", "standard"})
 
 #: Prefix reserving a whole family of consumer keys (scoring pack).
 RESERVED_FILTER_PREFIX = "prefer_"
@@ -144,6 +190,101 @@ def _host_matches(host: str, rules: frozenset[str]) -> bool:
             return False
         candidate = rest
     return False
+
+
+def _is_truthy(value: Any) -> bool:
+    """True for explicit opt-ins (True / 1 / "true"/"1"/"yes")."""
+    if value is True:
+        return True
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
+
+
+def _as_price_cap(value: Any) -> tuple[float | None, str]:
+    """Coerce a ``max_price`` filter to (cap, currency); (None, "") when absent.
+
+    Accepts a bare number/numeric string or a mapping with a
+    ``value``/``amount``/``price`` entry plus an optional ``currency``.
+    """
+    if value is None or isinstance(value, bool):
+        return None, ""
+    if isinstance(value, dict):
+        cap: float | None = None
+        for key in ("value", "amount", "price"):
+            parsed = _as_threshold(value.get(key))
+            if parsed is not None:
+                cap = parsed
+                break
+        if cap is None:
+            return None, ""
+        currency = value.get("currency")
+        return cap, currency.strip().upper() if isinstance(currency, str) else ""
+    cap = _as_threshold(value)
+    return (cap, "") if cap is not None else (None, "")
+
+
+def _as_float_or_none(value: Any) -> float | None:
+    """Coerce result metadata to float; None when absent/unparseable."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip().replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _as_single_term(value: Any) -> str | None:
+    """Coerce a one-term filter (``license``/``author``/``cuisine``)."""
+    if isinstance(value, list):
+        items = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+        if not items:
+            return None
+        value = items[0]
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _as_term_list(value: Any) -> list[str] | None:
+    """Coerce a tag-list filter; None when absent/empty (filter inactive)."""
+    if isinstance(value, str):
+        value = [part for part in value.split(",") if part.strip()]
+    if not isinstance(value, (list, tuple)):
+        return None
+    terms = [v.strip().lower() for v in value if isinstance(v, str) and v.strip()]
+    return terms or None
+
+
+def _meta_terms(value: Any) -> list[str]:
+    """Coerce result metadata to a lower-cased term list ([] when absent)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [p.lower() for p in (s.strip() for s in value.split(",")) if p]
+    if isinstance(value, (list, tuple)):
+        return [v.strip().lower() for v in value if isinstance(v, str) and v.strip()]
+    return []
+
+
+def _as_threshold(value: Any) -> float | None:
+    """Coerce a ``min_rating`` filter to float; None when absent/invalid."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
 
 
 class UserRestrictionsFilter(BasePlugin):
@@ -234,10 +375,34 @@ class UserRestrictionsFilter(BasePlugin):
             message, plugin_name=self.name, stage=self.stage, mandatory=True
         )
 
+    def _validate_control_keys(self, filters: dict[str, Any]) -> None:
+        """Fail closed on malformed personalization/safety control keys.
+
+        ``personalize`` must be a bool when present; ``safety_preset``
+        must name a known policy. ``weight_overrides`` shape is the
+        ranker's job (validated there); presence here only reserves the
+        key so it passes through.
+        """
+        if "personalize" in filters and not isinstance(filters["personalize"], bool):
+            raise self._request_error(
+                "UserRestrictionsFilter 'personalize' must be a bool."
+            )
+        if "safety_preset" in filters:
+            preset = filters["safety_preset"]
+            if (
+                not isinstance(preset, str)
+                or preset.strip().lower() not in SAFETY_PRESET_VALUES
+            ):
+                raise self._request_error(
+                    "UserRestrictionsFilter 'safety_preset' must be one of "
+                    f"{sorted(SAFETY_PRESET_VALUES)}."
+                )
+
     def _compile_predicate(
         self, filters: dict[str, Any]
     ) -> Callable[[SearchResult], bool]:
         """Validate ``filters`` and compile the per-request predicate once."""
+        self._validate_control_keys(filters)
         merged: dict[str, list[str]] = {
             op: list(values) for op, values in self._defaults.items()
         }
@@ -251,7 +416,7 @@ class UserRestrictionsFilter(BasePlugin):
                 raise self._request_error(
                     f"Unknown filter key '{key}'. Owned keys: "
                     f"{sorted(OWNED_FILTER_KEYS)}; reserved consumer keys "
-                    f"('prefer_*', 'max_price', 'location', 'facilities') "
+                    f"{sorted(RESERVED_FILTER_KEYS)} and 'prefer_*' "
                     "are passed through."
                 )
             entries = self._validate_entries(
@@ -264,6 +429,17 @@ class UserRestrictionsFilter(BasePlugin):
                 if entry not in merged[operator]:
                     merged[operator].append(entry)
 
+        exclude_sponsored = _is_truthy(filters.get("exclude_sponsored"))
+        min_rating = _as_threshold(filters.get("min_rating"))
+        exclude_over_budget = _is_truthy(filters.get("exclude_over_budget"))
+        budget_cap, budget_currency = _as_price_cap(filters.get("max_price"))
+        license_term = _as_single_term(filters.get("license"))
+        author_term = _as_single_term(filters.get("author"))
+        cuisine_term = _as_single_term(filters.get("cuisine"))
+        dietary_terms = _as_term_list(filters.get("dietary_tags"))
+        ingredient_terms = _as_term_list(filters.get("ingredients"))
+        allergen_terms = _as_term_list(filters.get("exclude_allergens"))
+
         must_patterns = [
             re.compile(re.escape(term), re.IGNORECASE) for term in merged["must"]
         ]
@@ -274,6 +450,78 @@ class UserRestrictionsFilter(BasePlugin):
         exclude_domains = frozenset(merged["exclude_domains"])
 
         def predicate(result: SearchResult) -> bool:
+            if exclude_sponsored and result.metadata.get("sponsored") is True:
+                return False
+            if min_rating is not None:
+                rating = result.metadata.get("rating")
+                if isinstance(rating, bool):
+                    return False
+                if isinstance(rating, (int, float)):
+                    if float(rating) < min_rating:
+                        return False
+                elif isinstance(rating, str):
+                    try:
+                        if float(rating.strip()) < min_rating:
+                            return False
+                    except ValueError:
+                        return False
+                else:
+                    return False
+            if exclude_over_budget and budget_cap is not None:
+                price = _as_float_or_none(result.metadata.get("price"))
+                if price is not None:
+                    if budget_currency:
+                        actual = result.metadata.get("currency")
+                        actual_code = (
+                            actual.strip().upper() if isinstance(actual, str) else ""
+                        )
+                        if actual_code and actual_code != budget_currency:
+                            pass  # Incomparable currency: keep (no evidence).
+                        elif price > budget_cap:
+                            return False
+                    elif price > budget_cap:
+                        return False
+            if license_term is not None:
+                actual = result.metadata.get("license")
+                if (
+                    not isinstance(actual, str)
+                    or actual.strip().lower() != license_term.lower()
+                ):
+                    return False
+            if author_term is not None:
+                actual = result.metadata.get("author")
+                if (
+                    not isinstance(actual, str)
+                    or author_term.lower() not in actual.lower()
+                ):
+                    return False
+            if cuisine_term is not None:
+                actual = result.metadata.get("cuisine")
+                if (
+                    not isinstance(actual, str)
+                    or actual.strip().lower() != cuisine_term.lower()
+                ):
+                    return False
+            if dietary_terms is not None:
+                have: set[str] | list[str] = set(
+                    _meta_terms(result.metadata.get("dietary_tags"))
+                )
+                if any(term not in have for term in dietary_terms):
+                    return False
+            if ingredient_terms is not None:
+                have = _meta_terms(result.metadata.get("ingredients"))
+                if not have or any(
+                    not any(term in item for item in have) for term in ingredient_terms
+                ):
+                    return False
+            if allergen_terms is not None:
+                have = _meta_terms(result.metadata.get("allergens"))
+                if any(
+                    term in item or item in term
+                    for term in allergen_terms
+                    for item in have
+                ):
+                    return False
             haystack = f"{result.title}\n{result.snippet}\n{result.url or ''}"
             if any(not pattern.search(haystack) for pattern in must_patterns):
                 return False
@@ -311,5 +559,10 @@ class UserRestrictionsFilter(BasePlugin):
         removed = len(context.results) - len(kept)
         context.results = kept
         context.applied_filters.append(self.name)
+        preset = filters.get("safety_preset")
+        if isinstance(preset, str) and preset.strip():
+            context.applied_filters.append(f"safety_preset:{preset.strip().lower()}")
+        if filters.get("personalize") is False:
+            context.applied_filters.append("personalize:false")
         context.metadata["user-restrictions-removed"] = removed
         return context

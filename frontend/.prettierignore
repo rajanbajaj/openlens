@@ -2,3 +2,5 @@ dist
 node_modules
 coverage
 package-lock.json
+# Machine-generated OpenAPI snapshot (regenerated via README steps).
+openapi/openapi.json

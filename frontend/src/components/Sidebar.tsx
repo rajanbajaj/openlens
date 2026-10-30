@@ -71,6 +71,13 @@ function sidebarChips(filters: UserFilterState): SidebarChip[] {
       clear: (next) => ({ ...next, maxPrice: '' }),
     });
   }
+  if (filters.minRating.trim()) {
+    chips.push({
+      key: 'minRating',
+      label: `Min rating ${filters.minRating.trim()}`,
+      clear: (next) => ({ ...next, minRating: '' }),
+    });
+  }
   if (filters.location.trim()) {
     chips.push({
       key: 'location',
@@ -83,6 +90,27 @@ function sidebarChips(filters: UserFilterState): SidebarChip[] {
       key: 'facilities',
       label: `Facilities: ${filters.facilities.trim()}`,
       clear: (next) => ({ ...next, facilities: '' }),
+    });
+  }
+  if (filters.brand.trim()) {
+    chips.push({
+      key: 'brand',
+      label: `Brand: ${filters.brand.trim()}`,
+      clear: (next) => ({ ...next, brand: '' }),
+    });
+  }
+  if (filters.style.trim()) {
+    chips.push({
+      key: 'style',
+      label: `Style: ${filters.style.trim()}`,
+      clear: (next) => ({ ...next, style: '' }),
+    });
+  }
+  if (filters.size.trim()) {
+    chips.push({
+      key: 'size',
+      label: `Size: ${filters.size.trim()}`,
+      clear: (next) => ({ ...next, size: '' }),
     });
   }
   if (filters.preferSuffix.trim()) {

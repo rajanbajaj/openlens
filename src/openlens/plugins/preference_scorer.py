@@ -101,6 +101,13 @@ class PreferenceScorer(BasePlugin):
 
     def run(self, context: SearchContext) -> SearchContext:
         filters = context.request.filters or {}
+        if filters.get("personalize") is False:
+            for result in context.results:
+                score = _set_signal(result, "preference", NEUTRAL)
+                result.reasons.append(
+                    f"personalization off; preference neutral {score:.2f}"
+                )
+            return context
         warnings: list[str] = []
         domains = [
             extract_domain(d)

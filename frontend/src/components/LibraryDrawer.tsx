@@ -63,7 +63,10 @@ export function LibraryDrawer({ onSelectSearch }: LibraryDrawerProps) {
   }
 
   return (
-    <section aria-label="Library" className="ol-drawer">
+    <section
+      aria-label="Library"
+      className="ol-drawer mt-ol-l rounded-ol-l border border-ol-glass-border px-ol-m py-ol-l shadow-[0_4px_30px_rgb(0_0_0/0.1)] backdrop-blur-[12px]"
+    >
       <Button
         variant="ghost"
         data-testid="library-toggle"
@@ -75,12 +78,17 @@ export function LibraryDrawer({ onSelectSearch }: LibraryDrawerProps) {
       </Button>
       {open ? (
         <div id="library-panel" data-testid="library-panel">
-          <h4>Recent searches</h4>
+          <h4 className="mt-ol-m mb-ol-s text-ol-m">Recent searches</h4>
           {recent.length === 0 ? (
-            <p data-testid="library-recent-empty">No recent searches yet.</p>
+            <p data-testid="library-recent-empty" className="my-ol-s text-ol-s">
+              No recent searches yet.
+            </p>
           ) : (
             <>
-              <ul data-testid="library-recent">
+              <ul
+                data-testid="library-recent"
+                className="flex flex-col gap-ol-xs my-ol-s p-0 list-none"
+              >
                 {recent.map((query) => (
                   <li key={query} data-testid="library-recent-item">
                     <Button variant="ghost" onClick={() => onSelectSearch?.(query)}>
@@ -98,12 +106,17 @@ export function LibraryDrawer({ onSelectSearch }: LibraryDrawerProps) {
               </Button>
             </>
           )}
-          <h4>Saved results ({saved.length})</h4>
+          <h4 className="mt-ol-m mb-ol-s text-ol-m">Saved results ({saved.length})</h4>
           {saved.length === 0 ? (
-            <p data-testid="library-saved-empty">No saved results yet.</p>
+            <p data-testid="library-saved-empty" className="my-ol-s text-ol-s">
+              No saved results yet.
+            </p>
           ) : (
             <>
-              <ul data-testid="library-saved">
+              <ul
+                data-testid="library-saved"
+                className="flex flex-col gap-ol-xs my-ol-s p-0 list-none"
+              >
                 {saved.map((result) => (
                   <li key={result.id} data-testid="library-saved-item">
                     <span>{result.title}</span>{' '}

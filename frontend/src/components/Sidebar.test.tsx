@@ -136,33 +136,44 @@ describe('Sidebar', () => {
 
   it('emits byte-identical wire keys via buildFilters', () => {
     const full: UserFilterState = {
+      ...EMPTY_FILTER_STATE,
       excludeSponsored: true,
       maxPrice: '250',
+      minRating: '4',
       location: 'Berlin',
       facilities: 'wifi, pool',
+      brand: 'Acme',
+      style: 'casual',
+      size: 'M',
       preferSuffix: 'Trust!',
       blockedDomain: 'example.com',
       allowedDomain: 'trusted.example',
       mustNotTerm: 'advertisement',
     };
     expect(JSON.stringify(buildFilters(full))).toBe(
-      '{"must_not_terms":["sponsored","advertisement"],' +
+      '{"exclude_sponsored":true,' +
+        '"must_not_terms":["sponsored","advertisement"],' +
         '"max_price":250,' +
+        '"min_rating":4,' +
         '"location":"Berlin",' +
         '"facilities":"wifi, pool",' +
+        '"brand":"Acme",' +
+        '"style":"casual",' +
+        '"size":"M",' +
         '"prefer_trust":true,' +
         '"blocked_domains":["example.com"],' +
         '"allowed_domains":["trusted.example"]}',
     );
-    // Blank panel state sends nothing; the toggle is a UI concept only.
+    // Blank panel state sends nothing.
     expect(JSON.stringify(buildFilters(EMPTY_FILTER_STATE))).toBe('{}');
-    expect(JSON.stringify(buildFilters(full))).not.toContain('exclude_sponsored');
   });
 
   it('UI callback payloads shape into the expected wire bytes', () => {
     const { onFiltersChange } = setup();
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
     const payload = onFiltersChange.mock.calls[0][0] as UserFilterState;
-    expect(JSON.stringify(buildFilters(payload))).toBe('{"must_not_terms":["sponsored"]}');
+    expect(JSON.stringify(buildFilters(payload))).toBe(
+      '{"exclude_sponsored":true,"must_not_terms":["sponsored"]}',
+    );
   });
 });

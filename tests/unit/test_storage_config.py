@@ -1,7 +1,9 @@
 """Backend selection + lifecycle tests (db-connectors plan, step 4).
 
-`storage.backend` is the single switch (`sqlite` | `mysql` | `postgres`,
-default `sqlite`); the provider-entry `db_path` stays the SQLite
+`storage.backend` is the single switch (`sqlite` | `mysql` | `postgres`);
+the shipped `configs/default.yaml` selects `postgres`, while the code
+falls back to `sqlite` when no `storage:` section exists (offline
+default used here). The provider-entry `db_path` stays the SQLite
 backend's field. Offline only: server-backend cases assert construction
 fails as `ProviderError(UNAVAILABLE)` (missing driver or refused
 connection) and never import a driver.
@@ -117,6 +119,28 @@ def test_empty_storage_mapping_means_sqlite() -> None:
         assert store.count() == 0
     finally:
         store.close()
+
+
+def test_shipped_default_yaml_selects_postgres() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    with (repo_root / "configs" / "default.yaml").open(encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+    storage = config.get("storage", {})
+    assert storage.get("backend") == "postgres", (
+        "[configs/default.yaml] shipped default store must be postgres"
+    )
+    assert set(storage.get("postgres", {})) >= {
+        "host",
+        "port",
+        "dbname",
+        "user",
+        "password",
+        "table",
+    }, "[configs/default.yaml] postgres section must carry connection fields"
 
 
 # -- unreachable-but-configured backends ---------------------------------

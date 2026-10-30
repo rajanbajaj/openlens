@@ -13,6 +13,11 @@ Composite signal per hit::
             + diversity_weight * signals["diversity"]
             + perspective_weight * signals["perspective"]
             + commerce_weight * signals["commerce"]
+            + safety_weight * signals["safety"]
+            + privacy_weight * signals["privacy"]
+            + fairness_weight * signals["fairness"]
+            + news_trust_weight * signals["news_trust"]
+            + sponsored_weight * signals["sponsored"]
 
 Missing signal keys degrade to the neutral 0.5 default (never ``KeyError``),
 so with no scorer enabled every hit carries the same constant offset and
@@ -27,18 +32,33 @@ In practice ``Engine`` passes modes through and unknown modes fail loudly via
 
 from __future__ import annotations
 
+import math
+from dataclasses import fields, replace
 from typing import Any
 
 from openlens.core.context import SearchContext
 from openlens.core.interfaces import (
     ConfigError,
     PipelineStage,
+    PluginError,
     PluginType,
     SearchResult,
 )
 from openlens.plugins._signals import get_signal
 from openlens.plugins.base import BasePlugin
 from openlens.ranking.profiles import BUILTIN_PROFILES, RankingProfile
+
+#: Filter key carrying per-request signal-weight overrides.
+WEIGHT_OVERRIDES_FILTER_KEY = "weight_overrides"
+
+#: Profile fields a caller may override per request. Identity fields
+#: (``name``, ``description``) and the keyword list are excluded: only
+#: numeric signal weights are tunable, and every value must be finite.
+_OVERRIDABLE_WEIGHT_FIELDS: frozenset[str] = frozenset(
+    field.name
+    for field in fields(RankingProfile)
+    if field.name not in ("name", "description", "keywords")
+)
 
 
 class Ranker(BasePlugin):
@@ -112,14 +132,75 @@ class Ranker(BasePlugin):
             + profile.diversity_weight * get_signal(result, "diversity")
             + profile.perspective_weight * get_signal(result, "perspective")
             + profile.commerce_weight * get_signal(result, "commerce")
+            + profile.safety_weight * get_signal(result, "safety")
+            + profile.privacy_weight * get_signal(result, "privacy")
+            + profile.fairness_weight * get_signal(result, "fairness")
+            + profile.news_trust_weight * get_signal(result, "news_trust")
+            + profile.sponsored_weight * get_signal(result, "sponsored")
         )
+
+    def _weight_overrides(self, context: SearchContext) -> dict[str, float]:
+        """Validate per-request ``weight_overrides`` (fail closed).
+
+        Returns the validated overrides ({} when the caller sent none).
+        Unknown fields, non-mapping payloads, and non-finite values
+        raise a mandatory ``PluginError`` so a typo never silently
+        serves a misweighted ranking.
+        """
+        raw = (context.request.filters or {}).get(WEIGHT_OVERRIDES_FILTER_KEY)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            raise PluginError(
+                "weight_overrides must be a mapping of signal weight to number",
+                plugin_name=self.name,
+                stage=self.stage,
+                mandatory=True,
+            )
+        overrides: dict[str, float] = {}
+        for key, value in raw.items():
+            if key not in _OVERRIDABLE_WEIGHT_FIELDS:
+                raise PluginError(
+                    f"Unknown ranking weight '{key}'. "
+                    f"Known: {', '.join(sorted(_OVERRIDABLE_WEIGHT_FIELDS))}.",
+                    plugin_name=self.name,
+                    stage=self.stage,
+                    mandatory=True,
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise PluginError(
+                    f"Ranking weight '{key}' must be a number.",
+                    plugin_name=self.name,
+                    stage=self.stage,
+                    mandatory=True,
+                )
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise PluginError(
+                    f"Ranking weight '{key}' must be finite.",
+                    plugin_name=self.name,
+                    stage=self.stage,
+                    mandatory=True,
+                )
+            overrides[key] = numeric
+        return overrides
 
     def run(self, context: SearchContext) -> SearchContext:
         mode = context.request.mode or self._fallback_profile
         profile = self._lookup(mode)
+        overrides = self._weight_overrides(context)
+        if overrides:
+            profile = replace(profile, **dict(overrides))  # type: ignore[arg-type]
         for result in context.results:
             result.final_score = self.composite(profile, result)
             result.reasons.append(f"ranked with profile '{profile.name}'")
+            if overrides:
+                result.reasons.append(
+                    "custom weights: "
+                    + ", ".join(f"{key}={overrides[key]}" for key in sorted(overrides))
+                )
+        if overrides:
+            context.applied_filters.append(f"{self.name}:weight_overrides")
         # Stable sort: ties keep provider/scorer order (deterministic).
         context.results.sort(key=lambda r: r.final_score, reverse=True)
         return context

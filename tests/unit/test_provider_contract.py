@@ -1,10 +1,9 @@
 """Provider-conformance suite: every search backend must pass this.
 
 Covers normalization shape, pagination, bounded timeouts, and failure
-mapping. Providers that need the network or a cluster (OpenSearch, Bing)
-are exercised through their offline paths: config validation,
-response mapping, exception mapping, and offline-safe health checks.
-Failures here name the owning provider module (see message prefixes).
+mapping for the local custom_index backend. Third-party search APIs and
+the OpenSearch adapter were removed (offline-first). Failures here name
+the owning provider module (see message prefixes).
 """
 
 from __future__ import annotations
@@ -23,10 +22,7 @@ from openlens.core.interfaces import (
 from openlens.providers import registry
 from openlens.providers.base import BaseSearchProvider
 from openlens.providers.custom_index import CustomIndexProvider
-from openlens.providers.external import BingSearchProvider
-from openlens.providers.http import CustomApiSearchProvider
 from openlens.providers.manager import ProviderManager
-from openlens.providers.opensearch import OpenSearchProvider
 from tests.fixtures.corpus import fixture_documents, seed_provider
 
 
@@ -86,13 +82,7 @@ def seeded_custom_index() -> CustomIndexProvider:
 def assert_normalized_shape(
     results: list[SearchResult], provider_name: str, *, require_reasons: bool = True
 ) -> None:
-    """Every hit carries the normalized contract (providers/custom_index.py etc.).
-
-    Adapter-mapped backends (providers/opensearch.py, providers/external.py)
-    bypass retrieval/normalizer.py and currently emit empty `reasons`; those
-    suites pass require_reasons=False and rely on the engine EXPLANATION
-    stage (core/pipeline.py assemble_explanations) to fill reasons downstream.
-    """
+    """Every hit carries the normalized contract (providers/custom_index.py)."""
     assert results, f"[{provider_name}] expected at least one hit for a corpus query"
     for hit in results:
         assert hit.id, f"[{provider_name}] hit missing id: {hit!r}"
@@ -253,126 +243,20 @@ def test_conformance_health_check_never_raises_manager(provider_registry):
 
 
 # ---------------------------------------------------------------------------
-# OpenSearch adapter: offline conformance (providers/opensearch.py)
+# Removed backends: third-party search APIs (providers/external.py,
+# providers/http.py) and the OpenSearch adapter
+# (providers/opensearch.py, indexing/opensearch_stage.py) were deleted
+# (offline-first, SQLite-only). The registry must not resolve their type
+# names anymore.
 # ---------------------------------------------------------------------------
 
 
-def _opensearch() -> OpenSearchProvider:
-    provider = OpenSearchProvider()
-    provider.configure({"hosts": ["http://localhost:9200"], "timeout_s": 1.0})
-    return provider
-
-
-def test_conformance_opensearch_normalization_shape():
-    provider = _opensearch()
-    payload = {
-        "hits": {
-            "hits": [
-                {
-                    "_id": "os-1",
-                    "_score": 2.5,
-                    "_source": {
-                        "title": "OS hit",
-                        "content": "body text",
-                        "url": "https://example.com/os-1",
-                    },
-                },
-                {
-                    "_id": "os-2",
-                    "_score": None,
-                    "_source": {"title": "Second", "content": "more body"},
-                },
-            ]
-        }
-    }
-    results = provider._normalize(payload, SearchRequest(query="q"))
-    assert len(results) == 2
-    assert_normalized_shape(results, "opensearch", require_reasons=False)
-    assert results[0].original_score == pytest.approx(2.5)
-    assert results[1].original_score == 0.0  # null scores coerce, never crash
-
-
-def test_conformance_opensearch_failure_mapping():
-    provider = _opensearch()
-    assert provider._map_exception(TimeoutError("timed out")).code == (
-        ProviderError.TIMEOUT
-    ), "[opensearch] timeouts must map to code 'timeout'"
-    assert provider._map_exception(Exception("401 Unauthorized")).code == (
-        ProviderError.AUTH
-    ), "[opensearch] 401/403 must map to code 'auth'"
-    assert provider._map_exception(Exception("429 rate limit hit")).code == (
-        ProviderError.RATE_LIMIT
-    ), "[opensearch] 429 must map to code 'rate_limit'"
-    assert provider._map_exception(Exception("conn refused")).code == (
-        ProviderError.UNAVAILABLE
-    ), "[opensearch] unknown failures must map to code 'unavailable'"
-
-
-def test_conformance_opensearch_offline_safe():
-    provider = _opensearch()
-    assert provider.health_check() is False  # no cluster: False, never raise
-    with pytest.raises(ProviderError):
-        provider.search(SearchRequest(query="q"))  # never a raw client error
-
-
-def test_conformance_opensearch_bad_config_rejected():
-    with pytest.raises(ConfigError):
-        OpenSearchProvider().configure({"hosts": []})
-    with pytest.raises(ConfigError):
-        OpenSearchProvider().configure({"hosts": ["http://h:9200"], "timeout_s": 0})
-
-
-# ---------------------------------------------------------------------------
-# External (Bing) adapter: offline conformance (providers/external.py)
-# ---------------------------------------------------------------------------
-
-
-def _bing() -> BingSearchProvider:
-    provider = BingSearchProvider()
-    provider.configure({"api_key": "test-key-not-a-secret", "timeout_s": 1.0})
-    return provider
-
-
-def test_conformance_bing_normalization_shape():
-    provider = _bing()
-    payload = {
-        "webPages": {
-            "value": [
-                {
-                    "id": "https://example.com/a",
-                    "name": "A title",
-                    "snippet": "A snippet",
-                    "url": "https://example.com/a",
-                },
-                {"name": "B title", "url": "https://example.com/b"},
-            ]
-        }
-    }
-    results = provider.parse_payload(payload, SearchRequest(query="q"))
-    assert_normalized_shape(results, "bing", require_reasons=False)
-    assert results[0].original_score > results[1].original_score, (
-        "[bing] rank decay must order earlier hits higher"
-    )
-
-
-def test_conformance_bing_failure_mapping():
-    provider = _bing()
-    assert provider._map_transport_error(TimeoutError("timeout")).code == (
-        ProviderError.TIMEOUT
-    ), "[external] timeouts must map to code 'timeout'"
-    assert provider._map_transport_error(Exception("401 Unauthorized")).code == (
-        ProviderError.AUTH
-    ), "[external] 401/403 must map to code 'auth'"
-    assert provider._map_transport_error(Exception("429 rate limit")).code == (
-        ProviderError.RATE_LIMIT
-    ), "[external] 429 must map to code 'rate_limit'"
-
-
-def test_conformance_bing_requires_key_and_offline_safe():
-    with pytest.raises(ConfigError):
-        BingSearchProvider().configure({})  # api_key required at startup
-    provider = _bing()
-    assert provider.health_check() is False  # no network in tests: False
+def test_conformance_removed_external_types_unknown(
+    provider_registry: Any,
+) -> None:
+    for removed in ("bing", "http", "external", "opensearch"):
+        with pytest.raises(ConfigError):
+            provider_registry.get(removed)
 
 
 def test_conformance_fixture_corpus_is_stable():
@@ -382,187 +266,3 @@ def test_conformance_fixture_corpus_is_stable():
         "[fixtures/corpus] document ids must be unique"
     )
     assert all(d.url for d in docs), "[fixtures/corpus] every doc needs a URL"
-
-
-# ---------------------------------------------------------------------------
-# Generic HTTP adapter: offline conformance (providers/http.py)
-# ---------------------------------------------------------------------------
-
-
-_HTTP_FIELDS = {"id": "id", "title": "title", "snippet": "text", "url": "link"}
-
-
-def _http(**overrides: Any) -> CustomApiSearchProvider:
-    config: dict[str, Any] = {
-        "endpoint": "https://api.example.com/search",
-        "api_key": "test-key-not-a-secret",
-        "timeout_s": 1.0,
-        "fields": dict(_HTTP_FIELDS),
-    }
-    config.update(overrides)
-    provider = CustomApiSearchProvider()
-    provider.configure(config)
-    return provider
-
-
-_HTTP_PAYLOAD = {
-    "results": [
-        {"id": "h-1", "title": "First", "text": "first snippet", "link": "https://x/1"},
-        {
-            "id": "h-2",
-            "title": "Second",
-            "text": "second snippet",
-            "link": "https://x/2",
-        },
-        {"title": "No id here", "text": "skipped hit"},
-    ]
-}
-
-
-def _stub_fetch(
-    monkeypatch: pytest.MonkeyPatch, provider: CustomApiSearchProvider, payload: Any
-) -> None:
-    monkeypatch.setattr(provider, "_fetch", lambda request: payload)
-
-
-def _http_transport(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    error: Exception | None = None,
-    payload: Any = None,
-    status_code: int = 200,
-) -> dict[str, Any]:
-    """Inject a fake ``httpx`` module so the real ``_fetch`` maps errors.
-
-    Stubbing ``_fetch`` itself would bypass the transport-error mapping
-    under test; the fake module keeps the production ``_fetch`` on the
-    path while staying offline.
-    """
-    import sys
-    import types
-
-    calls: dict[str, Any] = {}
-
-    class _FakeResponse:
-        status_code = 200
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> Any:
-            return payload
-
-    _FakeResponse.status_code = status_code
-
-    def _fake_verb(verb: str, url: str, **kwargs: Any) -> _FakeResponse:
-        calls[verb] = {"url": url, **kwargs}
-        if error is not None:
-            raise error
-        return _FakeResponse()
-
-    fake_module = types.ModuleType("httpx")
-    fake_module.get = lambda url, **kwargs: _fake_verb("get", url, **kwargs)  # type: ignore[attr-defined]
-    fake_module.post = lambda url, **kwargs: _fake_verb("post", url, **kwargs)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "httpx", fake_module)
-    return calls
-
-
-def test_conformance_http_normalization_shape(monkeypatch: pytest.MonkeyPatch):
-    provider = _http()
-    _stub_fetch(monkeypatch, provider, _HTTP_PAYLOAD)
-    results = provider.search(SearchRequest(query="q"))
-    assert len(results) == 2, "[http] hits missing required fields must be skipped"
-    assert_normalized_shape(results, "http", require_reasons=False)
-    assert [r.id for r in results] == ["h-1", "h-2"]
-    assert results[0].original_score > results[1].original_score, (
-        "[http] rank decay must order earlier hits higher"
-    )
-    assert results[0].metadata == {"engine": "http", "request_mode": "default"}, (
-        "[http] hits must carry engine attribution and request mode"
-    )
-
-
-def test_conformance_http_pagination_forwards_limit_offset(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    provider = _http()
-    seen: list[SearchRequest] = []
-    page = {"results": [{"id": "h-1", "title": "T", "text": "S"}]}
-
-    def fake_fetch(request: SearchRequest) -> Any:
-        seen.append(request)
-        return page
-
-    monkeypatch.setattr(provider, "_fetch", fake_fetch)
-    provider.search(SearchRequest(query="q", limit=1, offset=0))
-    provider.search(SearchRequest(query="q", limit=1, offset=1))
-    assert [r.limit for r in seen] == [1, 1]
-    assert [r.offset for r in seen] == [0, 1]
-    first = provider.build_params(seen[0])
-    second = provider.build_params(seen[1])
-    assert first["offset"] != second["offset"], (
-        "[http] distinct offsets must map to distinct upstream params"
-    )
-    assert first["count"] == 1 and second["count"] == 1, (
-        "[http] limit must be forwarded as the upstream count param"
-    )
-
-
-def test_conformance_http_timeout_mapping(monkeypatch: pytest.MonkeyPatch):
-    provider = _http()
-    _http_transport(monkeypatch, error=TimeoutError("timed out"))
-    with pytest.raises(ProviderError) as excinfo:
-        provider.search(SearchRequest(query="q"))
-    assert excinfo.value.code == ProviderError.TIMEOUT, (
-        "[http] timeouts must map to code 'timeout'"
-    )
-    assert excinfo.value.provider_name == "http"
-    assert excinfo.value.retryable is True
-
-
-def test_conformance_http_failure_mapping():
-    provider = _http()
-    assert provider._map_transport_error(TimeoutError("timeout")).code == (
-        ProviderError.TIMEOUT
-    ), "[http] timeouts must map to code 'timeout'"
-    assert provider._map_transport_error(Exception("401 Unauthorized")).code == (
-        ProviderError.AUTH
-    ), "[http] 401/403 must map to code 'auth'"
-    assert provider._map_transport_error(Exception("429 rate limit")).code == (
-        ProviderError.RATE_LIMIT
-    ), "[http] 429 must map to code 'rate_limit'"
-    assert provider._map_transport_error(Exception("conn refused")).code == (
-        ProviderError.UNAVAILABLE
-    ), "[http] unknown failures must map to code 'unavailable'"
-
-
-def test_conformance_http_requires_key_and_offline_safe(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    with pytest.raises(ConfigError):
-        CustomApiSearchProvider().configure(
-            {"endpoint": "https://api.example.com/search"}
-        )
-    assert CustomApiSearchProvider().health_check() is False, (
-        "[http] unconfigured provider must report unhealthy, never raise"
-    )
-    provider = _http()
-    _http_transport(monkeypatch, error=RuntimeError("no network in tests"))
-    with pytest.raises(ProviderError):
-        provider.search(SearchRequest(query="q"))  # never a raw client error
-    assert provider.health_check() is False, (
-        "[http] unreachable backend must report unhealthy, never raise"
-    )
-
-
-def test_conformance_http_bad_config_rejected():
-    for overrides in (
-        {"method": "PUT"},
-        {"auth_in": "cookie"},
-        {"auth_name": ""},
-        {"results_path": ""},
-        {"fields": {"title": "t", "snippet": "s"}},
-        {"score": "bm25"},
-    ):
-        with pytest.raises(ConfigError):
-            _http(**overrides)

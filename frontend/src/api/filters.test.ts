@@ -13,16 +13,33 @@ import {
  * backend rejects (`plugin_error: Unknown filter key`). Every key the
  * filter mapper emits must be backend-owned (user-restrictions owned
  * keys) or a reserved consumer passthrough (`prefer_*`, `max_price`,
- * `location`, `facilities`).
+ * `min_rating`, `exclude_sponsored`, `location`, `facilities`, `brand`,
+ * `style`, `size`, `occasion`).
  */
 describe('user filter mapper', () => {
-  it('maps the sponsored toggle onto a backend-owned term filter', () => {
+  it('maps the sponsored toggle onto the metadata flag plus a legacy term filter', () => {
     expect(buildFilters({ ...EMPTY_FILTER_STATE, excludeSponsored: true })).toEqual({
+      exclude_sponsored: true,
       must_not_terms: ['sponsored'],
     });
   });
 
   it('emits an empty dict when nothing is set', () => {
+    expect(buildFilters(EMPTY_FILTER_STATE)).toEqual({});
+  });
+
+  it('emits personalize:false only when the toggle is off', () => {
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, personalize: false })).toEqual({
+      personalize: false,
+    });
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, personalize: true })).toEqual({});
+  });
+
+  it('emits a known safety preset and drops unknown ones', () => {
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, safetyPreset: 'strict' })).toEqual({
+      safety_preset: 'strict',
+    });
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, safetyPreset: 'paranoid' })).toEqual({});
     expect(buildFilters(EMPTY_FILTER_STATE)).toEqual({});
   });
 
@@ -67,7 +84,10 @@ describe('user filter mapper', () => {
       excludeSponsored: true,
       mustNotTerm: 'advertisement',
     });
-    expect(filters).toEqual({ must_not_terms: ['sponsored', 'advertisement'] });
+    expect(filters).toEqual({
+      exclude_sponsored: true,
+      must_not_terms: ['sponsored', 'advertisement'],
+    });
   });
 
   it('emits only known backend keys on a fully populated state', () => {
@@ -83,6 +103,7 @@ describe('user filter mapper', () => {
       mustNotTerm: 'advertisement',
     });
     expect(filters).toEqual({
+      exclude_sponsored: true,
       max_price: 250,
       location: 'Berlin',
       facilities: 'wifi, pool',
@@ -100,6 +121,6 @@ describe('user filter mapper', () => {
     for (const key of [...OWNED_FILTER_KEYS, ...RESERVED_FILTER_KEYS, 'prefer_trust']) {
       expect(isKnownFilterKey(key)).toBe(true);
     }
-    expect(isKnownFilterKey('exclude_sponsored')).toBe(false);
+    expect(isKnownFilterKey('exclude_sponsored')).toBe(true);
   });
 });

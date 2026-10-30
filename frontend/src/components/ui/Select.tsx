@@ -17,10 +17,10 @@ export interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement
 /** Labelled native select; always keyboard-operable by construction. */
 export function Select({ label, options, onChange, ...rest }: SelectProps) {
   return (
-    <label className="ol-field">
+    <label className="ol-field flex flex-col gap-ol-xs text-ol-s font-semibold">
       {label}
       <select
-        className="ol-select"
+        className="ol-select font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m disabled:bg-white/30 disabled:text-ol-ink-soft"
         aria-label={label}
         onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
           onChange(event.target.value);

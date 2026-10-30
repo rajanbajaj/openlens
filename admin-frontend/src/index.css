@@ -1,0 +1,752 @@
+/* OpenLens design tokens + application styles.
+ *
+ * Vibrant "Liquid Glass" theme: a deep violet base carrying slowly
+ * drifting blue/pink light sources, frosted white glass on every
+ * surface, dark ink text throughout so AA contrast holds on glass.
+ * Glass is selective by surface weight:
+ *   - hero / sticky-header search: strongest glass + soft outer glow
+ *   - sidebar / rail / drawers: moderate glass
+ *   - result cards: subtle glass, with a bounded hover lift
+ * Every --ol-* class keeps the Task-18 component contract (same
+ * class names, same testids); only the palette and surface recipe
+ * changed. Fallbacks stay flat + opaque where backdrop-filter is
+ * unsupported, and text colors are dark ink on light glass so AA
+ * pairs hold with or without blur.
+ *
+ * Tailwind v4 utilities are available alongside these tokens
+ * (see tailwindcss import below); new styling should prefer
+ * utilities, while the --ol-* contract stays untouched.
+ */
+
+@import 'tailwindcss';
+
+@theme {
+  --color-ol-paper: #ffffff;
+  --color-ol-well: #eef2f7;
+  --color-ol-ink: #101828;
+  --color-ol-ink-soft: #344054;
+  --color-ol-line: rgb(255 255 255 / 0.45);
+  --color-ol-accent: #4f46e5;
+  --color-ol-accent-strong: #3730a3;
+  --color-ol-on-accent: #ffffff;
+  --color-ol-accent-wash: rgb(79 70 229 / 0.15);
+  --color-ol-error: #b91c1c;
+  --color-ol-error-wash: #fdecec;
+  --color-ol-warn: #92600a;
+  --color-ol-warn-wash: #fdf3e0;
+  --color-ol-ok: #166534;
+  --color-ol-ok-wash: #e8f5ec;
+  --color-ol-glass-wash: rgb(255 255 255 / 0.28);
+  --color-ol-glass-wash-strong: rgb(255 255 255 / 0.35);
+  --color-ol-glass-wash-well: rgb(255 255 255 / 0.22);
+  --color-ol-glass-fallback: #f8fafc;
+  --color-ol-glass-fallback-strong: #ffffff;
+  --color-ol-glass-fallback-well: #eef2f7;
+  --color-ol-glass-border: rgb(255 255 255 / 0.35);
+  --color-ol-glass-border-bright: rgb(255 255 255 / 0.55);
+
+  --font-ol: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --text-ol-s: 0.8125rem;
+  --text-ol-m: 1rem;
+  --text-ol-l: 1.25rem;
+  --text-ol-xl: 1.5rem;
+
+  --spacing-ol-xs: 0.25rem;
+  --spacing-ol-s: 0.5rem;
+  --spacing-ol-m: 1rem;
+  --spacing-ol-l: 1.5rem;
+  --spacing-ol-xl: 2.5rem;
+
+  --radius-ol-s: 4px;
+  --radius-ol-m: 6px;
+  --radius-ol-l: 8px;
+
+  --shadow-ol: 0 4px 30px rgb(0 0 0 / 0.1);
+  --shadow-ol-l: 0 8px 40px rgb(0 0 0 / 0.15), 0 0 32px rgb(255 255 255 / 0.25);
+
+  --blur-ol-s: 8px;
+  --blur-ol-m: 12px;
+  --blur-ol-l: 16px;
+}
+
+:root {
+  color-scheme: light;
+
+  /* Ink on light glass (dark so AA holds on translucent white washes) */
+  --ol-paper: #ffffff;
+  --ol-well: #eef2f7;
+  --ol-ink: #101828;
+  --ol-ink-soft: #344054;
+  --ol-line: rgb(255 255 255 / 0.45);
+
+  /* Accent (deep indigo-violet): white-on-accent clears WCAG AA at
+   * normal sizes at both gradient stops. */
+  --ol-accent: #4f46e5;
+  --ol-accent-strong: #3730a3;
+  --ol-on-accent: #ffffff;
+  --ol-accent-wash: rgb(79 70 229 / 0.15);
+
+  /* Status (unchanged dark-on-wash AA pairs) */
+  --ol-error: #b91c1c;
+  --ol-error-wash: #fdecec;
+  --ol-warn: #92600a;
+  --ol-warn-wash: #fdf3e0;
+  --ol-ok: #166534;
+  --ol-ok-wash: #e8f5ec;
+
+  /* Type */
+  --ol-font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ol-font-size-s: 0.8125rem;
+  --ol-font-size-m: 1rem;
+  --ol-font-size-l: 1.25rem;
+  --ol-font-size-xl: 1.5rem;
+
+  /* Space */
+  --ol-space-xs: 0.25rem;
+  --ol-space-s: 0.5rem;
+  --ol-space-m: 1rem;
+  --ol-space-l: 1.5rem;
+  --ol-space-xl: 2.5rem;
+
+  /* Shape + elevation */
+  --ol-radius-s: 4px;
+  --ol-radius-m: 6px;
+  --ol-radius-l: 8px;
+  --ol-shadow: 0 4px 30px rgb(0 0 0 / 0.1);
+
+  /* Glass pillars: translucent white fill, 1px light-edge border,
+   * soft diffused shadow, GPU-composited. Blur caps at 16px so
+   * scrolling stays cheap; backdrop-filter is never animated. */
+  --ol-glass-wash: rgb(255 255 255 / 0.28);
+  --ol-glass-wash-strong: rgb(255 255 255 / 0.35);
+  --ol-glass-wash-well: rgb(255 255 255 / 0.22);
+  --ol-glass-fallback: #f8fafc;
+  --ol-glass-fallback-strong: #ffffff;
+  --ol-glass-fallback-well: #eef2f7;
+  --ol-glass-blur-s: 8px;
+  --ol-glass-blur-m: 12px;
+  --ol-glass-blur-l: 16px;
+  --ol-glass-border: rgb(255 255 255 / 0.35);
+  --ol-glass-border-bright: rgb(255 255 255 / 0.55);
+  --ol-glass-shadow: 0 4px 30px rgb(0 0 0 / 0.1);
+  --ol-glass-shadow-l: 0 8px 40px rgb(0 0 0 / 0.15), 0 0 32px rgb(255 255 255 / 0.25);
+  --ol-glass-fill: linear-gradient(135deg, rgb(255 255 255 / 0.28), rgb(255 255 255 / 0.14));
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--ol-font);
+  font-size: var(--ol-font-size-m);
+  color: var(--ol-ink);
+  background: #1b1040;
+}
+
+/* ---- Vibrant backdrop (what the glass refracts) ----
+ * Three soft light sources over a deep violet base, composited in
+ * one fixed layer so no per-element filter is needed. Drift is a
+ * slow transform on the whole layer (never backdrop-filter), and
+ * reduced-motion users get a static backdrop.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -12vmax;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(55vmax 55vmax at 12% 18%, rgb(109 40 217 / 0.85), transparent 62%),
+    radial-gradient(48vmax 48vmax at 88% 22%, rgb(37 99 235 / 0.8), transparent 62%),
+    radial-gradient(42vmax 42vmax at 52% 96%, rgb(236 72 153 / 0.7), transparent 65%),
+    linear-gradient(160deg, #1b1040, #342065 45%, #1b1040);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  body::before {
+    animation: ol-backdrop-drift 40s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes ol-backdrop-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-2vmax, 1.5vmax, 0);
+  }
+}
+
+/* Visible keyboard focus everywhere; never remove without replacement. */
+:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
+/* ---- App shell ---- */
+
+.ol-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  isolation: isolate;
+}
+
+.ol-header {
+  border-bottom: 1px solid var(--ol-line);
+  background: var(--ol-paper);
+}
+
+.ol-header-inner {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: var(--ol-space-m) var(--ol-space-l);
+  display: flex;
+  align-items: baseline;
+  gap: var(--ol-space-m);
+}
+
+.ol-brand {
+  margin: 0;
+  font-size: var(--ol-font-size-xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 2px rgb(255 255 255 / 0.6);
+}
+
+.ol-brand-sub {
+  margin: 0;
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+  text-shadow: 0 1px 2px rgb(255 255 255 / 0.5);
+}
+
+/* Google-style landing: nothing but the centered hero (brand + search +
+ * mode) until the first search runs, so the page opens like google.com. */
+.ol-landing {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--ol-space-l);
+}
+
+/* ---- Search form ---- */
+
+.ol-search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ol-space-s);
+  align-items: flex-end;
+}
+
+.ol-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-xs);
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+}
+
+.ol-field-grow {
+  flex: 1 1 16rem;
+}
+
+.ol-input,
+.ol-select {
+  font: inherit;
+  font-weight: 400;
+  color: var(--ol-ink);
+  background: rgb(255 255 255 / 0.55);
+  border: 1px solid var(--ol-glass-border);
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-s) var(--ol-space-m);
+}
+
+.ol-input:disabled,
+.ol-select:disabled {
+  background: rgb(255 255 255 / 0.3);
+  color: var(--ol-ink-soft);
+}
+
+.ol-field-error {
+  margin: var(--ol-space-xs) 0 0;
+  font-size: var(--ol-font-size-s);
+  font-weight: 400;
+  color: var(--ol-error);
+}
+
+/* ---- Buttons ---- */
+
+.ol-button {
+  font: inherit;
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  border-radius: var(--ol-radius-s);
+  border: 1px solid transparent;
+  padding: var(--ol-space-s) var(--ol-space-m);
+  cursor: pointer;
+}
+
+.ol-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ol-button-primary {
+  background: linear-gradient(135deg, #6d28d9, #2563eb);
+  color: var(--ol-on-accent);
+  box-shadow: 0 4px 16px rgb(37 99 235 / 0.4);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.ol-button-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 22px rgb(37 99 235 / 0.5);
+}
+
+.ol-button-secondary {
+  background: rgb(255 255 255 / 0.45);
+  border-color: var(--ol-glass-border);
+  color: var(--ol-ink);
+}
+
+.ol-button-secondary:hover:not(:disabled) {
+  background: rgb(255 255 255 / 0.6);
+}
+
+.ol-button-ghost {
+  background: transparent;
+  color: var(--ol-accent-strong);
+  padding-left: var(--ol-space-xs);
+  padding-right: var(--ol-space-xs);
+  text-decoration: underline;
+}
+
+/* ---- Results ---- */
+
+.ol-result-count {
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-card {
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: var(--ol-radius-m);
+  box-shadow: var(--ol-shadow);
+  background: rgb(255 255 255 / 0.55);
+  padding: var(--ol-space-m) var(--ol-space-l);
+  transform: translateZ(0);
+  transition:
+    transform 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-card {
+    background: linear-gradient(135deg, rgb(255 255 255 / 0.22), rgb(255 255 255 / 0.1));
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-s));
+    backdrop-filter: blur(var(--ol-glass-blur-s));
+  }
+}
+
+.ol-card:hover {
+  transform: translateZ(0) translateY(-3px) scale(1.01);
+  background-color: rgb(255 255 255 / 0.28);
+  border-color: rgb(255 255 255 / 0.55);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.16);
+}
+
+.ol-card h3 {
+  margin: 0 0 var(--ol-space-xs);
+  font-size: var(--ol-font-size-l);
+  text-shadow: 0 1px 2px rgb(255 255 255 / 0.5);
+}
+
+.ol-card a {
+  color: var(--ol-accent-strong);
+}
+
+.ol-result-meta {
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+/* ---- Badges + chips ---- */
+
+.ol-badge,
+.ol-chip {
+  display: inline-block;
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  border-radius: var(--ol-radius-s);
+  padding: 0 var(--ol-space-s);
+  line-height: 1.6;
+}
+
+.ol-badge {
+  background: rgb(255 255 255 / 0.3);
+  border: 1px solid var(--ol-glass-border);
+  color: var(--ol-ink-soft);
+}
+
+.ol-chip {
+  background: var(--ol-accent-wash);
+  border: 1px solid var(--ol-accent);
+  color: var(--ol-accent-strong);
+  margin-right: var(--ol-space-xs);
+}
+
+.ol-chip button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0 0 0 var(--ol-space-xs);
+  text-decoration: underline;
+}
+
+/* ---- Diagnostics drawer ---- */
+
+.ol-drawer {
+  margin-top: var(--ol-space-l);
+  border: 1px solid var(--ol-glass-border);
+  border-top-color: var(--ol-glass-border-bright);
+  border-left-color: var(--ol-glass-border-bright);
+  border-radius: var(--ol-radius-l);
+  background: var(--ol-glass-fallback-well);
+  box-shadow: var(--ol-glass-shadow);
+  padding: var(--ol-space-m) var(--ol-space-l);
+  transform: translateZ(0);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-drawer {
+    background: linear-gradient(135deg, var(--ol-glass-wash), rgb(255 255 255 / 0.12));
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-m));
+    backdrop-filter: blur(var(--ol-glass-blur-m));
+  }
+}
+
+.ol-drawer dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ol-space-xs) var(--ol-space-m);
+  margin: 0;
+}
+
+.ol-drawer pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--ol-font-size-s);
+}
+
+/* ---- Skeleton loading ---- */
+
+.ol-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ol-space-s);
+  margin: var(--ol-space-m) 0;
+}
+
+.ol-skeleton-bar {
+  height: 0.9rem;
+  border-radius: var(--ol-radius-s);
+  background: rgb(255 255 255 / 0.45);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ol-skeleton-bar {
+    animation: ol-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes ol-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ---- Toasts, signal bars, warnings, and story groups ----
+ * Migrated to Tailwind utilities (see Toast.tsx, ResultCard.tsx,
+ * ResultList.tsx); no custom rules remain for these surfaces.
+ */
+
+/* ---- Screen-reader-only live announcements ---- */
+
+.ol-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Pagination ---- */
+
+.ol-pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--ol-space-m);
+  margin-top: var(--ol-space-m);
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 48rem) {
+  .ol-landing {
+    padding: var(--ol-space-m);
+  }
+
+  .ol-header-inner {
+    padding: var(--ol-space-s) var(--ol-space-m);
+  }
+
+  .ol-search-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* ---- Frosted glass chrome (selective weights) ----
+ * Flat fallback washes render by default; translucency + blur apply
+ * only where backdrop-filter is supported. Hero carries the strongest
+ * wash and the glow; sidebar/rail stay moderate.
+ */
+
+.ol-glass {
+  background: var(--ol-glass-fallback);
+  border: 1px solid var(--ol-line);
+  box-shadow: var(--ol-shadow);
+  transform: translateZ(0);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass {
+    background: var(--ol-glass-fill);
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-m));
+    backdrop-filter: blur(var(--ol-glass-blur-m));
+    border-color: var(--ol-glass-border);
+    border-top-color: var(--ol-glass-border-bright);
+    border-left-color: var(--ol-glass-border-bright);
+    box-shadow: var(--ol-glass-shadow);
+  }
+}
+
+.ol-glass-hero {
+  border-radius: var(--ol-radius-l);
+  padding: var(--ol-space-l) var(--ol-space-xl);
+  background: var(--ol-glass-fallback-strong);
+  box-shadow: var(--ol-glass-shadow-l);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass-hero {
+    background: linear-gradient(135deg, var(--ol-glass-wash-strong), rgb(255 255 255 / 0.14));
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-l));
+    backdrop-filter: blur(var(--ol-glass-blur-l));
+    box-shadow: var(--ol-glass-shadow-l);
+  }
+}
+
+.ol-glass-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ol-glass-header {
+    -webkit-backdrop-filter: blur(var(--ol-glass-blur-s));
+    backdrop-filter: blur(var(--ol-glass-blur-s));
+  }
+}
+
+.ol-glass-sidebar {
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-m);
+}
+
+.ol-glass-rail {
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-m) var(--ol-space-l);
+  background: var(--ol-glass-fallback-well);
+}
+
+/* ---- Suggestion dropdown readability ----
+ * The dropdown rides on the subtle card surface; bump its surface
+ * opacity so option text stays legible over the vibrant backdrop.
+ * (Owned by SuggestDropdown via data-testid; no markup change.)
+ */
+[data-testid='suggest-dropdown'] {
+  background: rgb(255 255 255 / 0.85);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  [data-testid='suggest-dropdown'] {
+    background: rgb(255 255 255 / 0.6);
+  }
+}
+
+/* ---- Workspace shell grid (sidebar / results / rail) ----
+ * Base is the 360px single column; 768px adds the sidebar column and
+ * drops the rail below; 1280px opens the full three-column workspace.
+ */
+
+.ol-app-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'sidebar'
+    'results'
+    'rail';
+  gap: var(--ol-space-m);
+  align-items: start;
+  width: 100%;
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: var(--ol-space-l);
+}
+
+.ol-shell-sidebar {
+  grid-area: sidebar;
+  min-width: 0;
+}
+
+.ol-shell-results {
+  grid-area: results;
+  min-width: 0;
+}
+
+.ol-shell-rail {
+  grid-area: rail;
+  min-width: 0;
+}
+
+.ol-app-shell-collapsed {
+  grid-template-areas:
+    'results'
+    'rail';
+}
+
+.ol-app-shell-collapsed > .ol-shell-sidebar {
+  display: none;
+}
+
+@media (max-width: 22.5rem) {
+  .ol-app-shell {
+    padding: var(--ol-space-m);
+    gap: var(--ol-space-s);
+  }
+
+  .ol-glass-hero {
+    padding: var(--ol-space-m);
+  }
+
+  .ol-glass-rail {
+    padding: var(--ol-space-m);
+  }
+}
+
+@media (min-width: 48rem) {
+  .ol-app-shell {
+    grid-template-columns: 14rem minmax(0, 1fr);
+    grid-template-areas:
+      'sidebar results'
+      'rail rail';
+    max-width: 72rem;
+  }
+
+  .ol-app-shell-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'results'
+      'rail';
+  }
+}
+
+@media (min-width: 80rem) {
+  .ol-app-shell {
+    grid-template-columns: 15rem minmax(0, 1fr) 19rem;
+    grid-template-areas: 'sidebar results rail';
+    max-width: 80rem;
+  }
+
+  .ol-app-shell-collapsed {
+    grid-template-columns: minmax(0, 1fr) 19rem;
+    grid-template-areas: 'results rail';
+  }
+}
+
+/* ---- Short disclosure transitions ----
+ * No transitions by default: reduced-motion users get instant state
+ * changes. Only brief fades on disclosure + rail surfaces otherwise.
+ */
+
+/* ---- Suggestion dropdown entrance motion ----
+ * Token-only entrance: a short fade with a small rise measured in
+ * --ol-space-xs. The dropdown mounts under
+ * `data-testid="suggest-dropdown"` (owned by SuggestDropdown), so this
+ * rule animates it without touching component markup. Gated behind
+ * `prefers-reduced-motion: no-preference`: reduced-motion users get an
+ * instant dropdown, and the `reduce` block pins that explicitly.
+ */
+
+@keyframes ol-suggest-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--ol-space-xs)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-testid='suggest-dropdown'] {
+    animation: ol-suggest-in 150ms ease;
+  }
+
+  .ol-transition-fade {
+    transition: opacity 150ms ease;
+  }
+
+  .ol-transition-panel {
+    transition:
+      opacity 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease;
+  }
+
+  .ol-transition-rail {
+    transition: opacity 180ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid='suggest-dropdown'] {
+    animation: none;
+  }
+}

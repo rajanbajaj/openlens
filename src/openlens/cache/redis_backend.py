@@ -1,9 +1,9 @@
-"""Redis cache backend (optional driver, env-gated tests).
+"""Redis cache backend (shipped default, env-gated tests).
 
-The driver imports lazily so a default install never requires it: when
-the ``redis`` package is missing or the server is unreachable, factory
-construction raises :class:`ProviderError` with ``UNAVAILABLE`` and the
-caller disables caching with a warning instead of crashing.
+The driver imports lazily: when the ``redis`` package is missing or the
+server is unreachable, factory construction raises
+:class:`ProviderError` with ``UNAVAILABLE`` and the caller disables
+caching with a warning instead of crashing.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ class RedisCacheProvider(CacheProvider):
 
     def __init__(self, url: str, socket_timeout_s: float = 2.0) -> None:
         try:
-            import redis  # type: ignore[import-not-found]  # lazy: optional extra
+            import redis  # type: ignore[import-not-found]  # lazy import
         except ImportError as exc:
             raise ProviderError(
-                "redis cache backend needs the 'redis' extra",
+                "redis cache backend needs the 'redis' package",
                 provider_name="cache-redis",
                 retryable=False,
                 code=ProviderError.UNAVAILABLE,
