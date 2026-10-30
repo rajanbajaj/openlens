@@ -164,6 +164,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     queued = settings.get("max_queued_urls")
     pages = settings.get("max_pages")
     delay = settings.get("crawl_delay_s")
+    robots = settings.get("respect_robots")
     return {
         "default_max_depth": (
             depth
@@ -187,6 +188,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
             and 0 <= delay <= 600
             else None
         ),
+        "respect_robots": robots if isinstance(robots, bool) else None,
     }
 
 
@@ -276,6 +278,9 @@ class CrawlerWorker:
         with contextlib.suppress(Exception):
             if live["crawl_delay_s"] is not None:
                 crawler.crawl_delay_s = live["crawl_delay_s"]
+        with contextlib.suppress(Exception):
+            if live["respect_robots"] is not None:
+                crawler.respect_robots = live["respect_robots"]
 
     # -- enqueue ----------------------------------------------------------
 

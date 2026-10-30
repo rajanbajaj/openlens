@@ -153,6 +153,16 @@ def test_refresh_limits_applies_queue_cap_and_pacing() -> None:
     assert worker.crawler.crawl_delay_s == 1.5
 
 
+def test_refresh_limits_applies_respect_robots_toggle() -> None:
+    worker = _worker({"respect_robots": False})
+    assert worker.crawler.respect_robots is True
+    worker.refresh_limits()
+    assert worker.crawler.respect_robots is False
+    worker = _worker({"respect_robots": "yes"})
+    worker.refresh_limits()
+    assert worker.crawler.respect_robots is True
+
+
 def test_refresh_limits_ignores_invalid_queue_cap_and_pacing() -> None:
     worker = _worker(
         {
