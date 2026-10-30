@@ -54,6 +54,7 @@ class SearchContext:
     plugin_executions: list[PluginExecution] = field(default_factory=list)
     provider_latencies_ms: dict[str, float] = field(default_factory=dict)
     provider_result_counts: dict[str, int] = field(default_factory=dict)
+    provider_totals: dict[str, int] = field(default_factory=dict)
     provider_costs_estimated: dict[str, float] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +66,10 @@ class SearchContext:
 
     def record_provider_results(self, provider_name: str, count: int) -> None:
         self.provider_result_counts[provider_name] = count
+
+    def record_provider_total(self, provider_name: str, total: int) -> None:
+        """Record a provider's full match count for pagination totals."""
+        self.provider_totals[provider_name] = total
 
     def record_provider_cost(self, provider_name: str, cost: float) -> None:
         self.provider_costs_estimated[provider_name] = cost

@@ -284,7 +284,11 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
             {queue.length === 0 ? (
               <p className="my-ol-s text-ol-s">Queue is empty</p>
             ) : (
-              <ol data-testid="frontier-queue" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
+              <ol
+                data-testid="frontier-queue"
+                aria-label="Frontier queue"
+                className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
+              >
                 {queue.map((entry) => (
                   <li key={entry.url}>
                     <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth} · priority{' '}

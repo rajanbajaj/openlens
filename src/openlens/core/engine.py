@@ -589,7 +589,19 @@ class SearchEngine(Engine):
             context = self._pipeline.run(context)
             context = self._ranker.run(context)
             context = assemble_explanations(context)
-            total = len(context.results)
+            # True pagination total: providers reporting search_with_total
+            # contribute their full match counts (summed across a
+            # federated fan-out); legacy list-only providers contribute
+            # nothing and the held window stays the total. The max() keeps
+            # expansion-merged extras countable: the total never reports
+            # fewer hits than the response actually holds.
+            reported = [
+                total
+                for total in context.provider_totals.values()
+                if isinstance(total, int) and not isinstance(total, bool) and total >= 0
+            ]
+            claimed = sum(reported) if reported else len(context.results)
+            total = max(claimed, len(context.results))
             if cache_key is not None and self._cache is not None:
                 self._cache_store(cache_key, context, total)
         page = context.results[

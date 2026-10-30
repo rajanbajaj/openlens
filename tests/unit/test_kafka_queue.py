@@ -561,6 +561,12 @@ def test_resume_publishes_to_kafka(
     )
     assert resp.status_code == 200, resp.text
     assert fake.published == [("https://kafka.test/a", 0, None)]
+    # No explicit priority: Kafka-only, no store copy.
+    store = SqliteFrontierStore(str(tmp_path / "api-frontier.db"))
+    try:
+        assert store.is_known("https://kafka.test/a") is False
+    finally:
+        store.close()
 
 
 def test_resume_falls_back_to_store_when_broker_down(
@@ -603,6 +609,16 @@ def test_resume_priority_reaches_kafka_and_snapshot(
     assert resp.status_code == 200, resp.text
     assert fake.published == [("https://kafka.test/a", 0, 6)]
     assert resp.json()["queue"][0]["priority"] == 6
+    # Fast-lane: the explicit priority also lands in the store, so the
+    # next per-message drain claims it first instead of waiting behind
+    # the topic backlog in offset order.
+    store = SqliteFrontierStore(str(tmp_path / "api-frontier.db"))
+    try:
+        assert [(e.url, e.priority) for e in store.pending(limit=100)] == [
+            ("https://kafka.test/a", 6)
+        ]
+    finally:
+        store.close()
 
 
 def test_resume_priority_rejects_non_integers(
@@ -674,9 +690,14 @@ def test_persistent_frontier_push_hook(tmp_path: Path) -> None:
             store, 100, on_push=lambda url, depth: seen.append((url, depth))
         )
         frontier.push("https://example.com/a", 2)
+        # Re-sighting a known URL refires nothing: the store row is the
+        # durable record and any drain picks it up, so the topic would
+        # otherwise carry one copy per page linking it.
+        frontier.push("https://example.com/a", 2)
+        frontier.push("https://example.com/b", 1)
     finally:
         store.close()
-    assert seen == [("https://example.com/a", 2)]
+    assert seen == [("https://example.com/a", 2), ("https://example.com/b", 1)]
 
 
 def test_package_init_does_not_preimport_worker() -> None:

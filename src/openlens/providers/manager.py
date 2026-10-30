@@ -499,7 +499,9 @@ class ProviderManager:
             context.record_provider_results(name, len(hits))
         context.record_provider_cost(name, self._provider_costs.get(name, 0.0))
 
-    def _invoke(self, name: str, request: SearchRequest) -> list[SearchResult]:
+    def _invoke(
+        self, name: str, request: SearchRequest
+    ) -> tuple[list[SearchResult], int | None]:
         """Run one provider call with error mapping but no thread/timeout.
 
         Thread-free core shared by the thread-bound single/fallback wrapper
@@ -507,10 +509,21 @@ class ProviderManager:
         enforces its own per-provider and overall deadlines. Never leaks
         raw client exceptions: non-ProviderError failures surface as
         ProviderError.
+
+        Returns the hit window plus the provider's full match count when
+        it implements the optional ``search_with_total`` (feeds true
+        pagination totals); ``None`` for the legacy list-only contract.
+        Callers record the count into the context.
         """
         provider = self._providers[name]
         try:
-            return list(provider.search(request))
+            search_with_total = getattr(provider, "search_with_total", None)
+            if search_with_total is not None:
+                hits, total = search_with_total(request)
+                return list(hits), (
+                    int(total) if isinstance(total, int) and total >= 0 else None
+                )
+            return list(provider.search(request)), None
         except ProviderError as exc:
             if not exc.provider_name:
                 exc.provider_name = name
@@ -564,7 +577,10 @@ class ProviderManager:
                 retryable=False,
                 code=ProviderError.UNKNOWN,
             ) from err
-        hits = list(box.get("result", []))
+        window, reported_total = box.get("result", ([], None))
+        hits = list(window)
+        if context is not None and reported_total is not None:
+            context.record_provider_total(name, reported_total)
         self._record_accounting(name, hits, context)
         return hits
 
@@ -651,8 +667,11 @@ class ProviderManager:
                             latencies[name] = (time.monotonic() - started) * 1000.0
                     else:
                         with state_lock:
-                            ranked[name] = hits
+                            window, reported_total = hits
+                            ranked[name] = list(window)
                             latencies[name] = (time.monotonic() - started) * 1000.0
+                            if context is not None and reported_total is not None:
+                                context.record_provider_total(name, reported_total)
             finally:
                 # Never awaited: on overall expiry late workers are daemon
                 # threads recorded as timeouts above; the executor is not

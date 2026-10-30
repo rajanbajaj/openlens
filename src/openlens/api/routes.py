@@ -818,34 +818,14 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
     return True
 
 
-def _publish_seeds(
-    app_config: Any, seeds: list[str], priority: int | None = None
+def _enqueue_seeds_to_store(
+    app_config: Any, seeds: list[str], priority: int | None
 ) -> bool:
-    """Publish seeds to Kafka, else enqueue them into the persistent store.
+    """Best-effort store enqueue for resume seeds (never raises).
 
-    Kafka-first when ``kafka:`` is enabled; the store fallback keeps
-    local/test setups crawling when the broker is unreachable. Seeds are
-    also kept in the in-memory snapshot by the caller for the dashboard.
-    An explicit ``priority`` is stored on insert and overwrites the
-    stored value on conflict; ``None`` keeps whatever is there.
-    Returns True when a durable queue (Kafka or store) accepted them.
+    Returns True when the store accepted the write; failures only log,
+    so a sick store never turns a successful Kafka publish into a 500.
     """
-    if seeds and kafka_enabled(app_config if isinstance(app_config, dict) else None):
-        try:
-            queue = open_kafka_queue(app_config)
-            try:
-                for seed in seeds:
-                    queue.publish(seed, 0, priority=priority)
-            finally:
-                with suppress(Exception):
-                    queue.close()
-            return True
-        except ProviderError as exc:
-            logger.warning(
-                "frontier resume: Kafka publish failed, using store fallback: %s", exc
-            )
-    if not seeds:
-        return True
     try:
         store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
         try:
@@ -859,6 +839,44 @@ def _publish_seeds(
     except Exception as exc:
         logger.warning("frontier resume: store enqueue failed: %s", exc)
         return False
+
+
+def _publish_seeds(
+    app_config: Any, seeds: list[str], priority: int | None = None
+) -> bool:
+    """Publish seeds to Kafka, else enqueue them into the persistent store.
+
+    Kafka-first when ``kafka:`` is enabled; the store fallback keeps
+    local/test setups crawling when the broker is unreachable. Seeds are
+    also kept in the in-memory snapshot by the caller for the dashboard.
+    An explicit ``priority`` is stored on insert and overwrites the
+    stored value on conflict; ``None`` keeps whatever is there.
+    An explicit priority additionally fast-lanes through the store:
+    topic order is offset order, so a priority seed would otherwise wait
+    behind the whole backlog, while the store copy lets the next
+    per-message drain claim it first (``priority DESC``); the later
+    Kafka twin then dedups to a no-op.
+    Returns True when a durable queue (Kafka or store) accepted them.
+    """
+    if seeds and kafka_enabled(app_config if isinstance(app_config, dict) else None):
+        try:
+            queue = open_kafka_queue(app_config)
+            try:
+                for seed in seeds:
+                    queue.publish(seed, 0, priority=priority)
+            finally:
+                with suppress(Exception):
+                    queue.close()
+            if priority is not None:
+                _enqueue_seeds_to_store(app_config, seeds, priority)
+            return True
+        except ProviderError as exc:
+            logger.warning(
+                "frontier resume: Kafka publish failed, using store fallback: %s", exc
+            )
+    if not seeds:
+        return True
+    return _enqueue_seeds_to_store(app_config, seeds, priority)
 
 
 @router.post("/frontier/pause", response_model=FrontierStatusSchema)

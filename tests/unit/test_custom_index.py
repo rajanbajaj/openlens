@@ -66,6 +66,24 @@ def test_pagination_pages_without_overlap():
     assert {h.id for h in page1} | {h.id for h in page2} <= {h.id for h in all_hits}
 
 
+def test_search_with_total_reports_full_match_count():
+    """The repository total travels with the window (pagination needs it).
+
+    ``total`` is the full match count even when the returned window is
+    smaller; ``search()`` keeps returning the plain hit list.
+    """
+    provider = make_provider()
+    hits, total = provider.search_with_total(
+        SearchRequest(query="search", limit=2, offset=0)
+    )
+    assert len(hits) <= 2
+    # The seed corpus matches "search" more than twice: the true total
+    # exceeds the 2-hit window (this is the pagination fix).
+    assert total > len(hits) >= 1
+    full = provider.search(SearchRequest(query="search", limit=1000, offset=0))
+    assert total >= len(full) >= 1
+
+
 def test_empty_query_raises_provider_error():
     provider = make_provider()
     with pytest.raises(ProviderError):

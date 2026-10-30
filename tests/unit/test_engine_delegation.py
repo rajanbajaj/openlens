@@ -227,6 +227,42 @@ def test_prefs_flow_through_engine_to_manager() -> None:
 # ---------------------------------------------------------------------------
 
 
+class _TotalingBackend(_FakeBackend):
+    """Fake reporting a repository-style total larger than its window."""
+
+    def __init__(self, entry_name: str, hits: list[SearchResult], total: int) -> None:
+        super().__init__(entry_name, hits)
+        self._total = total
+
+    def search_with_total(
+        self, request: SearchRequest
+    ) -> tuple[list[SearchResult], int]:
+        return self.search(request), self._total
+
+
+def test_provider_total_beats_window_size() -> None:
+    """A reported provider total sets the response total (pagination).
+
+    The window holds 2 hits of 25 reported matches; the response keeps
+    the 2-hit page but reports the true total.
+    """
+    backend = _TotalingBackend("a", _paged_hits("a", 10), total=25)
+    engine = SearchEngine.from_manager(ProviderManager({"a": backend}, "a", "single"))
+    resp = engine.search(SearchRequest(query="quantum zebra", limit=2, offset=0))
+    assert len(resp.results) == 2
+    assert resp.total == 25
+    second = engine.search(SearchRequest(query="quantum zebra", limit=2, offset=2))
+    assert second.total == 25
+
+
+def test_legacy_backend_without_totals_keeps_window_count() -> None:
+    """Providers without ``search_with_total`` keep the len() behavior."""
+    backend = _FakeBackend("a", _paged_hits("a", 8))
+    engine = SearchEngine.from_manager(ProviderManager({"a": backend}, "a", "single"))
+    page = engine.search(SearchRequest(query="quantum zebra", limit=3, offset=2))
+    assert page.total == 5
+
+
 def test_build_engine_uses_manager_path() -> None:
     config: dict[str, Any] = {
         "providers": {

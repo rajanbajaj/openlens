@@ -247,6 +247,20 @@ class CustomIndexProvider(SearchProvider):
         self._repository.close()
 
     def search(self, request: SearchRequest) -> list[SearchResult]:
+        """Run the request; returns the hit window (see ``search_with_total``)."""
+        hits, _ = self.search_with_total(request)
+        return hits
+
+    def search_with_total(
+        self, request: SearchRequest
+    ) -> tuple[list[SearchResult], int]:
+        """Run the request; returns the hit window plus the full match count.
+
+        The manager prefers this over :meth:`search` when present so the
+        engine can report true pagination totals instead of the fetch
+        window size. The count is the repository match total (pre-slice);
+        downstream filtering may still trim the held page.
+        """
         if not request.query or not request.query.strip():
             raise ProviderError(
                 "query must not be empty",
@@ -261,10 +275,10 @@ class CustomIndexProvider(SearchProvider):
             )
         parsed = parse_query(request.query)
         if not parsed.fts_query:
-            return []
+            return [], 0
         if not self._semantic_enabled or self._models is None:
             try:
-                scored, _total = self._repository.search(
+                scored, total = self._repository.search(
                     parsed.fts_query, limit=request.limit, offset=request.offset
                 )
             except ProviderError:
@@ -276,16 +290,16 @@ class CustomIndexProvider(SearchProvider):
                     code=ProviderError.UNKNOWN,
                 ) from exc
             results = normalize_many(scored, provider=self.name, query=request.query)
-            return deduplicate(results)
+            return deduplicate(results), int(total)
         return self._hybrid_search(request, parsed.fts_query)
 
     def _hybrid_search(
         self, request: SearchRequest, fts_query: str
-    ) -> list[SearchResult]:
+    ) -> tuple[list[SearchResult], int]:
         """FTS5 + embedding candidates fused with RRF; fail open to FTS5."""
         fetch_depth = request.offset + request.limit
         try:
-            scored, _total = self._repository.search(
+            scored, total = self._repository.search(
                 fts_query, limit=fetch_depth, offset=0
             )
         except ProviderError:
@@ -302,20 +316,29 @@ class CustomIndexProvider(SearchProvider):
         # Fail open: rank_ids_by_semantic never raises; [] keeps keyword order.
         semantic_ids = rank_ids_by_semantic(request.query, fts_results, self._models)
         if not semantic_ids:
-            return fts_results[request.offset : request.offset + request.limit]
+            return (
+                fts_results[request.offset : request.offset + request.limit],
+                int(total),
+            )
         by_id = {hit.id: hit for hit in fts_results}
         semantic_results = [
             by_id[item_id] for item_id in semantic_ids if item_id in by_id
         ]
         if not semantic_results:
-            return fts_results[request.offset : request.offset + request.limit]
+            return (
+                fts_results[request.offset : request.offset + request.limit],
+                int(total),
+            )
         fused = fuse(
             {
                 self.FTS_LIST_NAME: fts_results,
                 self.SEMANTIC_LIST_NAME: semantic_results,
             }
         )
-        return fused[request.offset : request.offset + request.limit]
+        return (
+            fused[request.offset : request.offset + request.limit],
+            int(total),
+        )
 
     def health_check(self) -> bool:
         try:

@@ -235,7 +235,14 @@ ASC`); omitted/`None` keeps whatever the store already has (`0` for
 new rows), while an explicit int — including `0` and negatives —
 overwrites it on conflict. In Kafka mode the priority travels in the
 message payload, so consumed URLs land in the store with the same
-precedence; discovered links carry none and default to `0`.
+precedence; discovered links carry none and default to `0`. Topic
+order itself is offset order, so an explicit resume priority also
+fast-lanes a copy straight into the store: the next per-message drain
+claims it first (`priority DESC`) instead of waiting behind the whole
+backlog, and the later Kafka twin dedups to a no-op. Discovered-link
+fan-out only publishes first sightings (re-sightings are already in
+the store for any drain to pick up), which keeps popular URLs from
+reflooding the topic.
 
 Live frontier stats: `/api/v1/frontier/live` is a websocket that pushes
 the same status view (queue/checkpoint, overlaid with store truth) on

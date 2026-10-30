@@ -238,10 +238,14 @@ class PersistentFrontier:
         return None
 
     def push(self, url: str, depth: int = 0) -> None:
-        self._store.enqueue(url, depth)
-        if self._on_push is not None:
+        is_new = self._store.enqueue(url, depth)
+        if is_new and self._on_push is not None:
             # Best effort: the store row above is the durable record, so a
             # failing fan-out (e.g. Kafka down) never loses the URL.
+            # Re-sightings skip the fan-out: the row is already queued or
+            # settled and any drain picks it up by priority, so
+            # republishing would only grow the topic (a popular URL
+            # re-fires once per page linking it).
             with contextlib.suppress(Exception):
                 self._on_push(url, depth)
         overflow = len(self) - self._maxsize
