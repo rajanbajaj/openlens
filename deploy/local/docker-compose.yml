@@ -143,7 +143,7 @@ services:
     image: apache/kafka:3.9.0
     hostname: kafka-1
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
       KAFKA_NODE_ID: 1
@@ -175,7 +175,7 @@ services:
     image: apache/kafka:3.9.0
     hostname: kafka-2
     ports:
-      - "9094:9092"
+      - "127.0.0.1:9094:9092"
     environment:
       CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
       KAFKA_NODE_ID: 2
@@ -209,7 +209,7 @@ services:
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
-      - "${KAFKA_UI_PORT:-8080}:8080"
+      - "127.0.0.1:${KAFKA_UI_PORT:-8080}:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:19092,kafka-2:19092,kafka-3:19092
@@ -227,7 +227,7 @@ services:
     image: apache/kafka:3.9.0
     hostname: kafka-3
     ports:
-      - "9095:9092"
+      - "127.0.0.1:9095:9092"
     environment:
       CLUSTER_ID: 59f892a5-d185-40ec-b339-4973114d3a7a
       KAFKA_NODE_ID: 3
@@ -262,7 +262,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
       POSTGRES_DB: ${POSTGRES_DB:-openlens}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -280,7 +280,7 @@ services:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-openlens}
       PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
-      - "${PGADMIN_PORT:-5050}:80"
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
     depends_on:
@@ -293,7 +293,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:

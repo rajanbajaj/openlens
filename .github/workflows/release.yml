@@ -1,0 +1,66 @@
+name: release
+
+# Deploys main to the LAN release server (192.168.1.13) via a self-hosted
+# runner installed on that server. Server-side build: no registry, the
+# existing deploy/local Dockerfiles and compose file are reused verbatim.
+# Secrets live only in the server's deploy/local/.env (gitignored), never
+# in this file.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Self-hosted runner on the release server must carry this label.
+    runs-on: [self-hosted, openlens-release]
+    timeout-minutes: 45
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Show release commit
+        run: |
+          git log -1 --format='%H %s'
+          docker compose version
+
+      - name: Build and start stack
+        working-directory: deploy/local
+        run: docker compose up --build -d
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz >/dev/null; then
+              echo "backend healthy"
+              break
+            fi
+            sleep 10
+          done
+          curl -fsS http://localhost:8000/healthz
+
+      - name: Health gates (search + frontier)
+        run: |
+          curl -fsS http://localhost:8000/api/v1/frontier/status
+          curl -fsS -X POST http://localhost:8000/api/v1/search \
+            -H 'Content-Type: application/json' \
+            -d '{"query": "release health check", "limit": 1}'
+
+      - name: Health gates (frontends)
+        run: |
+          curl -fsS -o /dev/null http://localhost:3000/
+          curl -fsS -o /dev/null http://localhost:3001/
+
+      - name: Show stack status
+        if: always()
+        working-directory: deploy/local
+        run: docker compose ps
+
+      - name: Prune unused images
+        if: success()
+        run: docker image prune -af --filter "until=168h"
