@@ -207,6 +207,31 @@ class CrawlerWorker:
             isinstance(settings, dict) and settings.get(PAUSE_SETTINGS_KEY) is True
         )
 
+    def refresh_limits(self) -> None:
+        """Refresh live crawl limits from the shared settings row.
+
+        The admin dashboard persists settings (e.g. ``default_max_depth``)
+        to the frontier store; the boot file config only seeds them.
+        Without this refresh the crawlers would enforce stale boot values
+        forever (unlimited depth when the file omits the cap). Best
+        effort: any failure keeps the current crawler configuration.
+        """
+        store = self.frontier_store
+        crawler = self.crawler
+        if store is None or crawler is None:
+            return
+        try:
+            settings = store.get_settings()
+        except Exception:
+            return
+        if not isinstance(settings, dict) or "default_max_depth" not in settings:
+            return
+        cap = settings["default_max_depth"]
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 0:
+            return
+        with contextlib.suppress(Exception):
+            crawler.default_max_depth = cap
+
     # -- enqueue ----------------------------------------------------------
 
     def enqueue_new_urls(self, urls: list[str]) -> int:
@@ -277,6 +302,7 @@ class CrawlerWorker:
             with contextlib.suppress(Exception):
                 store.register_worker(self.worker_id, self.crawl_id)
         self._beat()
+        self.refresh_limits()
         self._heartbeat_stop.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True
@@ -498,6 +524,7 @@ def run_kafka_worker(
             kafka.publish(url, depth)
 
     def _drain_once() -> None:
+        worker.refresh_limits()
         drain_stats = run_index(
             [],
             repository,
@@ -557,6 +584,7 @@ def run_kafka_worker(
                     message.depth,
                     priority=getattr(message, "priority", None),
                 )
+            worker.refresh_limits()
             stats = run_index(
                 [],
                 repository,

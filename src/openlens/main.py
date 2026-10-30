@@ -586,6 +586,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app.state.config = load_effective_config() or {}
             except (ConfigError, OSError):
                 pass
+    # Persist the effective frontier settings seed so the dashboard and
+    # the crawler workers share one source of truth (the store row)
+    # across restarts. Only backfills keys the row lacks (e.g. a row
+    # that only carries the pause flag); saved values always win. Boot
+    # must never crash: every failure degrades to memory-only seeds.
+    try:
+        from openlens.api import frontier_state as _frontier_state
+        from openlens.api.routes import _store_get_settings, _store_save_settings
+
+        _config = app.state.config
+        if isinstance(_config, dict):
+            _frontier_state.seed_settings_from_config(_config)
+            seed = _frontier_state.snapshot()["settings"]
+            stored = _store_get_settings(_config)
+            missing = {key: value for key, value in seed.items() if key not in stored}
+            if missing:
+                _store_save_settings(_config, missing)
+    except Exception:  # noqa: BLE001, S110 — boot must never crash; workers keep boot values
+        pass
     yield
 
 

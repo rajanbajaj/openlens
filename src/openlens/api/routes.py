@@ -15,7 +15,7 @@ assistance, never to a 500. Error mapping lives in
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 import asyncio
 import logging
@@ -845,6 +845,42 @@ async def frontier_live(websocket: WebSocket) -> None:
         pass
 
 
+def _store_save_settings(app_config: Any, settings: Mapping[str, Any]) -> bool:
+    """Mirror dashboard settings into the persistent frontier settings row.
+
+    Workers read ``store.get_settings()`` (not backend memory), so a PUT
+    that stayed in-process would never reach the crawlers and would be
+    lost on restart. Best effort like :func:`_store_set_paused`.
+    """
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        try:
+            current = store.get_settings()
+            merged = dict(current) if isinstance(current, dict) else {}
+            merged.update(dict(settings))
+            store.save_settings(merged)
+            return True
+        finally:
+            with suppress(Exception):
+                store.close()
+    except Exception:
+        return False
+
+
+def _store_get_settings(app_config: Any) -> dict[str, Any]:
+    """Best-effort read of the persistent frontier settings row."""
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        try:
+            settings = store.get_settings()
+        finally:
+            with suppress(Exception):
+                store.close()
+        return dict(settings) if isinstance(settings, dict) else {}
+    except Exception:
+        return {}
+
+
 def _store_set_paused(app_config: Any, paused: bool) -> bool:
     """Mirror the pause flag into the persistent frontier settings row.
 
@@ -1025,12 +1061,23 @@ def frontier_resume(
 
 @router.get("/frontier/settings", response_model=FrontierSettingsResponseSchema)
 def frontier_get_settings(request: Request) -> FrontierSettingsResponseSchema:
-    """Current frontier settings (config-seeded, then PUT-overridden)."""
+    """Current frontier settings (config-seeded, then PUT-overridden).
+
+    PUT values persist in the frontier store, so a saved dashboard edit
+    survives restarts and reaches the crawler workers (which read the
+    store row, not backend memory). Stored values win over the seeds.
+    """
     with suppress(Exception):
         app_config = getattr(request.app.state, "config", None)
         frontier_state.seed_settings_from_config(app_config)
     snap = frontier_state.snapshot()
     settings = snap["settings"] if isinstance(snap["settings"], dict) else {}
+    stored = _store_get_settings(getattr(request.app.state, "config", None))
+    if stored:
+        allowed = set(FrontierSettingsSchema.model_fields)
+        for key, value in stored.items():
+            if key in allowed:
+                settings[key] = value
     response = FrontierSettingsResponseSchema(settings=settings)  # type: ignore[arg-type]
     return response
 
@@ -1049,6 +1096,7 @@ def frontier_put_settings(
         return denied
     state = frontier_state.get_frontier_state()
     state.settings = body.model_dump()
+    _store_save_settings(getattr(request.app.state, "config", None), state.settings)
     return FrontierSettingsResponseSchema(settings=body)
 
 
