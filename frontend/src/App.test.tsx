@@ -124,7 +124,12 @@ describe('App wiring', () => {
     });
     expect(body.offset).toBe(0);
 
-    // Reasons expand and diagnostics drawer render.
+    // Reasons expand and diagnostics drawer render. The resubmission above
+    // re-renders results asynchronously (the form stays disabled in
+    // flight), so wait for the new cards instead of assuming they exist.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /show reasons/i })).toBeInTheDocument();
+    });
     fireEvent.click(screen.getByRole('button', { name: /show reasons/i }));
     expect(screen.getByText('matches query')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
