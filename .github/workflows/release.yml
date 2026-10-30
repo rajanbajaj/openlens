@@ -29,6 +29,11 @@ jobs:
           git log -1 --format='%H %s'
           docker compose version
 
+      - name: Install server secrets
+        # Gitignored by design: real secrets live only in
+        # /home/rajan/servers/release.env on the release server.
+        run: cp /home/rajan/servers/release.env deploy/local/.env
+
       - name: Build and start stack
         working-directory: deploy/local
         run: docker compose up --build -d
