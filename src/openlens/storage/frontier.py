@@ -257,6 +257,16 @@ class FrontierStore(ABC):
         """
         return None
 
+    def reseed(self, url: str) -> bool:
+        """Revive a terminal row (failed/skipped/done) back to queued.
+
+        Explicit reseeds (dashboard Resume) must refetch even when the
+        URL already finished once; plain ``enqueue`` is insert-only and
+        would no-op. Resets attempts and clears the error. Concrete
+        default (False) so older/test doubles keep working.
+        """
+        return False
+
     @abstractmethod
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         """List ``queued`` + ``active`` rows in dequeue order."""
@@ -1374,6 +1384,27 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def reseed(self, url: str) -> bool:
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return False
+        try:
+            with self._lock, self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE frontier_queue SET status = 'queued',"
+                    " attempts = 0, last_error = NULL"
+                    " WHERE url = ? AND status IN ('failed', 'skipped', 'done')",
+                    (norm,),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to reseed frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         try:
             with self._lock:
@@ -2318,6 +2349,32 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to look up frontier URL status: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def reseed(self, url: str) -> bool:
+        table = self._qualified("frontier_queue")
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return False
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {table} SET status = 'queued',"  # noqa: S608
+                        " attempts = 0, last_error = NULL"
+                        " WHERE url = %s"
+                        " AND status IN ('failed', 'skipped', 'done')",
+                        (norm,),
+                    )
+                    revived = (cur.rowcount or 0) > 0
+                conn.commit()
+                return revived
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to reseed frontier URL: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

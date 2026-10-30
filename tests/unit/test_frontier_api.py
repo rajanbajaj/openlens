@@ -154,6 +154,49 @@ def test_status_overlays_store_truth(tmp_path) -> None:
     assert body["queue_depth"] == 2
 
 
+def test_reseed_revives_terminal_rows(tmp_path) -> None:
+    """Store-level: failed/skipped/done rows go back to queued once."""
+    store = SqliteFrontierStore(str(tmp_path / "reseed.db"))
+    try:
+        assert store.enqueue("https://example.com/a", 0) is True
+        assert store.enqueue("https://example.com/b", 0) is True
+        assert store.enqueue("https://example.com/c", 0) is True
+        assert store.enqueue("https://example.com/d", 0) is True
+        store.mark_failed("https://example.com/a", "boom")
+        assert store.reseed("https://example.com/a") is True
+        assert store.status_of("https://example.com/a") == "queued"
+        assert store.reseed("https://example.com/b") is False
+        assert store.reseed("https://example.com/nope") is False
+    finally:
+        store.close()
+
+
+def test_resume_reseeds_failed_seed_for_refetch(tmp_path) -> None:
+    """HTTP-level: Resume revives a failed seed instead of no-op'ing."""
+    frontier_state.reset_frontier_state()
+    client = TestClient(create_app(engine=FakeEngine()))
+    db = str(tmp_path / "reresume.db")
+    config = dict(client.app.state.config)
+    config["storage"] = {"backend": "sqlite", "sqlite": {"db_path": db}}
+    client.app.state.config = config
+
+    store = SqliteFrontierStore(db)
+    try:
+        assert store.enqueue("https://example.com/retry", 0) is True
+        store.mark_failed("https://example.com/retry", "disallowed by robots.txt")
+    finally:
+        store.close()
+    resumed = client.post(
+        "/api/v1/frontier/resume", json={"seeds": ["https://example.com/retry"]}
+    )
+    assert resumed.status_code == 200, resumed.text
+    check = SqliteFrontierStore(db)
+    try:
+        assert check.status_of("https://example.com/retry") == "queued"
+    finally:
+        check.close()
+
+
 def test_status_snapshot_entry_matching_terminal_store_row_not_shown_as_queued(
     tmp_path,
 ) -> None:

@@ -1079,6 +1079,17 @@ def frontier_resume(
         ]
     app_config = getattr(request.app.state, "config", None)
     _publish_seeds(app_config, seeds, priority=body.priority)
+    # Explicit seeds must refetch even when they already finished once:
+    # plain enqueue is insert-only and would no-op on the terminal row.
+    if seeds:
+        try:
+            store = _frontier_read_store(request)
+            if store is not None:
+                for seed in seeds:
+                    with suppress(Exception):
+                        store.reseed(seed)
+        except Exception as exc:
+            logger.warning("frontier resume: store reseed failed: %s", exc)
     _store_set_paused(app_config, False)
     return _overlay_store_status(
         _frontier_status_payload(), _frontier_read_store(request)
