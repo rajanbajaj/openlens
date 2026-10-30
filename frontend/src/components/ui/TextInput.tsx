@@ -15,7 +15,7 @@ export function TextInput({ label, id, className, ...rest }: TextInputProps) {
       {label}
       <input
         id={id}
-        className={`ol-input font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m disabled:bg-white/30 disabled:text-ol-ink-soft${className ? ` ${className}` : ''}`}
+        className={`ol-input font-normal text-ol-ink bg-white border border-ol-line rounded-ol-m px-ol-s py-ol-m disabled:bg-ol-well disabled:text-ol-ink-soft${className ? ` ${className}` : ''}`}
         {...rest}
       />
     </label>

@@ -65,7 +65,7 @@ export function LibraryDrawer({ onSelectSearch }: LibraryDrawerProps) {
   return (
     <section
       aria-label="Library"
-      className="ol-drawer mt-ol-l rounded-ol-l border border-ol-glass-border px-ol-m py-ol-l shadow-[0_4px_30px_rgb(0_0_0/0.1)] backdrop-blur-[12px]"
+      className="ol-drawer mt-ol-l rounded-ol-l border border-ol-line bg-white px-ol-m py-ol-l"
     >
       <Button
         variant="ghost"

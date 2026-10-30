@@ -16,7 +16,7 @@ export function Skeleton({ bars = 3 }: SkeletonProps) {
       data-testid="skeleton"
     >
       {Array.from({ length: Math.max(1, bars) }, (_, index) => (
-        <div key={index} className="ol-skeleton-bar h-[0.9rem] rounded-ol-s bg-white/45" />
+        <div key={index} className="ol-skeleton-bar h-[0.9rem] rounded-ol-s bg-[#e8eaed]" />
       ))}
     </div>
   );

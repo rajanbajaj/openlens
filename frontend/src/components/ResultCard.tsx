@@ -80,8 +80,7 @@ function verticalHighlight(result: SearchResult, mode: string): VerticalHighligh
 }
 
 /**
- * One search hit on a subtle glass card (the vibrant backdrop does the
- * refracting; the card itself stays near-opaque for readability): title row,
+ * One flat search hit, link-led like google.com: title row,
  * provider + federation badges, snippet,
  * secondary commerce/understanding lines, score with an expandable
  * breakdown (original vs final, T11 signals in display order), the
@@ -261,7 +260,7 @@ export function ResultCard({
                   <dt>{name}</dt>
                   <dd>
                     <span
-                      className="inline-block h-2 w-24 overflow-hidden rounded-ol-s border border-ol-glass-border bg-white/35 align-middle"
+                      className="inline-block h-2 w-24 overflow-hidden rounded-ol-s border border-ol-line bg-ol-well align-middle"
                       role="img"
                       aria-label={`${name} signal ${score}`}
                     >
