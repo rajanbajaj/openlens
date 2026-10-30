@@ -932,7 +932,8 @@ class SqliteFrontierStore(FrontierStore):
                     return 0
                 for row in rows[:overflow]:
                     self._conn.execute(
-                        "UPDATE frontier_queue SET status = 'skipped' WHERE url = ?",
+                        "UPDATE frontier_queue SET status = 'skipped',"
+                        " last_error = 'evicted: queue cap exceeded' WHERE url = ?",
                         (row["url"],),
                     )
                 return overflow
@@ -1849,7 +1850,8 @@ class PostgresFrontierStore(FrontierStore):
                         return 0
                     for victim in urls[:overflow]:
                         cur.execute(
-                            f"UPDATE {table} SET status = 'skipped'"  # noqa: S608
+                            f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
+                            " last_error = 'evicted: queue cap exceeded'"
                             " WHERE url = %s",
                             (victim,),
                         )

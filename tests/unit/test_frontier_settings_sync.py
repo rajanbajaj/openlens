@@ -134,6 +134,74 @@ def test_refresh_limits_ignores_missing_or_invalid_cap() -> None:
         assert worker.crawler.default_max_depth == 5
 
 
+def test_refresh_limits_applies_queue_cap_and_pacing() -> None:
+    worker = _worker(
+        {
+            "default_max_depth": 2,
+            "max_queued_urls": 500,
+            "max_pages": 50,
+            "crawl_delay_s": 1.5,
+        }
+    )
+    worker.crawler.configure(
+        {"max_pages": 100, "max_queued_urls": 10000, "crawl_delay_s": 0.5}
+    )
+    worker.refresh_limits()
+    assert worker.crawler.default_max_depth == 2
+    assert worker.crawler.max_queued_urls == 500
+    assert worker.crawler.max_pages == 50
+    assert worker.crawler.crawl_delay_s == 1.5
+
+
+def test_refresh_limits_ignores_invalid_queue_cap_and_pacing() -> None:
+    worker = _worker(
+        {
+            "max_queued_urls": -5,
+            "max_pages": "lots",
+            "crawl_delay_s": 99999,
+            "default_max_depth": 2,
+        }
+    )
+    worker.crawler.configure(
+        {"max_pages": 100, "max_queued_urls": 10000, "crawl_delay_s": 0.5}
+    )
+    worker.refresh_limits()
+    assert worker.crawler.max_queued_urls == 10000
+    assert worker.crawler.max_pages == 100
+    assert worker.crawler.crawl_delay_s == 0.5
+    assert worker.crawler.default_max_depth == 2
+
+
+def test_eviction_stamps_reason(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Evicted rows explain themselves instead of looking revoked."""
+    import sqlite3
+
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    db = str(tmp_path / "evict.db")
+    store = SqliteFrontierStore(db)
+    try:
+        for i in range(3):
+            assert store.enqueue(f"https://example.com/p{i}", 0) is True
+        assert store.evict_oldest(1) == 2
+        for i in range(2):
+            assert store.status_of(f"https://example.com/p{i}") == "skipped"
+    finally:
+        store.close()
+    conn = sqlite3.connect(db)
+    try:
+        errors = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT last_error FROM frontier_queue"
+                " WHERE status = 'skipped'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    assert errors == {"evicted: queue cap exceeded"}
+
+
 def test_refresh_limits_fail_open_on_store_error() -> None:
     worker = _worker(RuntimeError("store down"))
     worker.refresh_limits()

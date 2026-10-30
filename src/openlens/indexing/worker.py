@@ -153,6 +153,43 @@ def new_worker_id(explicit: str | None = None) -> str:
 PAUSE_SETTINGS_KEY = "paused"
 
 
+def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
+    """Validate dashboard crawl limits; invalid/missing keys become None.
+
+    Only keys present with sane values are applied — anything else keeps
+    the boot configuration, so a corrupt settings row can never zero out
+    or uncap a live crawl.
+    """
+    depth = settings.get("default_max_depth")
+    queued = settings.get("max_queued_urls")
+    pages = settings.get("max_pages")
+    delay = settings.get("crawl_delay_s")
+    return {
+        "default_max_depth": (
+            depth
+            if isinstance(depth, int) and not isinstance(depth, bool) and depth >= 0
+            else None
+        ),
+        "max_queued_urls": (
+            queued
+            if isinstance(queued, int) and not isinstance(queued, bool) and queued > 0
+            else None
+        ),
+        "max_pages": (
+            pages
+            if isinstance(pages, int) and not isinstance(pages, bool) and pages > 0
+            else None
+        ),
+        "crawl_delay_s": (
+            float(delay)
+            if isinstance(delay, (int, float))
+            and not isinstance(delay, bool)
+            and 0 <= delay <= 600
+            else None
+        ),
+    }
+
+
 @dataclass
 class CrawlerWorker:
     """One crawl loop over a shared frontier store.
@@ -224,13 +261,21 @@ class CrawlerWorker:
             settings = store.get_settings()
         except Exception:
             return
-        if not isinstance(settings, dict) or "default_max_depth" not in settings:
+        if not isinstance(settings, dict):
             return
-        cap = settings["default_max_depth"]
-        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 0:
-            return
+        live = _live_crawl_limits(settings)
         with contextlib.suppress(Exception):
-            crawler.default_max_depth = cap
+            if live["default_max_depth"] is not None:
+                crawler.default_max_depth = live["default_max_depth"]
+        with contextlib.suppress(Exception):
+            if live["max_queued_urls"] is not None:
+                crawler.max_queued_urls = live["max_queued_urls"]
+        with contextlib.suppress(Exception):
+            if live["max_pages"] is not None:
+                crawler.max_pages = live["max_pages"]
+        with contextlib.suppress(Exception):
+            if live["crawl_delay_s"] is not None:
+                crawler.crawl_delay_s = live["crawl_delay_s"]
 
     # -- enqueue ----------------------------------------------------------
 
