@@ -1,14 +1,14 @@
 name: release
 
-# Deploys main to the LAN release server (192.168.1.13) via a self-hosted
-# runner installed on that server. Server-side build: no registry, the
-# existing deploy/local Dockerfiles and compose file are reused verbatim.
-# Secrets live only in the server's deploy/local/.env (gitignored), never
-# in this file.
+# Deploys a version tag (e.g. v1.0.0) to the release server via a
+# self-hosted runner installed on that server. Server-side build: no
+# registry, the existing deploy/local Dockerfiles and compose file are
+# reused verbatim. Secrets live only in the server-side secrets file
+# (gitignored), never in this file.
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 concurrency:
@@ -21,11 +21,12 @@ jobs:
     runs-on: [self-hosted, openlens-release]
     timeout-minutes: 45
     steps:
-      - name: Check out main
+      - name: Check out tag
         uses: actions/checkout@v4
 
       - name: Show release commit
         run: |
+          echo "tag: ${{ github.ref_name }}"
           git log -1 --format='%H %s'
           docker compose version
 

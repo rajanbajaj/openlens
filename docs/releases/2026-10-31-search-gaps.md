@@ -2,7 +2,7 @@
 
 Target: release server (self-hosted runner `openlens-release`) → public
 the public search and admin hostnames (served through the existing
-tunnel — fill in from the tunnel dashboard when verifying). Mechanism: push to `main` triggers
+tunnel — fill in from the tunnel dashboard when verifying). Mechanism: pushing a version tag (`v*`, e.g. `v1.0.0`) triggers
 [.github/workflows/release.yml](../../.github/workflows/release.yml);
 no manual server steps.
 
@@ -34,7 +34,7 @@ no manual server steps.
 
 ## Release steps
 
-1. Commit this plan file (or fold it into the push) and `git push origin main`.
+1. Commit this plan file, then release with `git tag v1.0.0 && git push origin v1.0.0` (tags never move — a fix is a new tag).
 2. Watch the `release` workflow (queued behind any running release;
    `concurrency: release-production`, one at a time).
 3. Workflow gates must pass: `/healthz`, frontier status, search probe,
@@ -61,8 +61,7 @@ Run from anywhere with network + admin token:
 
 ## Rollback
 
-`git revert 3a1adf7 && git push` — a new release redeploys the pre-gap
-stack. Data is safe: volumes persist, migration is additive, and the old
+Rollback: a new patch tag from the last good commit (e.g. `git tag v1.0.1 5b7d5fa && git push origin v1.0.1`) redeploys the pre-gap stack. Data is safe: volumes persist, migration is additive, and the old
 code ignores the new columns. Alternatively re-run the workflow from the
 last good commit. Never `docker compose down -v` on the server.
 

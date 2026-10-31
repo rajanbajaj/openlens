@@ -53,7 +53,8 @@ The seed corpus is indexed into Postgres automatically on first boot
 
 ## Release to the LAN server (192.168.1.13)
 
-Every push to `main` redeploys the server automatically via
+Every version tag push (`v*`, e.g. `v1.0.0`) redeploys the server
+automatically via
 [.github/workflows/release.yml](../../.github/workflows/release.yml):
 a self-hosted runner on the server builds in place
 (`docker compose up --build -d`, no registry) and then runs health
@@ -90,10 +91,12 @@ containers (ingress is dashboard-managed under Zero Trust → Tunnels):
 `search.*` → `:3000`, `search-admin-v1.*` → `:3001`. The tunnel
 needs no repo or server changes — only the dashboard hostname mapping.
 
-Rollback: `git revert` the bad commit and push (a new release
-redeploys), or re-run the workflow from the last good commit. Data
-is safe across releases: named volumes persist and the pipeline
-never passes `-v`.
+Release with `git tag v1.0.0 && git push origin v1.0.0` (tags never
+move — a fix is a new tag). Rollback: tag a patch release from the
+last good commit (`git tag v1.0.1 <last-good-sha> && git push origin
+v1.0.1`), or re-run the workflow (`workflow_dispatch`) from the last
+good commit. Data is safe across releases: named volumes persist and
+the pipeline never passes `-v`.
 
 Crawl workers: releases run `--scale crawler=3` (default); set
 `CRAWLER_SCALE` in the server's `release.env` to change it. Local
