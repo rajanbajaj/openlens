@@ -72,6 +72,49 @@ def doc_columns(doc: Document) -> tuple[Any, Any]:
     return content_type, published
 
 
+#: Site-category values admitted by the ``site_category`` CHECK set.
+SITE_CATEGORY_VALUES: tuple[str, ...] = ("shopping", "news", "kids", "other")
+
+
+def site_category_columns(
+    doc: Document,
+) -> tuple[str, float | None, str | None, int, int]:
+    """Extract the promoted site-category columns from metadata.
+
+    Unknown or missing categories collapse to ``"other"`` (the column
+    default); confidence/source stay NULL when absent; domain hits
+    coerce bools/ints and default to 0. Never raises.
+    """
+    metadata = doc.metadata or {}
+    category = metadata.get("site_category")
+    if category not in SITE_CATEGORY_VALUES:
+        category = "other"
+    confidence = metadata.get("site_category_confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = None
+    else:
+        confidence = float(confidence)
+    source = metadata.get("site_category_source")
+    if not isinstance(source, str) or not source:
+        source = None
+
+    def _hit(key: str) -> int:
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        return 0
+
+    return (
+        category,
+        confidence,
+        source,
+        _hit("kids_domain_hit"),
+        _hit("news_domain_hit"),
+    )
+
+
 def normalize_url(url: Optional[str]) -> Optional[str]:
     """Ingest-time URL normalization.
 
@@ -136,7 +179,14 @@ class DocumentRepository(DocumentStore):
                     content_hash TEXT,
                     url_norm TEXT,
                     content_type TEXT,
-                    published TEXT
+                    published TEXT,
+                    site_category TEXT DEFAULT 'other'
+                        CHECK (site_category IN
+                            ('shopping', 'news', 'kids', 'other')),
+                    site_category_confidence REAL,
+                    site_category_source TEXT,
+                    kids_domain_hit INTEGER DEFAULT 0,
+                    news_domain_hit INTEGER DEFAULT 0
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     doc_id UNINDEXED, title, content
@@ -167,10 +217,34 @@ class DocumentRepository(DocumentStore):
             self._conn.execute("ALTER TABLE documents ADD COLUMN content_type TEXT")
         if "published" not in columns:
             self._conn.execute("ALTER TABLE documents ADD COLUMN published TEXT")
+        # Category columns: plain ADD COLUMN on the migrate path (the
+        # fresh DDL above carries the CHECK set; legacy rows are
+        # normalized by the backfill below, so no rebuild is needed).
+        if "site_category" not in columns:
+            self._conn.execute(
+                "ALTER TABLE documents ADD COLUMN site_category TEXT DEFAULT 'other'"
+            )
+        if "site_category_confidence" not in columns:
+            self._conn.execute(
+                "ALTER TABLE documents ADD COLUMN site_category_confidence REAL"
+            )
+        if "site_category_source" not in columns:
+            self._conn.execute(
+                "ALTER TABLE documents ADD COLUMN site_category_source TEXT"
+            )
+        if "kids_domain_hit" not in columns:
+            self._conn.execute(
+                "ALTER TABLE documents ADD COLUMN kids_domain_hit INTEGER DEFAULT 0"
+            )
+        if "news_domain_hit" not in columns:
+            self._conn.execute(
+                "ALTER TABLE documents ADD COLUMN news_domain_hit INTEGER DEFAULT 0"
+            )
         rows = self._conn.execute(
             "SELECT id, content, url, metadata FROM documents "
             "WHERE content_hash IS NULL OR (url_norm IS NULL AND url IS NOT NULL)"
             " OR content_type IS NULL OR published IS NULL"
+            " OR site_category_source IS NULL"
         ).fetchall()
         for row in rows:
             try:
@@ -187,15 +261,46 @@ class DocumentRepository(DocumentStore):
                 backfill_pub = published_from_last_modified(
                     backfill_meta.get("last_modified")
                 )
+            backfill_category = backfill_meta.get("site_category")
+            if backfill_category not in SITE_CATEGORY_VALUES:
+                backfill_category = "other"
+            backfill_conf = backfill_meta.get("site_category_confidence")
+            if isinstance(backfill_conf, bool) or not isinstance(
+                backfill_conf, (int, float)
+            ):
+                backfill_conf = None
+            else:
+                backfill_conf = float(backfill_conf)
+            backfill_source = backfill_meta.get("site_category_source")
+            if not isinstance(backfill_source, str) or not backfill_source:
+                backfill_source = None
+
+            backfill_hits = []
+            for hit_key in ("kids_domain_hit", "news_domain_hit"):
+                hit_value = backfill_meta.get(hit_key)
+                if isinstance(hit_value, bool):
+                    backfill_hits.append(int(hit_value))
+                elif isinstance(hit_value, int):
+                    backfill_hits.append(hit_value)
+                else:
+                    backfill_hits.append(0)
             self._conn.execute(
                 "UPDATE documents SET content_hash = ?, url_norm = ?,"
                 " content_type = COALESCE(?, content_type),"
-                " published = COALESCE(?, published) WHERE id = ?",
+                " published = COALESCE(?, published),"
+                " site_category = ?, site_category_confidence = ?,"
+                " site_category_source = ?, kids_domain_hit = ?,"
+                " news_domain_hit = ? WHERE id = ?",
                 (
                     content_hash_of(row["content"]),
                     normalize_url(row["url"]),
                     backfill_type,
                     backfill_pub,
+                    backfill_category,
+                    backfill_conf,
+                    backfill_source,
+                    backfill_hits[0],
+                    backfill_hits[1],
                     row["id"],
                 ),
             )
@@ -213,6 +318,14 @@ class DocumentRepository(DocumentStore):
         )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_published ON documents(published)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_site_category "
+            "ON documents(site_category)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_kids_domain_hit "
+            "ON documents(kids_domain_hit)"
         )
 
     def add_document(self, doc: Document) -> None:
@@ -236,14 +349,18 @@ class DocumentRepository(DocumentStore):
                     for doc in chunk:
                         metadata = json.dumps(doc.metadata or {})
                         content_type, published = doc_columns(doc)
+                        category_columns = site_category_columns(doc)
                         # S608 is a false positive here: every value below
                         # is a bound ? parameter; no user input is
                         # interpolated.
                         self._conn.execute(
                             "INSERT OR REPLACE INTO documents "  # noqa: S608
                             + "(id, title, content, url, metadata,"
-                            " content_hash, url_norm, content_type, published)"
-                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            " content_hash, url_norm, content_type, published,"
+                            " site_category, site_category_confidence,"
+                            " site_category_source, kids_domain_hit,"
+                            " news_domain_hit)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 doc.id,
                                 doc.title,
@@ -254,6 +371,7 @@ class DocumentRepository(DocumentStore):
                                 normalize_url(doc.url),
                                 content_type,
                                 published,
+                                *category_columns,
                             ),
                         )
                         self._conn.execute(
@@ -280,10 +398,14 @@ class DocumentRepository(DocumentStore):
             with self._lock, self._conn:
                 metadata = json.dumps(doc.metadata or {})
                 content_type, published = doc_columns(doc)
+                category_columns = site_category_columns(doc)
                 cursor = self._conn.execute(
                     "UPDATE documents SET title = ?, content = ?, url = ?,"
                     " metadata = ?, content_hash = ?, url_norm = ?,"
-                    " content_type = ?, published = ?"
+                    " content_type = ?, published = ?,"
+                    " site_category = ?, site_category_confidence = ?,"
+                    " site_category_source = ?, kids_domain_hit = ?,"
+                    " news_domain_hit = ?"
                     " WHERE id = ?",
                     (
                         doc.title,
@@ -294,6 +416,7 @@ class DocumentRepository(DocumentStore):
                         normalize_url(doc.url),
                         content_type,
                         published,
+                        *category_columns,
                         doc.id,
                     ),
                 )
@@ -379,7 +502,9 @@ class DocumentRepository(DocumentStore):
             with self._lock:
                 row = self._conn.execute(
                     "SELECT id, title, content, url, metadata, "
-                    + "content_type, published "
+                    + "content_type, published, site_category, "
+                    + "site_category_confidence, site_category_source, "
+                    + "kids_domain_hit, news_domain_hit "
                     + "FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
@@ -404,7 +529,9 @@ class DocumentRepository(DocumentStore):
             with self._lock:
                 rows = self._conn.execute(
                     "SELECT id, title, content, url, metadata,"
-                    " content_type, published FROM documents"
+                    " content_type, published, site_category,"
+                    " site_category_confidence, site_category_source,"
+                    " kids_domain_hit, news_domain_hit FROM documents"
                     " ORDER BY id ASC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
@@ -459,7 +586,9 @@ class DocumentRepository(DocumentStore):
                 total = int(total_row["n"])
                 rows = self._conn.execute(
                     "SELECT d.id, d.title, d.content, d.url, d.metadata,"
-                    " d.content_type, d.published,"
+                    " d.content_type, d.published, d.site_category,"
+                    " d.site_category_confidence, d.site_category_source,"
+                    " d.kids_domain_hit, d.news_domain_hit,"
                     " -bm25(documents_fts) AS score"
                     " FROM documents_fts"
                     " JOIN documents d ON d.id = documents_fts.doc_id"
@@ -504,6 +633,54 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         metadata.setdefault("content_type", column_type)
     if isinstance(column_published, str) and column_published:
         metadata.setdefault("published", column_published)
+    # Promoted category columns fill gaps in the metadata view, but only
+    # with informative values: default verdicts ('other', no confidence,
+    # no hits) stay out so hand-built documents round-trip verbatim.
+    # An invalid stored category is normalized to the column value.
+    try:
+        column_category = row["site_category"]
+        column_confidence = row["site_category_confidence"]
+        column_source = row["site_category_source"]
+        column_kids_hit = row["kids_domain_hit"]
+        column_news_hit = row["news_domain_hit"]
+    except (IndexError, KeyError):
+        column_category = None
+        column_confidence = None
+        column_source = None
+        column_kids_hit = None
+        column_news_hit = None
+    if column_category in SITE_CATEGORY_VALUES:
+        current_category = metadata.get("site_category")
+        if current_category not in SITE_CATEGORY_VALUES and (
+            current_category is not None or column_category != "other"
+        ):
+            metadata["site_category"] = column_category
+    if (
+        isinstance(column_confidence, (int, float))
+        and not isinstance(column_confidence, bool)
+        and "site_category_confidence" not in metadata
+    ):
+        metadata["site_category_confidence"] = float(column_confidence)
+    if (
+        isinstance(column_source, str)
+        and column_source
+        and "site_category_source" not in metadata
+    ):
+        metadata["site_category_source"] = column_source
+    if (
+        isinstance(column_kids_hit, int)
+        and not isinstance(column_kids_hit, bool)
+        and column_kids_hit != 0
+        and "kids_domain_hit" not in metadata
+    ):
+        metadata["kids_domain_hit"] = column_kids_hit
+    if (
+        isinstance(column_news_hit, int)
+        and not isinstance(column_news_hit, bool)
+        and column_news_hit != 0
+        and "news_domain_hit" not in metadata
+    ):
+        metadata["news_domain_hit"] = column_news_hit
     return Document(
         id=row["id"],
         title=row["title"],

@@ -15,6 +15,36 @@ from typing import Any, Optional
 
 _DEFAULT_LIMIT = 10
 
+#: Small synonym map for query assistance (both directions apply).
+_SYNONYM_PAIRS = (
+    ("js", "javascript"),
+    ("k8s", "kubernetes"),
+    ("e-mail", "email"),
+)
+_SYNONYMS: dict[str, set[str]] = {}
+for _left, _right in _SYNONYM_PAIRS:
+    _SYNONYMS.setdefault(_left, set()).add(_right)
+    _SYNONYMS.setdefault(_right, set()).add(_left)
+
+
+def _synonym_variants(token: str) -> set[str]:
+    """Counterparts of ``token`` in the small synonym map (possibly empty)."""
+    if not isinstance(token, str):
+        return set()
+    return set(_SYNONYMS.get(token.casefold(), set()))
+
+
+def _prefix_variants(cleaned: str) -> list[str]:
+    """Full-query prefix forms: the query plus last-token synonym swaps."""
+    tokens = cleaned.split()
+    variants = [cleaned]
+    if tokens:
+        for synonym in sorted(_synonym_variants(tokens[-1])):
+            candidate = " ".join([*tokens[:-1], synonym])
+            if candidate != cleaned:
+                variants.append(candidate)
+    return variants
+
 
 def _clean_terms(terms: Any) -> list[str]:
     """Best-effort coercion of an injectable term list to usable strings."""
@@ -43,21 +73,38 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
 
     Case-insensitive prefix match; results are deduplicated (keeping the
     first-seen spelling) and sorted case-insensitively for determinism.
+    Additive upgrades: last-token completion (for multi-word input, a
+    candidate also matches when any of its words starts with the last
+    query token) and the small synonym map (``js`` also completes
+    ``javascript`` terms, and so on).
     """
     cleaned_prefix = _clean_query(prefix)
     if cleaned_prefix is None:
         return []
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         return []
-    lowered = cleaned_prefix.casefold()
+    cleaned_terms = _clean_terms(terms)
     seen: set[str] = set()
     matches: list[str] = []
-    for term in _clean_terms(terms):
-        key = term.casefold()
-        if key in seen or not key.startswith(lowered):
-            continue
-        seen.add(key)
-        matches.append(term)
+    for variant in _prefix_variants(cleaned_prefix):
+        lowered = variant.casefold()
+        for term in cleaned_terms:
+            key = term.casefold()
+            if key in seen or not key.startswith(lowered):
+                continue
+            seen.add(key)
+            matches.append(term)
+    tokens = cleaned_prefix.split()
+    if len(tokens) > 1:
+        last_variants = {tokens[-1].casefold()} | _synonym_variants(tokens[-1])
+        for term in cleaned_terms:
+            key = term.casefold()
+            if key in seen:
+                continue
+            words = key.split()
+            if any(word.startswith(last) for word in words for last in last_variants):
+                seen.add(key)
+                matches.append(term)
     matches.sort(key=str.casefold)
     return matches[:limit]
 
@@ -81,6 +128,24 @@ def _edit_distance(left: str, right: str, ceiling: int) -> int:
     return previous[-1]
 
 
+def _closest(
+    folded: str, unique: list[tuple[str, str]], max_distance: int
+) -> Optional[str]:
+    """Closest vocabulary entry to ``folded`` within ``max_distance``."""
+    best: Optional[str] = None
+    best_distance = max_distance + 1
+    for key, original in unique:
+        distance = _edit_distance(folded, key, max_distance)
+        if distance <= max_distance and (
+            best is None
+            or distance < best_distance
+            or (distance == best_distance and key < best.casefold())
+        ):
+            best = original
+            best_distance = distance
+    return best
+
+
 def correct_spelling(
     query: Any, vocabulary: Any, *, max_distance: int = 2
 ) -> Optional[str]:
@@ -89,7 +154,10 @@ def correct_spelling(
     Returns the closest vocabulary entry within ``max_distance`` edits, or
     ``None`` when the query is empty/malformed, the vocabulary is empty,
     the query already matches exactly (case-insensitively), or nothing is
-    close enough. Ties break alphabetically for determinism.
+    close enough. Ties break alphabetically for determinism. Additive
+    upgrade: when the whole query has no close match, each whitespace
+    token is corrected individually and the joined result is returned if
+    any token changed.
     """
     cleaned = _clean_query(query)
     if cleaned is None:
@@ -108,18 +176,49 @@ def correct_spelling(
     for key, _original in unique:
         if key == folded:
             return None
-    best: Optional[str] = None
-    best_distance = max_distance + 1
-    for key, original in unique:
-        distance = _edit_distance(folded, key, max_distance)
-        if distance <= max_distance and (
-            best is None
-            or distance < best_distance
-            or (distance == best_distance and key < best.casefold())
-        ):
-            best = original
-            best_distance = distance
-    return best
+    best = _closest(folded, unique, max_distance)
+    if best is not None:
+        return best
+    tokens = cleaned.split()
+    if len(tokens) < 2:
+        return None
+    corrected: list[str] = []
+    changed = False
+    for token in tokens:
+        token_folded = token.casefold()
+        if any(key == token_folded for key, _ in unique):
+            corrected.append(token)
+            continue
+        fixed = _closest(token_folded, unique, max_distance)
+        if fixed is None:
+            corrected.append(token)
+        else:
+            corrected.append(fixed)
+            changed = True
+    return " ".join(corrected) if changed else None
+
+
+def _related_tokens(text: str) -> set[str]:
+    """Overlap tokens: normalized tokens plus hyphen compounds plus synonyms.
+
+    Normalization (never raising: falls back to casefold-split) makes
+    ``E-Mail`` overlap ``email``; hyphen compounds keep ``e-mail``
+    overlapping ``email setup``; the synonym map links ``js`` with
+    ``javascript`` and ``k8s`` with ``kubernetes``.
+    """
+    from openlens.retrieval.query_normalize import normalize_query
+    from openlens.retrieval.query_parser import hyphen_compounds
+
+    try:
+        normalized = normalize_query(text).normalized
+    except Exception:
+        normalized = ""
+    tokens = set(normalized.split()) if normalized else set(text.casefold().split())
+    tokens |= set(hyphen_compounds(text))
+    expanded = set(tokens)
+    for token in tokens:
+        expanded |= _synonym_variants(token)
+    return expanded
 
 
 def related_queries(
@@ -128,8 +227,9 @@ def related_queries(
     """Related queries sharing a token with ``query``, ranked by count.
 
     ``counts`` maps past query text to observed frequency. Candidates must
-    share at least one case-insensitive token with the input and must not
-    equal the input itself. Ordered by count (descending), then
+    share at least one token with the input (normalized-token overlap:
+    case and punctuation insensitive, hyphen- and synonym-aware) and must
+    not equal the input itself. Ordered by count (descending), then
     alphabetically for determinism.
     """
     cleaned = _clean_query(query)
@@ -139,7 +239,7 @@ def related_queries(
         return []
     if not isinstance(counts, Mapping):
         return []
-    tokens = set(cleaned.casefold().split())
+    tokens = _related_tokens(cleaned)
     candidates: list[tuple[int, str]] = []
     for raw_candidate, raw_count in counts.items():
         if not isinstance(raw_candidate, str) or not raw_candidate.strip():
@@ -149,7 +249,7 @@ def related_queries(
         candidate = raw_candidate.strip()
         if candidate.casefold() == cleaned.casefold():
             continue
-        if tokens.isdisjoint(set(candidate.casefold().split())):
+        if tokens.isdisjoint(_related_tokens(candidate)):
             continue
         candidates.append((int(raw_count), candidate))
     candidates.sort(key=lambda item: (-item[0], item[1].casefold()))

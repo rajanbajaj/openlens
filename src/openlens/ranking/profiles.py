@@ -100,7 +100,7 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         safety_weight=0.5,
         privacy_weight=0.25,
         fairness_weight=0.25,
-        sponsored_weight=0.25,
+        sponsored_weight=1.0,
     ),
     "travel": RankingProfile(
         name="travel",
@@ -115,7 +115,7 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         safety_weight=0.5,
         privacy_weight=0.25,
         fairness_weight=0.25,
-        sponsored_weight=0.25,
+        sponsored_weight=1.0,
     ),
 }
 

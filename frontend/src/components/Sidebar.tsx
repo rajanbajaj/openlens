@@ -113,11 +113,102 @@ function sidebarChips(filters: UserFilterState): SidebarChip[] {
       clear: (next) => ({ ...next, size: '' }),
     });
   }
-  if (filters.preferSuffix.trim()) {
+  if (filters.excludeOverBudget) {
     chips.push({
-      key: 'preferSuffix',
-      label: `Prefers ${filters.preferSuffix.trim()}`,
-      clear: (next) => ({ ...next, preferSuffix: '' }),
+      key: 'excludeOverBudget',
+      label: 'Excludes over-budget',
+      clear: (next) => ({ ...next, excludeOverBudget: false }),
+    });
+  }
+  if (filters.occasion.trim()) {
+    chips.push({
+      key: 'occasion',
+      label: `Occasion: ${filters.occasion.trim()}`,
+      clear: (next) => ({ ...next, occasion: '' }),
+    });
+  }
+  if (filters.license.trim()) {
+    chips.push({
+      key: 'license',
+      label: `License: ${filters.license.trim()}`,
+      clear: (next) => ({ ...next, license: '' }),
+    });
+  }
+  if (filters.author.trim()) {
+    chips.push({
+      key: 'author',
+      label: `Author: ${filters.author.trim()}`,
+      clear: (next) => ({ ...next, author: '' }),
+    });
+  }
+  if (filters.cuisine.trim()) {
+    chips.push({
+      key: 'cuisine',
+      label: `Cuisine: ${filters.cuisine.trim()}`,
+      clear: (next) => ({ ...next, cuisine: '' }),
+    });
+  }
+  if (filters.dietaryTags.trim()) {
+    chips.push({
+      key: 'dietaryTags',
+      label: `Dietary: ${filters.dietaryTags.trim()}`,
+      clear: (next) => ({ ...next, dietaryTags: '' }),
+    });
+  }
+  if (filters.ingredients.trim()) {
+    chips.push({
+      key: 'ingredients',
+      label: `Ingredients: ${filters.ingredients.trim()}`,
+      clear: (next) => ({ ...next, ingredients: '' }),
+    });
+  }
+  if (filters.excludeAllergens.trim()) {
+    chips.push({
+      key: 'excludeAllergens',
+      label: `Excludes allergens: ${filters.excludeAllergens.trim()}`,
+      clear: (next) => ({ ...next, excludeAllergens: '' }),
+    });
+  }
+  if (filters.preferDomains.trim()) {
+    chips.push({
+      key: 'preferDomains',
+      label: `Prefers domains: ${filters.preferDomains.trim()}`,
+      clear: (next) => ({ ...next, preferDomains: '' }),
+    });
+  }
+  if (filters.preferTopics.trim()) {
+    chips.push({
+      key: 'preferTopics',
+      label: `Prefers topics: ${filters.preferTopics.trim()}`,
+      clear: (next) => ({ ...next, preferTopics: '' }),
+    });
+  }
+  if (filters.sortPreset.trim()) {
+    chips.push({
+      key: 'sortPreset',
+      label: `Sort: ${filters.sortPreset.trim()}`,
+      clear: (next) => ({ ...next, sortPreset: '' }),
+    });
+  }
+  if (filters.siteCategory.trim()) {
+    chips.push({
+      key: 'siteCategory',
+      label: `Category: ${filters.siteCategory.trim()}`,
+      clear: (next) => ({ ...next, siteCategory: '' }),
+    });
+  }
+  if (!filters.personalize) {
+    chips.push({
+      key: 'personalize',
+      label: 'Personalization off',
+      clear: (next) => ({ ...next, personalize: true }),
+    });
+  }
+  if (filters.safetyPreset.trim()) {
+    chips.push({
+      key: 'safetyPreset',
+      label: `Safety: ${filters.safetyPreset.trim()}`,
+      clear: (next) => ({ ...next, safetyPreset: '' }),
     });
   }
   if (filters.blockedDomain.trim()) {

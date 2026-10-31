@@ -71,6 +71,17 @@ function mockPagedEnvelope() {
   return mockFetchEnvelope({ ...BASE_ENVELOPE, total: 25 });
 }
 
+/**
+ * Search-request bodies in call order. The header form also fires a
+ * debounced `/api/v1/suggest` fetch, so tests count search calls only
+ * instead of asserting exact global fetch totals.
+ */
+function searchBodies(stub: ReturnType<typeof mockFetchEnvelope>) {
+  return stub.mock.calls
+    .filter(([url]) => String(url).includes('/api/v1/search'))
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+}
+
 describe('search workspace', () => {
   it('sends advanced panel filters and offers removable chips', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
@@ -85,24 +96,69 @@ describe('search workspace', () => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
 
+    // Every filter edit re-runs the search immediately: each change
+    // below issues its own request, no manual resubmit needed.
     fireEvent.change(screen.getByLabelText(/max price/i), { target: { value: '250' } });
-    fireEvent.change(screen.getByLabelText(/location/i), { target: { value: 'Berlin' } });
-    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
     await waitFor(() => {
-      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(searchBodies(fetchStub)).toHaveLength(2);
     });
-    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.filters).toEqual({ max_price: 250, location: 'Berlin' });
+    expect(searchBodies(fetchStub)[1]).toMatchObject({
+      filters: { max_price: 250 },
+    });
+
+    fireEvent.change(screen.getByLabelText(/location/i), { target: { value: 'Berlin' } });
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(3);
+    });
+    const bodies = searchBodies(fetchStub);
+    expect(bodies[2]?.filters).toEqual({ max_price: 250, location: 'Berlin' });
     expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Max price 250');
 
     fireEvent.click(screen.getByRole('button', { name: /remove max price 250/i }));
     await waitFor(() => {
-      expect(fetchStub).toHaveBeenCalledTimes(3);
+      expect(searchBodies(fetchStub)).toHaveLength(4);
     });
-    const [, retryInit] = fetchStub.mock.calls[2] as [string, RequestInit];
-    const retryBody = JSON.parse(retryInit.body as string) as Record<string, unknown>;
-    expect(retryBody.filters).toEqual({ location: 'Berlin' });
+    expect(searchBodies(fetchStub)[3]?.filters).toEqual({ location: 'Berlin' });
+  });
+
+  it('re-runs immediately on sort, category, and mode changes', async () => {
+    const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/sort/i), { target: { value: 'newest' } });
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(2);
+    });
+    expect(searchBodies(fetchStub)[1]).toMatchObject({
+      filters: { weight_overrides: { freshness_weight: 2.0 } },
+      offset: 0,
+    });
+    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Sort: newest');
+
+    fireEvent.change(screen.getByLabelText(/site category/i), {
+      target: { value: 'news' },
+    });
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(3);
+    });
+    expect(searchBodies(fetchStub)[2]).toMatchObject({
+      filters: { weight_overrides: { freshness_weight: 2.0 }, site_category: 'news' },
+    });
+
+    fireEvent.change(screen.getByLabelText(/search mode/i), {
+      target: { value: 'news' },
+    });
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(4);
+    });
+    const modeBody = searchBodies(fetchStub)[3] as Record<string, unknown>;
+    expect(modeBody.mode).toBe('news');
+    expect(modeBody).toMatchObject({
+      filters: { weight_overrides: { freshness_weight: 2.0 }, site_category: 'news' },
+    });
   });
 
   it('offers the T9 mode suggestion without overriding the explicit mode', async () => {
@@ -130,17 +186,17 @@ describe('search workspace', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /try shopping mode/i }));
     await waitFor(() => {
-      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(searchBodies(fetchStub)).toHaveLength(2);
     });
-    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    const body = searchBodies(fetchStub)[1] as Record<string, unknown>;
     expect(body.mode).toBe('shopping');
   });
 
   it('sends provider prefs only when the user sets them', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
     // Google-style landing: provider prefs live in the sidebar, which
-    // only mounts after the first search — search, set, resubmit.
+    // only mounts after the first search — search, then set. The prefs
+    // edit re-runs the search immediately, no resubmit needed.
     // (submitQuery mounts the app.)
     await submitQuery();
     await waitFor(() => {
@@ -149,13 +205,11 @@ describe('search workspace', () => {
     fireEvent.change(screen.getByLabelText(/primary provider/i), {
       target: { value: 'mock' },
     });
-    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
     await waitFor(() => {
-      expect(fetchStub.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(searchBodies(fetchStub).length).toBeGreaterThanOrEqual(2);
     });
-    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.provider_prefs).toEqual({ include: [], exclude: [], primary: 'mock' });
+    const prefsBody = searchBodies(fetchStub)[1] as Record<string, unknown>;
+    expect(prefsBody.provider_prefs).toEqual({ include: [], exclude: [], primary: 'mock' });
   });
 
   it('omits provider prefs and announces results on a plain search', async () => {

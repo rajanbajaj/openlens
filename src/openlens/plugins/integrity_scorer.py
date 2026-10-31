@@ -39,7 +39,7 @@ from typing import Any, Optional
 
 from openlens.core.context import SearchContext
 from openlens.core.interfaces import PipelineStage, PluginType
-from openlens.plugins._signals import NEUTRAL_SIGNAL, set_signal
+from openlens.plugins._signals import NEUTRAL_SIGNAL, is_sponsored_hit, set_signal
 from openlens.plugins.base import BasePlugin
 from openlens.plugins.privacy_filter import DEFAULT_PATTERNS
 
@@ -134,8 +134,13 @@ def news_trust_of(metadata: dict[str, Any]) -> tuple[float, str]:
 
 
 def sponsored_of(metadata: dict[str, Any]) -> tuple[float, Optional[str]]:
-    """Score the indexed sponsored flag; warning when labeled."""
-    if metadata.get("sponsored") is True:
+    """Score the indexed sponsored flag; warning when labeled.
+
+    Truthy spellings (``1``/``"true"``/``"yes"``) and the federated
+    ``is_sponsored`` marker flag exactly like canonical
+    ``sponsored: true``; see ``_signals.is_sponsored_hit``.
+    """
+    if is_sponsored_hit(metadata):
         return 0.0, "integrity: labeled sponsored in indexed page markup"
     return 1.0, None
 

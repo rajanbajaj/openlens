@@ -77,7 +77,7 @@ profiles:
     privacy_weight: 0.25
     fairness_weight: 0.25
     news_trust_weight: 0.0
-    sponsored_weight: 0.25
+    sponsored_weight: 1.0
   travel:
     description: "Boosts hits mentioning travel-oriented keywords."
     relevance_weight: 1.0
@@ -96,4 +96,4 @@ profiles:
     privacy_weight: 0.25
     fairness_weight: 0.25
     news_trust_weight: 0.0
-    sponsored_weight: 0.25
+    sponsored_weight: 1.0

@@ -167,6 +167,25 @@ export default function App() {
     void runSearch(nextPage, query, mode, userFilters, prefs);
   }
 
+  // Every filter, mode, or provider-prefs edit takes effect immediately:
+  // once results exist, the edit re-runs page 1 with the next state.
+  // Before the first search there is nothing to refine, so edits only
+  // update state for the upcoming submit.
+  function handleFiltersChange(next: UserFilterState) {
+    setUserFilters(next);
+    if (hasSearched) void runSearch(1, query, mode, next, prefs);
+  }
+
+  function handlePrefsChange(next: ProviderPrefs) {
+    setPrefs(next);
+    if (hasSearched) void runSearch(1, query, mode, userFilters, next);
+  }
+
+  function handleModeChange(next: SearchMode) {
+    setMode(next);
+    if (hasSearched) void runSearch(1, query, next, userFilters, prefs);
+  }
+
   function handlePageSize(size: number) {
     if (!Number.isFinite(size) || size <= 0 || size === pageSize) return;
     setPageSize(size);
@@ -200,9 +219,8 @@ export default function App() {
     }
   }
 
-  function handleChipRemove(cleared: UserFilterState) {
-    if (hasSearched) void runSearch(1, query, mode, cleared, prefs);
-  }
+  // Chip clears flow through `handleFiltersChange`, which already re-runs
+  // the search — no second request is issued here.
 
   const suggestion = response?.diagnostics.query?.suggested_mode;
   const showSuggestion =
@@ -238,7 +256,7 @@ export default function App() {
               onSuggestSelect={handleSuggestSelect}
               disabled={loading}
             />
-            <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+            <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
           </GlassPanel>
         </main>
       ) : (
@@ -253,7 +271,7 @@ export default function App() {
                 onSuggestSelect={handleSuggestSelect}
                 disabled={loading}
               />
-              <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+              <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
             </div>
           </GlassPanel>
           <main>
@@ -265,15 +283,14 @@ export default function App() {
               >
                 <Sidebar
                   filters={userFilters}
-                  onFiltersChange={setUserFilters}
+                  onFiltersChange={handleFiltersChange}
                   prefs={prefs}
-                  onPrefsChange={setPrefs}
+                  onPrefsChange={handlePrefsChange}
                   knownProviders={knownProviders}
                   appliedFilters={response?.applied_filters ?? []}
                   disabled={loading}
                   collapsed={sidebarCollapsed}
                   onCollapsedChange={setSidebarCollapsed}
-                  onChipRemove={handleChipRemove}
                   onLibraryOpen={() => setLibraryOpen(true)}
                 />
                 {libraryOpen ? (

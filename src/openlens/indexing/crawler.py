@@ -290,35 +290,142 @@ class _BoundedLru:
             self._items.popitem(last=False)
 
 
+def _clean_title(raw: Any) -> str | None:
+    """Normalize a title candidate; None when it carries no real title.
+
+    Unescapes entities and collapses whitespace. Returns None for empty
+    strings and for icon-label runs (no word characters at all, e.g. the
+    ``<title>`` text embedded in inline SVG icons like pure symbols), so
+    the caller falls through to the next cascade step.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = " ".join(html.unescape(raw).split())
+    if not text:
+        return None
+    if not re.search(r"\w", text):
+        return None
+    return text
+
+
+def resolve_page_title(
+    head_title: Any = None,
+    meta_title: Any = None,
+    h1: Any = None,
+    url: str = "",
+) -> str:
+    """Title cascade: cleaned head title -> og/twitter title -> h1 -> URL.
+
+    Each candidate passes through :func:`_clean_title`; rejected
+    candidates (missing, blank, or icon-label runs) fall through to the
+    next step. The URL is the last resort and is returned verbatim.
+    """
+    for candidate in (head_title, meta_title, h1):
+        cleaned = _clean_title(candidate)
+        if cleaned:
+            return cleaned
+    return url if isinstance(url, str) else ""
+
+
 class _LinkTitleParser(html.parser.HTMLParser):
-    """Collects the page title and all anchor hrefs in one pass."""
+    """Collects the page title and all anchor hrefs in one pass.
+
+    Title capture is head-only and SVG-blind: ``<title>`` text inside
+    ``<body>`` (notably the ``<title>`` elements embedded in inline SVG
+    icons) is ignored, as is any ``<title>`` nested inside ``<svg>``.
+    Documents without an explicit ``<head>`` wrapper still capture a
+    top-level ``<title>`` (implied head) until ``<body>``/``</head>``.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.links: list[str] = []
         self._title_parts: list[str] = []
         self._in_title = False
+        self._in_head = False
+        self._saw_head = False
+        self._head_closed = False
+        self._saw_body = False
+        self._svg_depth = 0
+        self.meta_titles: dict[str, str] = {}
+        self._h1_parts: list[str] = []
+        self._in_h1 = False
+        self._h1_done = False
+
+    def _title_scope_open(self) -> bool:
+        if self._svg_depth > 0:
+            return False
+        if self._in_head:
+            return True
+        return not self._saw_head and not self._head_closed and not self._saw_body
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
-        if lowered == "title":
+        if lowered == "svg":
+            self._svg_depth += 1
+        if lowered == "head":
+            self._in_head = True
+            self._saw_head = True
+        if lowered == "body":
+            self._saw_body = True
+        if lowered == "title" and self._title_scope_open():
             self._in_title = True
+        if lowered == "h1" and not self._h1_done and self._svg_depth == 0:
+            self._in_h1 = True
+        if lowered == "meta":
+            norm = {name.lower(): (value or "") for name, value in attrs}
+            key = (norm.get("property") or norm.get("name") or "").strip().lower()
+            content = norm.get("content", "").strip()
+            if key in ("og:title", "twitter:title") and content:
+                self.meta_titles.setdefault(key, content)
         if lowered == "a":
             for name, value in attrs:
                 if name.lower() == "href" and value:
                     self.links.append(value.strip())
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
+        lowered = tag.lower()
+        if lowered == "svg" and self._svg_depth > 0:
+            self._svg_depth -= 1
+        if lowered == "head":
+            self._in_head = False
+            self._head_closed = True
+        if lowered == "title":
             self._in_title = False
+        if lowered == "h1" and self._in_h1:
+            self._in_h1 = False
+            self._h1_done = True
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self._title_parts.append(data)
+        if self._in_h1:
+            self._h1_parts.append(data)
 
     @property
     def title(self) -> str:
         return "".join(self._title_parts).strip()
+
+    @property
+    def head_title(self) -> str:
+        """Raw scoped head title (clean via :func:`_clean_title`)."""
+        return self.title
+
+    @property
+    def h1(self) -> str:
+        """First ``<h1>`` text outside ``<svg>`` (raw, clean on use)."""
+        return "".join(self._h1_parts).strip()
+
+    @property
+    def meta_title(self) -> str:
+        """``og:title`` preferred over ``twitter:title`` (raw)."""
+        return self.meta_titles.get("og:title", "") or self.meta_titles.get(
+            "twitter:title", ""
+        )
+
+    def resolved_title(self, url: str = "") -> str:
+        """Full cascade for this parse: head -> meta -> h1 -> URL."""
+        return resolve_page_title(self.title, self.meta_title, self.h1, url)
 
 
 #: Tags whose text is never visible (code, not content).
@@ -408,8 +515,222 @@ EXTRACTED_METADATA_KEYS: frozenset[str] = frozenset(
         "style",
         "size",
         "occasion",
+        "site_category",
+        "site_category_confidence",
+        "site_category_source",
+        "kids_domain_hit",
+        "news_domain_hit",
     }
 )
+
+#: Version stamp written to ``site_category_source`` by the rules
+#: classifier below. Bump when the rules change so stored rows can be
+#: told apart from re-runs of newer rules during backfill.
+CATEGORY_RULES_VERSION = "rules-v1"
+
+#: Allowed site-category values (mirrors the repository CHECK set).
+SITE_CATEGORIES: tuple[str, ...] = ("shopping", "news", "kids", "other")
+
+#: Category-domain config keys (see ``configs/category_domains.yaml``).
+_CATEGORY_DOMAIN_KEYS: tuple[str, ...] = (
+    "shopping_allow",
+    "news_allow",
+    "kids_allow",
+    "adult_block",
+)
+
+#: Fallback when no ``category_domains.yaml`` is found: no domain claims
+#: at all (fail-closed — content rules alone decide, kids never fires).
+_DEFAULT_CATEGORY_DOMAINS: dict[str, list[str]] = {
+    key: [] for key in _CATEGORY_DOMAIN_KEYS
+}
+
+#: Cache of loaded category-domain sets, keyed by resolved config path
+#: ("" when only built-in defaults were found).
+_category_domains_cache: dict[str, dict[str, frozenset[str]]] = {}
+
+
+def _normalize_domain_entries(entries: Any) -> frozenset[str]:
+    """Lowercase domain entries; strip whitespace, ``*.`` prefixes, paths."""
+    normalized: set[str] = set()
+    if not isinstance(entries, (list, tuple, set)):
+        return frozenset()
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        host = entry.strip().lower()
+        if host.startswith("*."):
+            host = host[2:]
+        host = host.split("/")[0].strip().lstrip(".")
+        if host:
+            normalized.add(host)
+    return frozenset(normalized)
+
+
+def _category_domains_config_path(explicit: str | None = None) -> str | None:
+    """Resolve the ``category_domains.yaml`` path (explicit wins)."""
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    repo_root = Path(__file__).resolve().parents[3]
+    candidates.append(repo_root / "configs" / "category_domains.yaml")
+    candidates.append(Path.cwd() / "configs" / "category_domains.yaml")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def load_category_domains(path: str | None = None) -> dict[str, frozenset[str]]:
+    """Load category domain allow/block sets (cached, never raises).
+
+    Reads ``configs/category_domains.yaml`` (``shopping_allow``,
+    ``news_allow``, ``kids_allow``, ``adult_block``); missing or
+    unparsable files yield empty sets (fail-closed). Matching is by
+    registered suffix: ``example.com`` also matches ``shop.example.com``.
+    """
+    resolved = _category_domains_config_path(path)
+    cache_key = resolved or ""
+    if cache_key in _category_domains_cache:
+        return _category_domains_cache[cache_key]
+    raw: dict[str, frozenset[str]] = {
+        key: frozenset(_DEFAULT_CATEGORY_DOMAINS[key]) for key in _CATEGORY_DOMAIN_KEYS
+    }
+    if resolved is not None:
+        with contextlib.suppress(Exception):
+            import yaml  # lazy: keeps module import light when unused
+
+            with open(resolved, encoding="utf-8") as handle:
+                data = yaml.safe_load(handle)
+            if isinstance(data, dict):
+                for key in _CATEGORY_DOMAIN_KEYS:
+                    raw[key] = _normalize_domain_entries(data.get(key))
+    _category_domains_cache[cache_key] = raw
+    return raw
+
+
+def clear_category_domains_cache() -> None:
+    """Drop the cached domain sets (tests loading different configs)."""
+    _category_domains_cache.clear()
+
+
+def _host_of(url: Any) -> str:
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    try:
+        return (urllib.parse.urlsplit(url.strip()).hostname or "").lower()
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _domain_hit(host: str, entries: frozenset[str]) -> bool:
+    """True when host equals or is a subdomain of any entry."""
+    if not host:
+        return False
+    for entry in entries:
+        if host == entry or host.endswith("." + entry):
+            return True
+    return False
+
+
+def classify_site_category(
+    url: Any = None,
+    metadata: dict[str, Any] | None = None,
+    *,
+    domains: dict[str, frozenset[str]] | None = None,
+    has_product: bool = False,
+    has_article: bool = False,
+) -> dict[str, Any]:
+    """Rules-first site-category classification (``rules-v1``).
+
+    Evaluates every candidate and keeps the highest confidence
+    (tie-break: kids > shopping > news):
+
+    - kids: fail-closed — ``kids_allow`` domain hit AND not adult
+      (``content_safety == "adult"`` or ``adult_block`` hit) -> 1.0.
+      Adult pages are never kids.
+    - shopping: domain hit -> 1.0; price + (availability | currency |
+      brand) -> 0.9; price alone or Product type + brand -> 0.7;
+      cart/checkout/product-path URL + price -> 0.6.
+    - news: domain hit -> 0.9 (provisional); article type + (section |
+      author & published) -> 0.85; article type alone -> 0.6.
+      A 0.6 news verdict is provisional: consumers must never hard-filter
+      on it, only demote or label.
+    - otherwise -> ("other", 1.0).
+
+    Always returns all five keys: ``site_category``,
+    ``site_category_confidence``, ``site_category_source`` (always
+    ``rules-v1``), ``kids_domain_hit`` and ``news_domain_hit`` (0/1).
+    """
+    meta = metadata if isinstance(metadata, dict) else {}
+    domain_sets = domains if domains is not None else load_category_domains()
+    host = _host_of(url)
+    shopping_hit = _domain_hit(host, domain_sets.get("shopping_allow", frozenset()))
+    news_hit = _domain_hit(host, domain_sets.get("news_allow", frozenset()))
+    kids_hit = _domain_hit(host, domain_sets.get("kids_allow", frozenset()))
+    adult_block_hit = _domain_hit(host, domain_sets.get("adult_block", frozenset()))
+    adult = meta.get("content_safety") == "adult" or adult_block_hit
+
+    price = meta.get("price")
+    has_price = isinstance(price, (int, float)) and not isinstance(price, bool)
+    has_avail_or_currency_or_brand = any(
+        isinstance(meta.get(key), str) and str(meta.get(key)).strip()
+        for key in ("availability", "currency", "brand")
+    )
+    brand = meta.get("brand")
+    has_brand = isinstance(brand, str) and bool(brand.strip())
+    url_text = url if isinstance(url, str) else ""
+    commerce_path = bool(
+        re.search(r"(cart|checkout|/product/|/products/|/p/|/dp/)", url_text.lower())
+    )
+    section = meta.get("section")
+    has_section = isinstance(section, str) and bool(section.strip())
+    author = meta.get("author")
+    has_author = isinstance(author, str) and bool(author.strip())
+    has_published = isinstance(meta.get("published"), str) and bool(
+        str(meta.get("published")).strip()
+    )
+
+    candidates: list[tuple[str, float]] = []
+    if kids_hit and not adult:
+        candidates.append(("kids", 1.0))
+    if shopping_hit:
+        candidates.append(("shopping", 1.0))
+    elif has_price and has_avail_or_currency_or_brand:
+        candidates.append(("shopping", 0.9))
+    elif commerce_path and has_price:
+        # URL commerce signals alone are weak: path + price without any
+        # structured commerce field stays below a bare price signal.
+        candidates.append(("shopping", 0.6))
+    elif has_price or (has_product and has_brand):
+        candidates.append(("shopping", 0.7))
+    if news_hit:
+        candidates.append(("news", 0.9))
+    elif has_article and (has_section or (has_author and has_published)):
+        candidates.append(("news", 0.85))
+    elif has_article:
+        candidates.append(("news", 0.6))
+
+    # Highest confidence wins; ties break kids > shopping > news.
+    order = {"kids": 0, "shopping": 1, "news": 2}
+    best: tuple[str, float] | None = None
+    for category, confidence in candidates:
+        if best is None:
+            best = (category, confidence)
+        elif (confidence, -order[category]) > (best[1], -order[best[0]]):
+            best = (category, confidence)
+    category, confidence = best if best is not None else ("other", 1.0)
+    return {
+        "site_category": category,
+        "site_category_confidence": confidence,
+        "site_category_source": CATEGORY_RULES_VERSION,
+        "kids_domain_hit": int(kids_hit),
+        "news_domain_hit": int(news_hit),
+    }
+
 
 #: Meta keys (``name``/``property``, lowercased) mapped to metadata fields.
 _META_KEY_MAP: dict[str, str] = {
@@ -450,6 +771,15 @@ class _PageDataParser(html.parser.HTMLParser):
         self.links: list[str] = []
         self._title_parts: list[str] = []
         self._in_title = False
+        self._in_head = False
+        self._saw_head = False
+        self._head_closed = False
+        self._saw_body = False
+        self._svg_depth = 0
+        self._h1_parts: list[str] = []
+        self._in_h1 = False
+        self._h1_done = False
+        self.meta_titles: dict[str, str] = {}
         self.lang: str | None = None
         self.meta: list[tuple[str, str]] = []
         self.time_datetimes: list[str] = []
@@ -459,10 +789,26 @@ class _PageDataParser(html.parser.HTMLParser):
         self.sponsored_attr = False
         self.booking_hrefs: list[str] = []
 
+    def _title_scope_open(self) -> bool:
+        if self._svg_depth > 0:
+            return False
+        if self._in_head:
+            return True
+        return not self._saw_head and not self._head_closed and not self._saw_body
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
-        if lowered == "title":
+        if lowered == "svg":
+            self._svg_depth += 1
+        if lowered == "head":
+            self._in_head = True
+            self._saw_head = True
+        if lowered == "body":
+            self._saw_body = True
+        if lowered == "title" and self._title_scope_open():
             self._in_title = True
+        if lowered == "h1" and not self._h1_done and self._svg_depth == 0:
+            self._in_h1 = True
         if lowered == "html":
             for name, value in attrs:
                 if name.lower() == "lang" and value and value.strip():
@@ -497,6 +843,9 @@ class _PageDataParser(html.parser.HTMLParser):
             content = norm.get("content", "")
             if key.strip() and content:
                 self.meta.append((key.strip().lower(), content.strip()))
+                lowered_key = key.strip().lower()
+                if lowered_key in ("og:title", "twitter:title"):
+                    self.meta_titles.setdefault(lowered_key, content.strip())
         if lowered == "time":
             for name, value in attrs:
                 if name.lower() == "datetime" and value and value.strip():
@@ -509,8 +858,16 @@ class _PageDataParser(html.parser.HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         lowered = tag.lower()
+        if lowered == "svg" and self._svg_depth > 0:
+            self._svg_depth -= 1
+        if lowered == "head":
+            self._in_head = False
+            self._head_closed = True
         if lowered == "title":
             self._in_title = False
+        if lowered == "h1" and self._in_h1:
+            self._in_h1 = False
+            self._h1_done = True
         if lowered == "script" and self._jsonld_parts is not None:
             block = "".join(self._jsonld_parts)
             if block.strip():
@@ -520,6 +877,8 @@ class _PageDataParser(html.parser.HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._in_title:
             self._title_parts.append(data)
+        if self._in_h1:
+            self._h1_parts.append(data)
         if self._jsonld_parts is not None:
             if sum(len(part) for part in self._jsonld_parts) < _MAX_JSONLD_BYTES:
                 self._jsonld_parts.append(data)
@@ -527,6 +886,22 @@ class _PageDataParser(html.parser.HTMLParser):
     @property
     def title(self) -> str:
         return "".join(self._title_parts).strip()
+
+    @property
+    def h1(self) -> str:
+        """First ``<h1>`` text outside ``<svg>`` (raw, clean on use)."""
+        return "".join(self._h1_parts).strip()
+
+    @property
+    def meta_title(self) -> str:
+        """``og:title`` preferred over ``twitter:title`` (raw)."""
+        return self.meta_titles.get("og:title", "") or self.meta_titles.get(
+            "twitter:title", ""
+        )
+
+    def resolved_title(self, url: str = "") -> str:
+        """Full cascade for this parse: head -> meta -> h1 -> URL."""
+        return resolve_page_title(self.title, self.meta_title, self.h1, url)
 
 
 def _ld_nodes(payload: Any) -> list[dict[str, Any]]:
@@ -659,15 +1034,63 @@ def _to_minutes(value: Any) -> int | None:
     return total or None
 
 
-def extract_page_attributes(html_text: str) -> dict[str, Any]:
+def _saw_page_signal(
+    parser: _PageDataParser, out: dict[str, Any], parsed_any_node: bool
+) -> bool:
+    """True when the parse observed any recognizable page signal.
+
+    Guards the always-emit contract (``sponsored`` bool, site-category
+    quintet): real pages always carry signals, so they always carry the
+    boundary keys; garbage input with no title, meta, JSON-LD node,
+    ``<time>``, ``lang``, link, booking, h1, or sponsored marker still
+    yields ``{}`` instead of a half-emitted dict.
+    """
+    if parsed_any_node:
+        return True
+    out_signal = any(
+        key not in _CATEGORY_OUTPUT_KEYS for key in out if key != "sponsored"
+    )
+    if out_signal:
+        return True
+    return bool(
+        parser.title
+        or parser.h1
+        or parser.meta
+        or parser.lang
+        or parser.time_datetimes
+        or parser.links
+        or parser.booking_hrefs
+        or parser.sponsored_rel
+        or parser.sponsored_attr
+    )
+
+
+#: Keys written by the site-category step (not page signals on their own).
+_CATEGORY_OUTPUT_KEYS = frozenset(
+    {
+        "site_category",
+        "site_category_confidence",
+        "site_category_source",
+        "kids_domain_hit",
+        "news_domain_hit",
+    }
+)
+
+
+def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str, Any]:
     """Extract vertical metadata from raw HTML offline (no network).
 
     Reads JSON-LD (Product/Offer/AggregateRating, Book, Recipe,
     Article), OpenGraph/product meta tags, ``<time datetime>``, the
     ``<html lang>`` attribute, ``rel="sponsored"`` markers, and
-    adult-content rating meta. Returns only keys with found values;
-    JSON-LD wins over meta tags, meta wins over ``<time>``. Malformed
-    markup or JSON never raises: unparseable pieces are skipped.
+    adult-content rating meta. Returns only keys with found values —
+    except ``sponsored`` (always a real bool on real pages) and the
+    site-category quintet (always classified, ``rules-v1``, on real
+    pages) — so column promotion never sees a missing key; JSON-LD wins
+    over meta tags, meta wins over ``<time>``. ``url`` feeds domain-hit
+    category rules (content rules still apply without it). Input with no
+    recognizable page signal yields ``{}``. Malformed markup or JSON
+    never raises: unparseable pieces are skipped.
     """
     parser = _PageDataParser()
     try:
@@ -675,6 +1098,9 @@ def extract_page_attributes(html_text: str) -> dict[str, Any]:
     except Exception:
         return {}
     out: dict[str, Any] = {}
+    has_product = False
+    has_article = False
+    parsed_any_node = False
 
     def _set(key: str, value: Any) -> None:
         if key not in out and value is not None:
@@ -688,7 +1114,12 @@ def extract_page_attributes(html_text: str) -> dict[str, Any]:
         for node in _ld_nodes(payload):
             if not isinstance(node, dict):
                 continue
+            parsed_any_node = True
             types = _node_types(node)
+            if types & {"product"}:
+                has_product = True
+            if types & {"article", "newsarticle", "blogposting", "reportage"}:
+                has_article = True
             if "author" in node or "creator" in node:
                 _set("author", _name_of(node.get("author", node.get("creator"))))
             lowered = {str(k).lower(): v for k, v in node.items()}
@@ -796,10 +1227,21 @@ def extract_page_attributes(html_text: str) -> dict[str, Any]:
             if dated:
                 out["published"] = dated
                 break
-    if parser.sponsored_rel or parser.sponsored_attr:
-        out["sponsored"] = True
+    # Sponsored is a real bool at the extraction boundary: downstream
+    # filters branch on ``is True`` / truthiness, never on key presence.
+    sponsored = bool(parser.sponsored_rel or parser.sponsored_attr)
     if parser.booking_hrefs:
         _set("booking_url", parser.booking_hrefs[0])
+    out.update(
+        classify_site_category(
+            url, out, has_product=has_product, has_article=has_article
+        )
+    )
+    out["sponsored"] = sponsored
+    if not _saw_page_signal(parser, out, parsed_any_node):
+        # Garbage in, empty out: unparseable input with no recognizable
+        # page signal yields {} (never raises, never half-emits).
+        return {}
     return {key: out[key] for key in sorted(out) if key in EXTRACTED_METADATA_KEYS}
 
 
@@ -1560,8 +2002,10 @@ class PoliteCrawler:
                 parser.feed(text)
             except Exception:
                 parsed = False
-            if parsed and parser.title:
-                title = parser.title
+            if parsed:
+                # Head-only scoped title -> og/twitter:title -> first h1
+                # -> URL: SVG icon titles never garble the headline.
+                title = parser.resolved_title(page.url)
         metadata: dict[str, Any] = {"content_type": page.content_type}
         if page.headers.get("etag"):
             metadata["etag"] = page.headers["etag"]
@@ -1572,7 +2016,10 @@ class PoliteCrawler:
                 metadata["published"] = published
         if page.content_type.startswith("text/html"):
             # Never raises: extract_page_attributes returns {} on bad input.
-            metadata.update(extract_page_attributes(text))
+            # Real pages always carry ``sponsored`` (a real bool) plus the
+            # site-category quintet; signal-less input yields {} and the
+            # document keeps just its content type.
+            metadata.update(extract_page_attributes(text, url=page.url))
         if page.redirect_chain:
             metadata["redirect_chain"] = list(page.redirect_chain)
         if page.requested_url and page.url != page.requested_url:

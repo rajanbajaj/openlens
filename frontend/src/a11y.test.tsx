@@ -46,6 +46,13 @@ function mockFetch(payload: unknown) {
   return stub;
 }
 
+/** Search-request bodies in call order (skips the debounced suggest fetch). */
+function searchCalls(stub: ReturnType<typeof mockFetch>) {
+  return stub.mock.calls
+    .filter(([url]) => String(url).includes('/api/v1/search'))
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+}
+
 /**
  * Route-aware fetch stub: `/api/v1/suggest` answers with the given
  * completions (valid `{q, suggestions}` envelope), every other call
@@ -158,13 +165,20 @@ describe('accessibility', () => {
       '25 results for “wireless headphones”',
     );
 
-    // Filter: keyboard-toggle the sponsored checkbox; the chip appears at once.
+    // Filter: keyboard-toggle the sponsored checkbox; the chip appears at once
+    // and the edit re-runs page 1 immediately.
     const sponsored = screen.getByLabelText(/exclude sponsored/i);
     sponsored.focus();
     expect(document.activeElement).toBe(sponsored);
     fireEvent.click(sponsored); // Space-key activation equivalent on a checkbox.
     expect(sponsored).toBeChecked();
     expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Excludes sponsored');
+    await waitFor(() => {
+      expect(searchCalls(fetchStub)).toHaveLength(2);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 1 of 3');
+    });
 
     // Paginate: focus Next and activate; page 2 is requested server-side.
     const next = screen.getByRole('button', { name: /^next$/i });
@@ -174,8 +188,7 @@ describe('accessibility', () => {
     await waitFor(() => {
       expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 2 of 3');
     });
-    const [, nextInit] = fetchStub.mock.calls[1] as [string, RequestInit];
-    expect((JSON.parse(nextInit.body as string) as Record<string, unknown>).offset).toBe(10);
+    expect(searchCalls(fetchStub)[2]).toMatchObject({ offset: 10 });
 
     // Rail: focus the trigger and open; Escape closes it again.
     const railTrigger = await screen.findByRole('button', { name: /show diagnostics/i });

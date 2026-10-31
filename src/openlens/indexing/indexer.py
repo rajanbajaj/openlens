@@ -39,7 +39,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from openlens.core.interfaces import Document
-from openlens.indexing.crawler import PoliteCrawler
+from openlens.indexing.crawler import (
+    CATEGORY_RULES_VERSION,
+    SITE_CATEGORIES,
+    PoliteCrawler,
+    classify_site_category,
+)
 from openlens.indexing.seed import SEED_DOCUMENTS
 from openlens.storage.repository import (
     DocumentRepository,
@@ -80,6 +85,11 @@ RANKING_METADATA_KEYS = (
     "allergens",
     "total_minutes",
     "sponsored",
+    "site_category",
+    "site_category_confidence",
+    "site_category_source",
+    "kids_domain_hit",
+    "news_domain_hit",
     "content_safety",
     "final_url",
     "redirect_chain",
@@ -361,6 +371,51 @@ class DocumentIndexer:
                 staged_norms.add(norm)
             stats.added += 1
         return stats
+
+    def backfill_site_categories(self, batch_size: int = 500) -> int:
+        """Re-run rules classification over every stored document.
+
+        Reads documents in id order, reclassifies each from its stored
+        URL plus metadata (domain rules from
+        ``configs/category_domains.yaml``), and rewrites rows whose
+        category verdict differs — or that predate the category columns
+        (wrong/absent ``site_category_source``). Returns the number of
+        rewritten rows. New crawls classify at extraction time, so this
+        only needs to run once per rules version after upgrade.
+        """
+        _check_chunk_size(batch_size)
+        rewritten = 0
+        offset = 0
+        while True:
+            page = self._repository.list_documents(limit=batch_size, offset=offset)
+            if not page:
+                break
+            for doc in page:
+                meta = dict(doc.metadata or {})
+                verdict = classify_site_category(doc.url, meta)
+                current = meta.get("site_category")
+                current_source = meta.get("site_category_source")
+                if (
+                    current in SITE_CATEGORIES
+                    and current == verdict["site_category"]
+                    and current_source == CATEGORY_RULES_VERSION
+                    and meta.get("site_category_confidence")
+                    == verdict["site_category_confidence"]
+                ):
+                    continue
+                meta.update(verdict)
+                self._repository.update_document(
+                    Document(
+                        id=doc.id,
+                        title=doc.title,
+                        content=doc.content,
+                        url=doc.url,
+                        metadata=meta,
+                    )
+                )
+                rewritten += 1
+            offset += len(page)
+        return rewritten
 
     def reindex(
         self, docs: list[Document], chunk_size: int = DEFAULT_CHUNK_SIZE

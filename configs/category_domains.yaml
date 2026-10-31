@@ -1,0 +1,58 @@
+# Category domain lists for the rules-v1 site classifier
+# (src/openlens/indexing/crawler.py::classify_site_category).
+#
+# Matching is by domain suffix: an entry also matches its subdomains
+# ("example.com" matches "shop.example.com"). Entries are lowercased;
+# a leading "*." is stripped. Keep entries to registrable domains.
+#
+# - shopping_allow: storefronts whose pages default to shopping (1.0).
+# - news_allow: news publishers whose pages default to news (0.9,
+#   provisional — consumers must not hard-filter on it).
+# - kids_allow: child-directed sites; a hit classifies as kids (1.0)
+#   ONLY when the page is not adult (fail-closed).
+# - adult_block: adult sites; a hit (or content_safety == "adult")
+#   vetoes the kids verdict.
+
+shopping_allow:
+  - amazon.com
+  - amazon.co.uk
+  - amazon.de
+  - ebay.com
+  - etsy.com
+  - walmart.com
+  - target.com
+  - bestbuy.com
+  - aliexpress.com
+  - shein.com
+  - zalando.com
+
+news_allow:
+  - bbc.com
+  - bbc.co.uk
+  - cnn.com
+  - nytimes.com
+  - reuters.com
+  - apnews.com
+  - npr.org
+  - theguardian.com
+  - washingtonpost.com
+  - wsj.com
+  - bloomberg.com
+  - aljazeera.com
+
+kids_allow:
+  - pbskids.org
+  - nick.com
+  - cartoonnetwork.com
+  - disney.com
+  - disneynow.com
+  - sesamestreet.org
+  - abcya.com
+  - starfall.com
+  - kids.nationalgeographic.com
+
+adult_block:
+  - pornhub.com
+  - xvideos.com
+  - xnxx.com
+  - xhamster.com

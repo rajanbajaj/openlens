@@ -106,12 +106,11 @@ describe('App wiring', () => {
     );
 
     // Filters exist only after the first search (Google-style landing):
-    // toggle in the now-mounted sidebar, resubmit, assert the wire call.
-    // The sponsored toggle sends the backend `exclude_sponsored`
-    // reserved flag (hard-excludes crawler-truth sponsored hits) plus
-    // the legacy owned term filter for older backends.
+    // the toggle in the now-mounted sidebar re-runs the search
+    // immediately, so assert the wire call without resubmitting.
+    // The sponsored toggle sends only the backend `exclude_sponsored`
+    // reserved flag (hard-excludes crawler-truth sponsored hits).
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
-    fireEvent.click(screen.getByRole('button', { name: /^search$/i }));
     await waitFor(() => {
       expect(fetchStub).toHaveBeenCalledTimes(2);
     });
@@ -120,7 +119,6 @@ describe('App wiring', () => {
     expect(body.mode).toBe('shopping');
     expect(body.filters).toEqual({
       exclude_sponsored: true,
-      must_not_terms: ['sponsored'],
     });
     expect(body.offset).toBe(0);
 

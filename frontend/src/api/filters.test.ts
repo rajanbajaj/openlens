@@ -17,10 +17,9 @@ import {
  * `style`, `size`, `occasion`).
  */
 describe('user filter mapper', () => {
-  it('maps the sponsored toggle onto the metadata flag plus a legacy term filter', () => {
+  it('maps the sponsored toggle onto the metadata flag alone', () => {
     expect(buildFilters({ ...EMPTY_FILTER_STATE, excludeSponsored: true })).toEqual({
       exclude_sponsored: true,
-      must_not_terms: ['sponsored'],
     });
   });
 
@@ -49,7 +48,8 @@ describe('user filter mapper', () => {
       maxPrice: '250',
       location: 'Berlin',
       facilities: 'wifi, pool',
-      preferSuffix: 'trust',
+      preferDomains: 'example.com, trusted.example',
+      preferTopics: 'science, history',
       blockedDomain: 'example.com',
       allowedDomain: 'trusted.example',
       mustNotTerm: 'advertisement',
@@ -59,7 +59,8 @@ describe('user filter mapper', () => {
       max_price: 250,
       location: 'Berlin',
       facilities: 'wifi, pool',
-      prefer_trust: true,
+      prefer_domains: ['example.com', 'trusted.example'],
+      prefer_topics: ['science', 'history'],
       blocked_domains: ['example.com'],
       allowed_domains: ['trusted.example'],
       must_not_terms: ['advertisement'],
@@ -67,6 +68,34 @@ describe('user filter mapper', () => {
     for (const key of Object.keys(filters)) {
       expect(isKnownFilterKey(key)).toBe(true);
     }
+  });
+
+  it('emits prefer lists as string lists and drops blanks', () => {
+    expect(
+      buildFilters({
+        ...EMPTY_FILTER_STATE,
+        preferDomains: ' example.com ,, trusted.example ',
+        preferTopics: '  ',
+      }),
+    ).toEqual({ prefer_domains: ['example.com', 'trusted.example'] });
+  });
+
+  it('maps sort presets onto weight_overrides with ranker weight names', () => {
+    expect(buildFilters(EMPTY_FILTER_STATE)).toEqual({});
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, sortPreset: 'newest' })).toEqual({
+      weight_overrides: { freshness_weight: 2.0 },
+    });
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, sortPreset: 'most-trusted' })).toEqual({
+      weight_overrides: { trust_weight: 2.0 },
+    });
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, sortPreset: 'bogus' })).toEqual({});
+  });
+
+  it('emits site_category only for known categories', () => {
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, siteCategory: 'news' })).toEqual({
+      site_category: 'news',
+    });
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, siteCategory: 'movies' })).toEqual({});
   });
 
   it('ignores blank inputs and non-numeric prices', () => {
@@ -78,7 +107,7 @@ describe('user filter mapper', () => {
     expect(filters).toEqual({});
   });
 
-  it('merges the sponsored toggle with a custom must-not term', () => {
+  it('keeps the sponsored flag separate from a custom must-not term', () => {
     const filters = buildFilters({
       ...EMPTY_FILTER_STATE,
       excludeSponsored: true,
@@ -86,7 +115,7 @@ describe('user filter mapper', () => {
     });
     expect(filters).toEqual({
       exclude_sponsored: true,
-      must_not_terms: ['sponsored', 'advertisement'],
+      must_not_terms: ['advertisement'],
     });
   });
 
@@ -97,7 +126,10 @@ describe('user filter mapper', () => {
       maxPrice: '250',
       location: 'Berlin',
       facilities: 'wifi, pool',
-      preferSuffix: 'trust',
+      preferDomains: 'example.com',
+      preferTopics: 'science',
+      sortPreset: 'newest',
+      siteCategory: 'news',
       blockedDomain: 'example.com',
       allowedDomain: 'trusted.example',
       mustNotTerm: 'advertisement',
@@ -107,10 +139,13 @@ describe('user filter mapper', () => {
       max_price: 250,
       location: 'Berlin',
       facilities: 'wifi, pool',
-      prefer_trust: true,
+      prefer_domains: ['example.com'],
+      prefer_topics: ['science'],
+      weight_overrides: { freshness_weight: 2.0 },
+      site_category: 'news',
       blocked_domains: ['example.com'],
       allowed_domains: ['trusted.example'],
-      must_not_terms: ['sponsored', 'advertisement'],
+      must_not_terms: ['advertisement'],
     });
     for (const key of Object.keys(filters)) {
       expect(isKnownFilterKey(key)).toBe(true);
@@ -118,7 +153,7 @@ describe('user filter mapper', () => {
   });
 
   it('recognizes every owned and reserved backend key', () => {
-    for (const key of [...OWNED_FILTER_KEYS, ...RESERVED_FILTER_KEYS, 'prefer_trust']) {
+    for (const key of [...OWNED_FILTER_KEYS, ...RESERVED_FILTER_KEYS, 'prefer_topics']) {
       expect(isKnownFilterKey(key)).toBe(true);
     }
     expect(isKnownFilterKey('exclude_sponsored')).toBe(true);

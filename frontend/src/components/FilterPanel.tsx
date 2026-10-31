@@ -176,14 +176,54 @@ export function FilterPanel({ value, onChange, disabled = false }: FilterPanelPr
       </div>
       <div>
         <h3>Preference</h3>
-        <TextInput
-          label="Prefer (preference keyword)"
-          id="filter-prefer"
-          name="prefer"
-          placeholder="e.g. trust"
-          value={value.preferSuffix}
+        <Select
+          label="Sort"
+          id="filter-sort"
+          name="sort"
+          value={value.sortPreset}
           disabled={disabled}
-          onChange={(event) => set({ preferSuffix: event.target.value })}
+          onChange={(next) => set({ sortPreset: next })}
+          options={[
+            { value: '', label: 'Best match' },
+            { value: 'newest', label: 'Newest' },
+            { value: 'most-trusted', label: 'Most trusted' },
+          ]}
+        />
+        <TextInput
+          label="Prefer domains (comma-separated)"
+          id="filter-prefer-domains"
+          name="prefer_domains"
+          placeholder="e.g. example.com, trusted.example"
+          value={value.preferDomains}
+          disabled={disabled}
+          onChange={(event) => set({ preferDomains: event.target.value })}
+        />
+        <TextInput
+          label="Prefer topics (comma-separated)"
+          id="filter-prefer-topics"
+          name="prefer_topics"
+          placeholder="e.g. science, history"
+          value={value.preferTopics}
+          disabled={disabled}
+          onChange={(event) => set({ preferTopics: event.target.value })}
+        />
+      </div>
+      <div>
+        <h3>Category</h3>
+        <Select
+          label="Site category"
+          id="filter-site-category"
+          name="site_category"
+          value={value.siteCategory}
+          disabled={disabled}
+          onChange={(next) => set({ siteCategory: next })}
+          options={[
+            { value: '', label: 'All categories' },
+            { value: 'shopping', label: 'Shopping' },
+            { value: 'news', label: 'News' },
+            { value: 'kids', label: 'Kids' },
+            { value: 'other', label: 'Other' },
+          ]}
         />
       </div>
       <div>
@@ -207,9 +247,9 @@ export function FilterPanel({ value, onChange, disabled = false }: FilterPanelPr
           onChange={(next) => set({ safetyPreset: next })}
           options={[
             { value: '', label: 'Backend default' },
-            { value: 'standard', label: 'Standard' },
-            { value: 'balanced', label: 'Balanced' },
-            { value: 'strict', label: 'Strict' },
+            { value: 'standard', label: 'Standard (ranking only)' },
+            { value: 'balanced', label: 'Balanced (ranking only)' },
+            { value: 'strict', label: 'Strict (filters results)' },
           ]}
         />
       </div>

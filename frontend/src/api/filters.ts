@@ -42,16 +42,31 @@ export const RESERVED_FILTER_KEYS: readonly string[] = [
   'personalize',
   'weight_overrides',
   'safety_preset',
+  'site_category',
 ];
 
 /** Named safety policies selectable via the `safety_preset` filter. */
 export const SAFETY_PRESETS: readonly string[] = ['standard', 'balanced', 'strict'];
 
-/** Prefix reserved for scoring-preference keys (`prefer_<suffix>`). */
-export const PREFER_PREFIX = 'prefer_';
+/**
+ * Named site categories selectable via the `site_category` filter.
+ * Must stay a subset of the backend-accepted category vocabulary.
+ */
+export const SITE_CATEGORIES: readonly string[] = ['shopping', 'news', 'kids', 'other'];
 
-/** Term excluded by the "exclude sponsored" toggle (backend-owned term filter). */
-export const SPONSORED_TERM = 'sponsored';
+/**
+ * Sort presets offered by the sort select. Each non-default preset maps
+ * to a `weight_overrides` dict keyed by an existing ranker weight field
+ * (see `RankingProfile` in `src/openlens/ranking/profiles.py`), so the
+ * backend ranker accepts it instead of failing closed.
+ */
+export const SORT_PRESETS: Record<string, Record<string, number>> = {
+  newest: { freshness_weight: 2.0 },
+  'most-trusted': { trust_weight: 2.0 },
+};
+
+/** Prefix reserved for scoring-preference keys (`prefer_domains`, `prefer_topics`). */
+export const PREFER_PREFIX = 'prefer_';
 
 /** Raw panel state: strings straight from the inputs, parsed by {@link buildFilters}. */
 export interface UserFilterState {
@@ -71,8 +86,14 @@ export interface UserFilterState {
   dietaryTags: string;
   ingredients: string;
   excludeAllergens: string;
-  /** Suffix for `prefer_<suffix>: true`; blank means unset. */
-  preferSuffix: string;
+  /** Comma-separated preferred domains; blank means unset. */
+  preferDomains: string;
+  /** Comma-separated preferred topics; blank means unset. */
+  preferTopics: string;
+  /** Sort preset (`''` is Best match); non-default emits `weight_overrides`. */
+  sortPreset: string;
+  /** Named site category; blank means the backend default. */
+  siteCategory: string;
   blockedDomain: string;
   allowedDomain: string;
   mustNotTerm: string;
@@ -99,7 +120,10 @@ export const EMPTY_FILTER_STATE: UserFilterState = {
   dietaryTags: '',
   ingredients: '',
   excludeAllergens: '',
-  preferSuffix: '',
+  preferDomains: '',
+  preferTopics: '',
+  sortPreset: '',
+  siteCategory: '',
   blockedDomain: '',
   allowedDomain: '',
   mustNotTerm: '',
@@ -117,22 +141,32 @@ export function isKnownFilterKey(key: string): boolean {
 }
 
 /**
+ * Split a comma-separated input into a clean string list, dropping
+ * blanks and duplicates while preserving first-seen order.
+ */
+export function parseStringList(raw: string): string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(',')) {
+    const entry = part.trim();
+    if (entry && !seen.has(entry)) seen.add(entry);
+  }
+  return [...seen];
+}
+
+/**
  * Shape raw panel state into the request `filters` dict. Blank inputs
  * and non-numeric prices are dropped; every emitted key satisfies
  * {@link isKnownFilterKey}.
  */
 export function buildFilters(state: UserFilterState): Record<string, unknown> {
   const filters: Record<string, unknown> = {};
-  const mustNotTerms: string[] = [];
-  // Backend hard-excludes crawler-truth sponsored hits via the flag;
-  // the legacy text term stays for older backends.
+  // The backend hard-excludes crawler-truth sponsored hits via the
+  // flag alone — no legacy `must_not_terms` fallback is sent.
   if (state.excludeSponsored) {
     filters['exclude_sponsored'] = true;
-    mustNotTerms.push(SPONSORED_TERM);
   }
   const extraTerm = state.mustNotTerm.trim();
-  if (extraTerm) mustNotTerms.push(extraTerm);
-  if (mustNotTerms.length > 0) filters['must_not_terms'] = mustNotTerms;
+  if (extraTerm) filters['must_not_terms'] = [extraTerm];
 
   const maxPrice = Number(state.maxPrice.trim());
   if (state.maxPrice.trim() !== '' && Number.isFinite(maxPrice)) {
@@ -167,12 +201,18 @@ export function buildFilters(state: UserFilterState): Record<string, unknown> {
   if (ingredients) filters['ingredients'] = ingredients;
   const excludeAllergens = state.excludeAllergens.trim();
   if (excludeAllergens) filters['exclude_allergens'] = excludeAllergens;
-  const preferSuffix = state.preferSuffix
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  if (preferSuffix) filters[`${PREFER_PREFIX}${preferSuffix}`] = true;
+  const preferDomains = parseStringList(state.preferDomains);
+  if (preferDomains.length > 0) filters['prefer_domains'] = preferDomains;
+  const preferTopics = parseStringList(state.preferTopics);
+  if (preferTopics.length > 0) filters['prefer_topics'] = preferTopics;
+  const sortPreset = state.sortPreset.trim().toLowerCase();
+  if (sortPreset && sortPreset in SORT_PRESETS) {
+    filters['weight_overrides'] = { ...SORT_PRESETS[sortPreset] };
+  }
+  const siteCategory = state.siteCategory.trim().toLowerCase();
+  if (siteCategory && (SITE_CATEGORIES as readonly string[]).includes(siteCategory)) {
+    filters['site_category'] = siteCategory;
+  }
 
   const blockedDomain = state.blockedDomain.trim();
   if (blockedDomain) filters['blocked_domains'] = [blockedDomain];

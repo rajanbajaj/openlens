@@ -54,14 +54,18 @@ describe('Sidebar', () => {
       'aria-expanded',
       'true',
     );
-    // Sponsored toggle + all seven panel fields (exact labels so the
+    // Sponsored toggle + panel fields (exact labels so the
     // chip remove buttons, e.g. "Remove Max price 250", do not match).
     expect(screen.getByLabelText(/exclude sponsored/i)).toBeChecked();
     for (const label of [
       'Max price',
       'Location',
       'Facilities',
-      'Prefer (preference keyword)',
+      'Sort',
+      'Prefer domains (comma-separated)',
+      'Prefer topics (comma-separated)',
+      'Site category',
+      'Safety preset',
       'Blocked domain',
       'Allowed domain',
       'Exclude term',
@@ -145,14 +149,17 @@ describe('Sidebar', () => {
       brand: 'Acme',
       style: 'casual',
       size: 'M',
-      preferSuffix: 'Trust!',
+      preferDomains: 'example.com',
+      preferTopics: 'science',
+      sortPreset: 'newest',
+      siteCategory: 'news',
       blockedDomain: 'example.com',
       allowedDomain: 'trusted.example',
       mustNotTerm: 'advertisement',
     };
     expect(JSON.stringify(buildFilters(full))).toBe(
       '{"exclude_sponsored":true,' +
-        '"must_not_terms":["sponsored","advertisement"],' +
+        '"must_not_terms":["advertisement"],' +
         '"max_price":250,' +
         '"min_rating":4,' +
         '"location":"Berlin",' +
@@ -160,7 +167,10 @@ describe('Sidebar', () => {
         '"brand":"Acme",' +
         '"style":"casual",' +
         '"size":"M",' +
-        '"prefer_trust":true,' +
+        '"prefer_domains":["example.com"],' +
+        '"prefer_topics":["science"],' +
+        '"weight_overrides":{"freshness_weight":2},' +
+        '"site_category":"news",' +
         '"blocked_domains":["example.com"],' +
         '"allowed_domains":["trusted.example"]}',
     );
@@ -172,8 +182,47 @@ describe('Sidebar', () => {
     const { onFiltersChange } = setup();
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
     const payload = onFiltersChange.mock.calls[0][0] as UserFilterState;
-    expect(JSON.stringify(buildFilters(payload))).toBe(
-      '{"exclude_sponsored":true,"must_not_terms":["sponsored"]}',
-    );
+    expect(JSON.stringify(buildFilters(payload))).toBe('{"exclude_sponsored":true}');
+  });
+
+  it('renders chips for every set filter and clears them one by one', () => {
+    const filters: UserFilterState = {
+      ...EMPTY_FILTER_STATE,
+      excludeOverBudget: true,
+      occasion: 'wedding',
+      license: 'CC-BY',
+      author: 'Austen',
+      cuisine: 'Italian',
+      dietaryTags: 'vegan',
+      ingredients: 'tomato',
+      excludeAllergens: 'peanuts',
+      personalize: false,
+      safetyPreset: 'strict',
+      sortPreset: 'newest',
+      siteCategory: 'news',
+    };
+    const { onFiltersChange, onChipRemove } = setup({ filters });
+    const chips = screen.getByTestId('user-filter-chips');
+    for (const text of [
+      'Excludes over-budget',
+      'Occasion: wedding',
+      'License: CC-BY',
+      'Author: Austen',
+      'Cuisine: Italian',
+      'Dietary: vegan',
+      'Ingredients: tomato',
+      'Excludes allergens: peanuts',
+      'Sort: newest',
+      'Category: news',
+      'Personalization off',
+      'Safety: strict',
+    ]) {
+      expect(chips).toHaveTextContent(text);
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Safety: strict' }));
+    const cleared = { ...filters, safetyPreset: '' };
+    expect(onFiltersChange).toHaveBeenCalledWith(cleared);
+    expect(onChipRemove).toHaveBeenCalledWith(cleared);
   });
 });

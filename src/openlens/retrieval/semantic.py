@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from openlens.core.interfaces import SearchResult
+from openlens.retrieval.query_normalize import normalize_query
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +58,8 @@ def rank_ids_by_semantic(
     """Order candidate ids by embedding cosine similarity to ``query``.
 
     Args:
-        query: Raw query text (embedded verbatim; never logged above DEBUG).
+        query: Raw query text, normalized with the shared query normalizer
+            before embedding (never logged above DEBUG).
         candidates: Already-retrieved FTS5 hits to re-order semantically.
         models: A :class:`ModelManager` (or any object with
             ``embed(texts)``); ``None`` means no embedding backend is
@@ -76,7 +78,12 @@ def rank_ids_by_semantic(
         candidate_list = list(candidates)
         if not candidate_list:
             return []
-        texts = [query, *(_candidate_text(item) for item in candidate_list)]
+        try:
+            embed_query = normalize_query(query).normalized or query
+        except Exception:
+            _LOGGER.debug("semantic ranking: query normalization failed")
+            embed_query = query
+        texts = [embed_query, *(_candidate_text(item) for item in candidate_list)]
         vectors = models.embed(texts)
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             _LOGGER.debug("semantic ranking unavailable: bad embedding shape")

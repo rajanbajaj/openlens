@@ -199,11 +199,15 @@ def test_min_rating_removes_low_rated_hits() -> None:
     assert [hit.id for hit in out.results] == ["high"]
 
 
-def test_brand_style_size_occasion_keys_pass_through() -> None:
+def test_brand_style_size_occasion_keys_hard_exclusion() -> None:
     filters = {"brand": "Acme", "style": "casual", "size": "M", "occasion": "party"}
-    out = UserRestrictionsFilter().run(_ctx(_hit("h1"), _hit("h2"), filters=filters))
-    assert [hit.id for hit in out.results] == ["h1", "h2"]
-    assert out.metadata["user-restrictions-removed"] == 0
+    matching = _hit(
+        "h1",
+        metadata={"brand": "Acme", "style": "casual", "size": "M", "occasion": "party"},
+    )
+    out = UserRestrictionsFilter().run(_ctx(matching, _hit("h2"), filters=filters))
+    assert [hit.id for hit in out.results] == ["h1"]
+    assert out.metadata["user-restrictions-removed"] == 1
 
 
 # --- trust: typosquat + new domain ---------------------------------------

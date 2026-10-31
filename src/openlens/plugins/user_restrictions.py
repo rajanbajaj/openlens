@@ -41,13 +41,30 @@ Raise sites (pinned by the filter-pack plan):
 Forward compatibility (review D4): keys owned by later packs are
 accepted and passed through — never rejected, never type-checked here.
 Any ``prefer_*`` key (scoring pack) plus ``max_price``, ``location``,
-``facilities``, ``brand``, ``style``, ``size``, and ``occasion`` are
-ordering-only hints consumed downstream by the commerce reranker.
-``exclude_sponsored``, ``min_rating``, ``exclude_over_budget``,
-``license``, ``author``, ``cuisine``, ``dietary_tags``,
-``ingredients``, and ``exclude_allergens`` are additionally
-hard-enforced here on crawler-truth metadata. Only keys outside the
-owned schema and that reservation are rejected.
+and ``facilities`` are ordering-only hints consumed downstream by the
+commerce reranker. ``exclude_sponsored``, ``min_rating``,
+``exclude_over_budget``, ``license``, ``author``, ``cuisine``,
+``dietary_tags``, ``ingredients``, ``exclude_allergens``,
+``brand``, ``style``, ``size``, ``occasion``, and ``site_category``
+are additionally hard-enforced here on crawler-truth metadata:
+
+- ``brand``/``style``/``size``/``occasion`` (string or list of
+  strings): a hit is kept only if *every* requested term appears in
+  the hit's same-named metadata — compared case-insensitively, either
+  as the whole normalized value or as a member of its comma-separated
+  term set (the crawler folds color/material/pattern/category into a
+  comma-joined ``style`` string). Malformed values (non-string entries,
+  empty) leave the key inactive — never fail-closed.
+- ``site_category`` (string or list of strings): a hit is kept only if
+  its ``site_category`` (falling back to ``category``) metadata term
+  set intersects the requested set. Allowed values are exactly
+  ``shopping``/``news``/``kids``/``other``. A well-formed but unknown
+  value (e.g. ``"gaming"``) raises ``PluginError`` (fail-closed);
+  malformed values (non-string/list payloads, empty) leave the key
+  inactive. Hits carrying no category marker are excluded while the
+  key is active.
+
+Only keys outside the owned schema and that reservation are rejected.
 """
 
 from __future__ import annotations
@@ -65,6 +82,7 @@ from openlens.core.interfaces import (
     PluginType,
     SearchResult,
 )
+from openlens.plugins._signals import coerce_sponsored_marker
 from openlens.plugins.base import BasePlugin
 
 #: Bounds on per-list size and entry length (schema-level ReDoS/cost caps).
@@ -95,12 +113,21 @@ OWNED_FILTER_KEYS: frozenset[str] = frozenset(_FILTER_KEY_TO_OPERATOR)
 #: ``exclude_sponsored``/``min_rating`` are hard-enforced here on the
 #: crawler-truth flags (``metadata["sponsored"]`` / ``metadata["rating"]``)
 #: so "exclude sponsored" and "minimum rating" remove hits instead of
-#: merely demoting them. The vertical keys below are likewise hard
+#: merely demoting them. Sponsored markers are read with truthy
+#: semantics (``True``/``1``/``"true"``/``"yes"`` plus the federated
+#: ``is_sponsored`` spelling) and canonicalized to real ``True`` at this
+#: boundary — the earliest owned touchpoint — so the scorer and ranker
+#: observe the canonical flag. The vertical keys below are likewise hard
 #: exclusion filters: ``exclude_over_budget`` gates ``max_price`` (off by
 #: default so bare ``max_price`` stays ordering-only for the commerce
-#: reranker), and ``license``/``author``/``cuisine``/``dietary_tags``/
-#: ``ingredients``/``exclude_allergens`` match book/recipe metadata.
-#: All vertical keys parse leniently (malformed values are ignored, never
+#: reranker); ``license``/``author``/``cuisine``/``dietary_tags``/
+#: ``ingredients``/``exclude_allergens`` match book/recipe metadata;
+#: ``brand``/``style``/``size``/``occasion`` match product metadata
+#: (every requested term must appear in the same-named metadata field,
+#: case-insensitively); ``site_category`` restricts hits to the
+#: requested slice(s) of ``shopping``/``news``/``kids``/``other`` and is
+#: fail-closed on unknown values. All vertical keys except
+#: ``site_category`` parse leniently (malformed values are ignored, never
 #: fail-closed). The remaining keys are consumed downstream by the
 #: commerce reranker for ordering.
 #:
@@ -128,6 +155,7 @@ RESERVED_FILTER_KEYS: frozenset[str] = frozenset(
         "dietary_tags",
         "ingredients",
         "exclude_allergens",
+        "site_category",
         "personalize",
         "weight_overrides",
         "safety_preset",
@@ -136,6 +164,16 @@ RESERVED_FILTER_KEYS: frozenset[str] = frozenset(
 
 #: Named safety policies selectable per request via ``safety_preset``.
 SAFETY_PRESET_VALUES: frozenset[str] = frozenset({"strict", "balanced", "standard"})
+
+#: Closed value set for the ``site_category`` filter. Unknown *values*
+#: (well-formed strings outside this set) are fail-closed; malformed
+#: payloads (non-string/list, empty) leave the filter inactive.
+SITE_CATEGORY_VALUES: frozenset[str] = frozenset({"shopping", "news", "kids", "other"})
+
+#: Metadata keys consulted by the ``site_category`` filter, in order.
+#: ``site_category`` is canonical; ``category`` is the provider-declared
+#: fallback spelling. Terms from every present key are unioned.
+SITE_CATEGORY_METADATA_KEYS: tuple[str, ...] = ("site_category", "category")
 
 #: Prefix reserving a whole family of consumer keys (scoring pack).
 RESERVED_FILTER_PREFIX = "prefer_"
@@ -398,6 +436,38 @@ class UserRestrictionsFilter(BasePlugin):
                     f"{sorted(SAFETY_PRESET_VALUES)}."
                 )
 
+    def _compile_site_category(self, filters: dict[str, Any]) -> frozenset[str] | None:
+        """Compile the ``site_category`` filter (fail-closed on unknowns).
+
+        Returns the requested category set, or None when the key is
+        absent/malformed (filter inactive). A well-formed string or list
+        entry outside ``SITE_CATEGORY_VALUES`` raises a mandatory
+        ``PluginError``. Non-string entries inside a list are malformed
+        (ignored, never fail-closed); a non-string/non-list payload or an
+        empty result leaves the filter inactive.
+        """
+        if "site_category" not in filters:
+            return None
+        raw = filters["site_category"]
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            return None  # Malformed payload: lenient, filter inactive.
+        wanted: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, str):
+                continue  # Malformed entry: ignored, never fail-closed.
+            term = entry.strip().lower()
+            if not term:
+                continue
+            if term not in SITE_CATEGORY_VALUES:
+                raise self._request_error(
+                    f"UserRestrictionsFilter 'site_category' has unknown value "
+                    f"{entry!r}. Allowed: {sorted(SITE_CATEGORY_VALUES)}."
+                )
+            wanted.add(term)
+        return frozenset(wanted) or None
+
     def _compile_predicate(
         self, filters: dict[str, Any]
     ) -> Callable[[SearchResult], bool]:
@@ -439,6 +509,11 @@ class UserRestrictionsFilter(BasePlugin):
         dietary_terms = _as_term_list(filters.get("dietary_tags"))
         ingredient_terms = _as_term_list(filters.get("ingredients"))
         allergen_terms = _as_term_list(filters.get("exclude_allergens"))
+        brand_terms = _as_term_list(filters.get("brand"))
+        style_terms = _as_term_list(filters.get("style"))
+        size_terms = _as_term_list(filters.get("size"))
+        occasion_terms = _as_term_list(filters.get("occasion"))
+        site_categories = self._compile_site_category(filters)
 
         must_patterns = [
             re.compile(re.escape(term), re.IGNORECASE) for term in merged["must"]
@@ -449,8 +524,17 @@ class UserRestrictionsFilter(BasePlugin):
         include_domains = frozenset(merged["include_domains"])
         exclude_domains = frozenset(merged["exclude_domains"])
 
+        def _attribute_terms(metadata: dict[str, Any], key: str) -> set[str]:
+            """Term set for one product attribute: whole value + split terms."""
+            raw = metadata.get(key)
+            terms = set(_meta_terms(raw))
+            if isinstance(raw, str) and raw.strip():
+                terms.add(raw.strip().lower())
+            return terms
+
         def predicate(result: SearchResult) -> bool:
-            if exclude_sponsored and result.metadata.get("sponsored") is True:
+            sponsored = coerce_sponsored_marker(result.metadata)
+            if exclude_sponsored and sponsored:
                 return False
             if min_rating is not None:
                 rating = result.metadata.get("rating")
@@ -521,6 +605,22 @@ class UserRestrictionsFilter(BasePlugin):
                     for term in allergen_terms
                     for item in have
                 ):
+                    return False
+            for key, wanted in (
+                ("brand", brand_terms),
+                ("style", style_terms),
+                ("size", size_terms),
+                ("occasion", occasion_terms),
+            ):
+                if wanted is not None:
+                    have = _attribute_terms(result.metadata, key)
+                    if any(term not in have for term in wanted):
+                        return False
+            if site_categories is not None:
+                have_categories: set[str] = set()
+                for meta_key in SITE_CATEGORY_METADATA_KEYS:
+                    have_categories.update(_meta_terms(result.metadata.get(meta_key)))
+                if not (have_categories & set(site_categories)):
                     return False
             haystack = f"{result.title}\n{result.snippet}\n{result.url or ''}"
             if any(not pattern.search(haystack) for pattern in must_patterns):

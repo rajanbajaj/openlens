@@ -31,7 +31,8 @@ from openlens.indexing.seed import SEED_DOCUMENTS
 from openlens.retrieval.deduplicator import deduplicate
 from openlens.retrieval.fusion import fuse
 from openlens.retrieval.normalizer import normalize_many
-from openlens.retrieval.query_parser import parse_query
+from openlens.retrieval.query_normalize import normalize_query
+from openlens.retrieval.query_parser import hyphen_compounds, parse_query
 from openlens.retrieval.semantic import rank_ids_by_semantic
 from openlens.storage.base import DocumentStore
 from openlens.storage.repository import DocumentRepository
@@ -273,7 +274,12 @@ class CustomIndexProvider(SearchProvider):
                 provider_name=self.name,
                 code=ProviderError.INVALID_REQUEST,
             )
-        parsed = parse_query(request.query)
+        # Normalize (Unicode NFKC, casefold, punctuation -> spaces) before
+        # parsing so accented/CJK queries tokenize instead of vanishing.
+        # Hyphen compounds ("e-mail" -> "email") are recovered from the raw
+        # text first: normalization maps hyphens to spaces.
+        normalized = normalize_query(request.query).normalized
+        parsed = parse_query(normalized, extra_optional=hyphen_compounds(request.query))
         if not parsed.fts_query:
             return [], 0
         if not self._semantic_enabled or self._models is None:
