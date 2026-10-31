@@ -266,10 +266,10 @@ describe('search workspace', () => {
     await waitFor(() => {
       expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 2 of 3');
     });
-    const [, nextInit] = fetchStub.mock.calls[1] as [string, RequestInit];
-    const nextBody = JSON.parse(nextInit.body as string) as Record<string, unknown>;
-    expect(nextBody.offset).toBe(10);
-    expect(nextBody.limit).toBe(10);
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(2);
+    });
+    expect(searchBodies(fetchStub)[1]).toMatchObject({ offset: 10, limit: 10 });
     expect(screen.getByTestId('result-announcer')).toHaveTextContent(
       '25 results for “wireless headphones”',
     );
@@ -278,9 +278,10 @@ describe('search workspace', () => {
     await waitFor(() => {
       expect(screen.getByTestId('page-indicator')).toHaveTextContent('Page 1 of 3');
     });
-    const [, prevInit] = fetchStub.mock.calls[2] as [string, RequestInit];
-    const prevBody = JSON.parse(prevInit.body as string) as Record<string, unknown>;
-    expect(prevBody.offset).toBe(0);
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(3);
+    });
+    expect(searchBodies(fetchStub)[2]).toMatchObject({ offset: 0 });
   });
 
   it('header search box offers suggestions and Escape keeps results intact', async () => {

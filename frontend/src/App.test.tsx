@@ -111,10 +111,12 @@ describe('App wiring', () => {
     // The sponsored toggle sends only the backend `exclude_sponsored`
     // reserved flag (hard-excludes crawler-truth sponsored hits).
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
+    const searchCalls = () =>
+      fetchStub.mock.calls.filter(([url]) => String(url).includes('/api/v1/search'));
     await waitFor(() => {
-      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(searchCalls()).toHaveLength(2);
     });
-    const [, init] = fetchStub.mock.calls[1] as [string, RequestInit];
+    const [, init] = searchCalls()[1] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.mode).toBe('shopping');
     expect(body.filters).toEqual({
