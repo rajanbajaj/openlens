@@ -232,6 +232,33 @@ class CustomIndexProvider(SearchProvider):
         terms.sort(key=str.casefold)
         return terms[:limit]
 
+    def _enrich_inlink_counts(self, results: list[Any]) -> None:
+        """Stamp ``metadata["inlink_count"]`` from the authority graph.
+
+        One batched lookup per search page; stores without the hook (or
+        any failure) leave results untouched so ranking degrades to the
+        neutral authority signal instead of failing the request.
+        """
+        if not results:
+            return
+        try:
+            hook = getattr(self._repository, "inlink_counts", None)
+            if not callable(hook):
+                return
+            targets = [r.id for r in results if getattr(r, "id", None)]
+            counts = hook(targets)
+        except Exception:
+            return
+        if not isinstance(counts, dict):
+            return
+        for result in results:
+            count = counts.get(getattr(result, "id", None))
+            if isinstance(count, bool):
+                continue
+            if isinstance(count, (int, float)) and count >= 0:
+                if isinstance(result.metadata, dict):
+                    result.metadata["inlink_count"] = int(count)
+
     def fetch_documents(self, doc_ids: list[str]) -> dict[str, Document]:
         """Bulk-fetch documents by id for agent grounding (read-only).
 
@@ -379,7 +406,9 @@ class CustomIndexProvider(SearchProvider):
                     code=ProviderError.UNKNOWN,
                 ) from exc
             results = normalize_many(scored, provider=self.name, query=request.query)
-            return deduplicate(results), int(total)
+            results = deduplicate(results)
+            self._enrich_inlink_counts(results)
+            return results, int(total)
         return self._hybrid_search(request, parsed.fts_query)
 
     def _hybrid_search(
@@ -405,6 +434,7 @@ class CustomIndexProvider(SearchProvider):
         fts_results = deduplicate(
             normalize_many(scored, provider=self.name, query=request.query)
         )
+        self._enrich_inlink_counts(fts_results)
         # Fail open: rank_ids_by_semantic never raises; [] keeps keyword order.
         semantic_ids = rank_ids_by_semantic(request.query, fts_results, self._models)
         if not semantic_ids:

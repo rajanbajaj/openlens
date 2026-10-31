@@ -258,6 +258,8 @@ def test_new_signal_weights_default_neutral_without_keyerror() -> None:
         + profile.fairness_weight
         + profile.news_trust_weight
         + profile.sponsored_weight
+        + profile.authority_weight
+        + profile.performance_weight
     )
     # relevance 1.0 + legacy neutral offset 1.0 + new neutral offset.
     assert score == pytest.approx(1.0 + 1.0 + expected)

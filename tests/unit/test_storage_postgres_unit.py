@@ -84,6 +84,7 @@ def test_search_returns_trailing_score_not_content_type() -> None:
             None,
             0,
             0,
+            120.0,
             0.75,
         ),
     ]
@@ -114,6 +115,7 @@ def test_search_backfills_category_columns_into_metadata() -> None:
             "auto",
             1,
             0,
+            120.0,
             0.5,
         ),
     ]
@@ -143,7 +145,8 @@ def test_search_short_rows_skip_category_backfill() -> None:
     assert "site_category" not in doc.metadata
 
 
-def _thirteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, ...]:
+def _fourteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, ...]:
+    """Full search row: 13 data columns (fetch_ms at 12) + trailing score."""
     return (
         doc_id,
         "title",
@@ -157,12 +160,13 @@ def _thirteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, 
         "auto",
         0,
         1,
+        120.0,
         0.5,
     )
 
 
 def test_search_narrows_by_site_category() -> None:
-    cursor_rows = [_thirteen_col_row("d1", "news"), _thirteen_col_row("d2", "other")]
+    cursor_rows = [_fourteen_col_row("d1", "news"), _fourteen_col_row("d2", "other")]
     store = _store_with_rows(cursor_rows)
     (hit, _score) = store.search("hello", site_category="news")[0][0]
     assert hit.id == "d1"
@@ -171,7 +175,7 @@ def test_search_narrows_by_site_category() -> None:
 
 
 def test_search_without_category_has_no_narrowing() -> None:
-    store = _store_with_rows([_thirteen_col_row()])
+    store = _store_with_rows([_fourteen_col_row()])
     store.search("hello")
     executed = store._stub_cursor.executed  # type: ignore[attr-defined]
     assert not any("AND site_category" in sql for sql in executed)
@@ -184,7 +188,7 @@ def test_search_category_params_match_placeholders() -> None:
     five placeholders, so news/shopping searches failed on Postgres
     with ``provider_unavailable`` while default mode kept working.
     """
-    store = _store_with_rows([_thirteen_col_row("d1", "news")])
+    store = _store_with_rows([_fourteen_col_row("d1", "news")])
     store.search("hello", site_category="news")
     calls = store._stub_cursor.calls  # type: ignore[attr-defined]
     assert calls

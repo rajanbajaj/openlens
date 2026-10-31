@@ -91,6 +91,15 @@ class DocumentStore(ABC):
         """
         raise NotImplementedError
 
+    def inlink_counts(self, targets: list[str]) -> dict[str, int]:
+        """Distinct linking hosts per target URL (authority signal source).
+
+        Backends without an authority graph return ``{}``; ranking then
+        degrades to neutral instead of failing. Unknown targets are
+        absent (never zero-filled).
+        """
+        return {}
+
     @abstractmethod
     def close(self) -> None:
         """Release the backend connection. Idempotent."""

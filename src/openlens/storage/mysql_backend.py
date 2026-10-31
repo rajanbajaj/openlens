@@ -61,6 +61,8 @@ from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
 from openlens.storage.repository import (
     SITE_CATEGORY_VALUES,
     doc_columns,
+    document_link_rows,
+    fetch_ms_column,
     site_category_columns,
 )
 
@@ -94,7 +96,7 @@ def _check_table(table: str) -> str:
 
 def _doc_to_row(
     doc: Document,
-) -> tuple[str, str, str, str | None, str, str | None, str | None, str]:
+) -> tuple[str, str, str, str | None, str, str | None, str | None, str, float | None]:
     content_type, published = doc_columns(doc)
     category = site_category_columns(doc)[0]
     return (
@@ -106,6 +108,7 @@ def _doc_to_row(
         content_type,
         published,
         category,
+        fetch_ms_column(doc),
     )
 
 
@@ -127,6 +130,13 @@ def _row_to_document(row: Mapping[str, Any]) -> Document:
     category = row.get("site_category") if isinstance(row, Mapping) else None
     if isinstance(category, str) and category:
         metadata.setdefault("site_category", category)
+    fetch_ms = row.get("fetch_ms") if isinstance(row, Mapping) else None
+    if (
+        isinstance(fetch_ms, (int, float))
+        and not isinstance(fetch_ms, bool)
+        and "fetch_ms" not in metadata
+    ):
+        metadata["fetch_ms"] = float(fetch_ms)
     return Document(
         id=str(row["id"]),
         title=str(row["title"]),
@@ -310,16 +320,29 @@ class MySQLDocumentStore(DocumentStore):
             " `content_type` TEXT NULL,"
             " `published` TEXT NULL,"
             " `site_category` VARCHAR(16) NULL DEFAULT 'other',"
+            " `fetch_ms` DOUBLE NULL,"
             " FULLTEXT KEY `ftx_title_content` (`title`, `content`),"
             " KEY `idx_content_type` (`content_type`(191)),"
             " KEY `idx_published` (`published`(10)),"
-            " KEY `idx_site_category` (`site_category`)"
+            " KEY `idx_site_category` (`site_category`),"
+            " KEY `idx_fetch_ms` (`fetch_ms`)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        links_ddl = (
+            "CREATE TABLE IF NOT EXISTS `document_links` ("
+            " `source_id` VARCHAR(191) NOT NULL,"
+            " `source_host` VARCHAR(191) NOT NULL DEFAULT '',"
+            " `target` TEXT NOT NULL,"
+            " `target_host` VARCHAR(191) NOT NULL DEFAULT '',"
+            " KEY `idx_target` (`target`(191)),"
+            " KEY `idx_source` (`source_id`)"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         with self._connection() as conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute(ddl)
+                    cur.execute(links_ddl)
                     self._migrate(cur)
                 conn.commit()
             except Exception as exc:
@@ -392,6 +415,27 @@ class MySQLDocumentStore(DocumentStore):
                 + self._table
                 + "` (`published`(10))"
             )
+        if "fetch_ms" not in existing:
+            cur.execute(
+                "ALTER TABLE `" + self._table + "`"  # noqa: S608
+                " ADD COLUMN `fetch_ms` DOUBLE NULL"
+            )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS `document_links` ("
+            " `source_id` VARCHAR(191) NOT NULL,"
+            " `source_host` VARCHAR(191) NOT NULL DEFAULT '',"
+            " `target` TEXT NOT NULL,"
+            " `target_host` VARCHAR(191) NOT NULL DEFAULT '',"
+            " KEY `idx_target` (`target`(191)),"
+            " KEY `idx_source` (`source_id`)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )
+        if "idx_fetch_ms" not in indexes:
+            cur.execute(
+                "CREATE INDEX `idx_fetch_ms` ON `"  # noqa: S608
+                + self._table
+                + "` (`fetch_ms`)"
+            )
 
     def add_document(self, doc: Document) -> None:
         self.add_documents([doc])
@@ -410,19 +454,21 @@ class MySQLDocumentStore(DocumentStore):
             sql = (
                 "INSERT INTO `" + self._table + "`"  # noqa: S608
                 " (id, title, content, url, metadata, content_type, published,"
-                " site_category)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                " site_category, fetch_ms)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON DUPLICATE KEY UPDATE title = VALUES(title),"
                 " content = VALUES(content), url = VALUES(url),"
                 " metadata = VALUES(metadata),"
                 " content_type = VALUES(content_type),"
                 " published = VALUES(published),"
-                " site_category = VALUES(site_category)"
+                " site_category = VALUES(site_category),"
+                " fetch_ms = VALUES(fetch_ms)"
             )
             with self._connection() as conn:
                 try:
                     with conn.cursor() as cur:
                         cur.executemany(sql, chunk)
+                        self._sync_document_links(cur, chunk)
                     conn.commit()
                 except Exception as exc:
                     with contextlib.suppress(Exception):
@@ -435,6 +481,75 @@ class MySQLDocumentStore(DocumentStore):
             total += len(chunk)
         return total
 
+    def _sync_document_links(self, cur: Any, rows: list[tuple[Any, ...]]) -> None:
+        """Replace authority-graph rows for an indexed chunk.
+
+        ``rows`` are :func:`_doc_to_row` tuples (id at 0, url at 3,
+        metadata JSON at 4).
+        """
+        links: list[tuple[Any, ...]] = []
+        for row in rows:
+            try:
+                metadata: Any = json.loads(row[4] or "{}")
+            except (ValueError, TypeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            for link in document_link_rows(
+                Document(id=row[0], title="", content="", url=row[3], metadata=metadata)
+            ):
+                links.append(link)
+            # Validated table name; doc_id is a bound %s parameter.
+            cur.execute(
+                "DELETE FROM `document_links` WHERE source_id = %s",  # noqa: S608
+                (row[0],),
+            )
+        if links:
+            cur.executemany(
+                "INSERT INTO `document_links`"  # noqa: S608
+                " (source_id, source_host, target, target_host)"
+                " VALUES (%s, %s, %s, %s)",
+                links,
+            )
+
+    def inlink_counts(self, targets: list[str]) -> dict[str, int]:
+        """Distinct linking hosts per target URL (authority signal source).
+
+        Unknown targets are absent (never zero-filled); any failure
+        yields ``{}`` so ranking degrades to neutral.
+        """
+        wanted = [t for t in targets if isinstance(t, str) and t]
+        if not wanted:
+            return {}
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    placeholders = ",".join(["%s"] * len(wanted))
+                    # Validated table name; targets are bound %s parameters.
+                    cur.execute(
+                        "SELECT target, COUNT(DISTINCT source_host)"  # noqa: S608
+                        " FROM `document_links`"
+                        f" WHERE target IN ({placeholders}) GROUP BY target",
+                        wanted,
+                    )
+                    rows = cur.fetchall()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                return {}
+        counts: dict[str, int] = {}
+        for row in rows:
+            if isinstance(row, Mapping):
+                target = row.get("target", row.get("TARGET", ""))
+                n = row.get("COUNT(DISTINCT source_host)", row.get("n", 0))
+            else:
+                target, n = row[0], row[1]
+            try:
+                counts[str(target)] = int(n)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+        return counts
+
     def delete(self, doc_id: str) -> bool:
         with self._connection() as conn:
             try:
@@ -445,6 +560,10 @@ class MySQLDocumentStore(DocumentStore):
                         (doc_id,),
                     )
                     removed = bool(cur.rowcount != 0)
+                    cur.execute(
+                        "DELETE FROM `document_links` WHERE source_id = %s",  # noqa: S608
+                        (doc_id,),
+                    )
                 conn.commit()
             except Exception as exc:
                 with contextlib.suppress(Exception):
@@ -463,7 +582,7 @@ class MySQLDocumentStore(DocumentStore):
                     # Validated table name; doc_id is a bound %s parameter.
                     cur.execute(
                         "SELECT id, title, content, url, metadata,"  # noqa: S608
-                        " content_type, published"
+                        " content_type, published, fetch_ms"
                         " FROM `" + self._table + "` WHERE id = %s",
                         (doc_id,),
                     )
@@ -502,7 +621,7 @@ class MySQLDocumentStore(DocumentStore):
                     # Validated table name; limit/offset are bound parameters.
                     cur.execute(
                         "SELECT id, title, content, url, metadata,"  # noqa: S608
-                        " content_type, published"
+                        " content_type, published, fetch_ms"
                         " FROM `" + self._table + "` ORDER BY id ASC"
                         " LIMIT %s OFFSET %s",
                         (limit, offset),
@@ -580,7 +699,7 @@ class MySQLDocumentStore(DocumentStore):
         )
         page_sql = (
             "SELECT id, title, content, url, metadata, content_type, published, "  # noqa: S608
-            "site_category, "
+            "site_category, fetch_ms, "
             + match_against
             + " AS score FROM `"
             + self._table

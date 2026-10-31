@@ -214,13 +214,13 @@ def test_rerank_pack_registered() -> None:
     assert registry.resolve("commerce-reranker") is CommerceReranker
 
 
-def test_default_yaml_ships_rerank_pack_disabled() -> None:
+def test_default_yaml_ships_rerank_pack_enabled() -> None:
     path = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
     config = yaml.safe_load(path.read_text())
     entries = {e["name"]: e for e in config["plugins"]}
     for name in RERANK_PACK:
         assert name in entries, f"{name} missing from configs/default.yaml"
-        assert entries[name]["enabled"] is False, f"{name} must ship disabled"
+        assert entries[name]["enabled"] is True, f"{name} must ship enabled"
 
 
 # --- News: grouped stories, credibility-weighted mix --------------------------

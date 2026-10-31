@@ -141,6 +141,62 @@ def site_category_columns(
     )
 
 
+def fetch_ms_column(doc: Document) -> float | None:
+    """Extract the promoted fetch-latency column from metadata.
+
+    Only crawler-truth ``fetch_ms`` values are promoted (non-negative
+    numbers); anything else stays NULL so hand-built documents never
+    fabricate a performance verdict. Never raises.
+    """
+    metadata = doc.metadata or {}
+    value = metadata.get("fetch_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or value != value:  # NaN guard: NaN != NaN
+        return None
+    return float(value)
+
+
+def _host_of(url: str | None) -> str:
+    """Normalized hostname for a URL, or "" when unusable. Never raises."""
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    try:
+        host = urlsplit(url.strip()).hostname or ""
+    except ValueError:
+        return ""
+    return host.rstrip(".").lower()
+
+
+def document_link_rows(doc: Document) -> list[tuple[str, str, str, str]]:
+    """Authority-graph rows: (source_id, source_host, target, target_host).
+
+    Targets come only from the crawler-truth ``outlinks`` metadata list
+    (normalized http(s) URLs, capped at ingest). Self-links and unusable
+    entries are dropped. Never raises.
+    """
+    metadata = doc.metadata or {}
+    outlinks = metadata.get("outlinks")
+    if not isinstance(outlinks, list):
+        return []
+    source_host = _host_of(doc.url)
+    rows: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    for entry in outlinks:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        # Same normalization as document ids so link targets join.
+        target = normalize_url(entry.strip())
+        if not target or target in seen or target == (doc.id or ""):
+            continue
+        scheme = urlsplit(target).scheme.lower()
+        if scheme not in ("http", "https"):
+            continue
+        seen.add(target)
+        rows.append((doc.id, source_host, target, _host_of(target)))
+    return rows
+
+
 def normalize_url(url: Optional[str]) -> Optional[str]:
     """Ingest-time URL normalization.
 
@@ -215,11 +271,22 @@ class DocumentRepository(DocumentStore):
                     site_category_confidence REAL,
                     site_category_source TEXT,
                     kids_domain_hit INTEGER DEFAULT 0,
-                    news_domain_hit INTEGER DEFAULT 0
+                    news_domain_hit INTEGER DEFAULT 0,
+                    fetch_ms REAL
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                     doc_id UNINDEXED, title, content
                 );
+                CREATE TABLE IF NOT EXISTS document_links (
+                    source_id TEXT NOT NULL,
+                    source_host TEXT NOT NULL DEFAULT '',
+                    target TEXT NOT NULL,
+                    target_host TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_document_links_target
+                    ON document_links(target);
+                CREATE INDEX IF NOT EXISTS idx_document_links_source
+                    ON document_links(source_id);
                 """
             )
             self._migrate()
@@ -269,11 +336,28 @@ class DocumentRepository(DocumentStore):
             self._conn.execute(
                 "ALTER TABLE documents ADD COLUMN news_domain_hit INTEGER DEFAULT 0"
             )
+        if "fetch_ms" not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN fetch_ms REAL")
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS document_links ("
+            " source_id TEXT NOT NULL,"
+            " source_host TEXT NOT NULL DEFAULT '',"
+            " target TEXT NOT NULL,"
+            " target_host TEXT NOT NULL DEFAULT '')"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_document_links_target"
+            " ON document_links(target)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_document_links_source"
+            " ON document_links(source_id)"
+        )
         rows = self._conn.execute(
             "SELECT id, content, url, metadata FROM documents "
             "WHERE content_hash IS NULL OR (url_norm IS NULL AND url IS NOT NULL)"
             " OR content_type IS NULL OR published IS NULL"
-            " OR site_category_source IS NULL"
+            " OR site_category_source IS NULL OR fetch_ms IS NULL"
         ).fetchall()
         for row in rows:
             try:
@@ -313,13 +397,24 @@ class DocumentRepository(DocumentStore):
                     backfill_hits.append(hit_value)
                 else:
                     backfill_hits.append(0)
+            backfill_fetch_ms = backfill_meta.get("fetch_ms")
+            if (
+                isinstance(backfill_fetch_ms, bool)
+                or not isinstance(backfill_fetch_ms, (int, float))
+                or backfill_fetch_ms < 0
+                or backfill_fetch_ms != backfill_fetch_ms
+            ):
+                backfill_fetch_ms = None
+            else:
+                backfill_fetch_ms = float(backfill_fetch_ms)
             self._conn.execute(
                 "UPDATE documents SET content_hash = ?, url_norm = ?,"
                 " content_type = COALESCE(?, content_type),"
                 " published = COALESCE(?, published),"
                 " site_category = ?, site_category_confidence = ?,"
                 " site_category_source = ?, kids_domain_hit = ?,"
-                " news_domain_hit = ? WHERE id = ?",
+                " news_domain_hit = ?, fetch_ms = COALESCE(?, fetch_ms)"
+                " WHERE id = ?",
                 (
                     content_hash_of(row["content"]),
                     normalize_url(row["url"]),
@@ -330,9 +425,30 @@ class DocumentRepository(DocumentStore):
                     backfill_source,
                     backfill_hits[0],
                     backfill_hits[1],
+                    backfill_fetch_ms,
                     row["id"],
                 ),
             )
+            # Authority graph for migrated rows: rebuild from stored outlinks.
+            self._conn.execute(
+                "DELETE FROM document_links WHERE source_id = ?", (row["id"],)
+            )
+            link_rows = document_link_rows(
+                Document(
+                    id=row["id"],
+                    title="",
+                    content="",
+                    url=row["url"],
+                    metadata=backfill_meta,
+                )
+            )
+            if link_rows:
+                self._conn.executemany(
+                    "INSERT INTO document_links"
+                    " (source_id, source_host, target, target_host)"
+                    " VALUES (?, ?, ?, ?)",
+                    link_rows,
+                )
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_url_norm "
             "ON documents(url_norm)"
@@ -355,6 +471,9 @@ class DocumentRepository(DocumentStore):
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_kids_domain_hit "
             "ON documents(kids_domain_hit)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_fetch_ms ON documents(fetch_ms)"
         )
 
     def add_document(self, doc: Document) -> None:
@@ -388,8 +507,9 @@ class DocumentRepository(DocumentStore):
                             " content_hash, url_norm, content_type, published,"
                             " site_category, site_category_confidence,"
                             " site_category_source, kids_domain_hit,"
-                            " news_domain_hit)"
-                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            " news_domain_hit, fetch_ms)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                            " ?, ?, ?, ?)",
                             (
                                 doc.id,
                                 doc.title,
@@ -401,8 +521,10 @@ class DocumentRepository(DocumentStore):
                                 content_type,
                                 published,
                                 *category_columns,
+                                fetch_ms_column(doc),
                             ),
                         )
+                        self._sync_document_links(doc)
                         self._conn.execute(
                             "DELETE FROM documents_fts WHERE doc_id = ?",
                             (doc.id,),
@@ -421,6 +543,47 @@ class DocumentRepository(DocumentStore):
             total += len(chunk)
         return total
 
+    def _sync_document_links(self, doc: Document) -> None:
+        """Replace the authority-graph rows for one document.
+
+        Delete-then-insert keeps reindex idempotent; documents without
+        crawler outlinks simply leave no rows. Must be called with the
+        lock held.
+        """
+        self._conn.execute("DELETE FROM document_links WHERE source_id = ?", (doc.id,))
+        rows = document_link_rows(doc)
+        if rows:
+            self._conn.executemany(
+                "INSERT INTO document_links"
+                " (source_id, source_host, target, target_host)"
+                " VALUES (?, ?, ?, ?)",
+                rows,
+            )
+
+    def inlink_counts(self, targets: list[str]) -> dict[str, int]:
+        """Distinct linking hosts per target URL (authority signal source).
+
+        Counts distinct ``source_host`` values so one site's site-wide
+        navigation cannot inflate a page. Unknown targets are absent
+        (never zero-filled); any storage failure yields ``{}`` so ranking
+        degrades to neutral instead of failing the request.
+        """
+        wanted = [t for t in targets if isinstance(t, str) and t]
+        if not wanted:
+            return {}
+        try:
+            with self._lock:
+                placeholders = ",".join("?" for _ in wanted)
+                rows = self._conn.execute(
+                    "SELECT target, COUNT(DISTINCT source_host) AS n"  # noqa: S608
+                    " FROM document_links WHERE target IN"
+                    f" ({placeholders}) GROUP BY target",
+                    wanted,
+                ).fetchall()
+        except sqlite3.Error:
+            return {}
+        return {str(row["target"]): int(row["n"]) for row in rows}
+
     def update_document(self, doc: Document) -> bool:
         """Rewrite a document (and its FTS row) by id. False when missing."""
         try:
@@ -434,7 +597,7 @@ class DocumentRepository(DocumentStore):
                     " content_type = ?, published = ?,"
                     " site_category = ?, site_category_confidence = ?,"
                     " site_category_source = ?, kids_domain_hit = ?,"
-                    " news_domain_hit = ?"
+                    " news_domain_hit = ?, fetch_ms = ?"
                     " WHERE id = ?",
                     (
                         doc.title,
@@ -446,11 +609,13 @@ class DocumentRepository(DocumentStore):
                         content_type,
                         published,
                         *category_columns,
+                        fetch_ms_column(doc),
                         doc.id,
                     ),
                 )
                 if cursor.rowcount == 0:
                     return False
+                self._sync_document_links(doc)
                 self._conn.execute(
                     "DELETE FROM documents_fts WHERE doc_id = ?", (doc.id,)
                 )
@@ -473,6 +638,9 @@ class DocumentRepository(DocumentStore):
             with self._lock, self._conn:
                 self._conn.execute(
                     "DELETE FROM documents_fts WHERE doc_id = ?", (doc_id,)
+                )
+                self._conn.execute(
+                    "DELETE FROM document_links WHERE source_id = ?", (doc_id,)
                 )
                 cursor = self._conn.execute(
                     "DELETE FROM documents WHERE id = ?", (doc_id,)
@@ -533,7 +701,7 @@ class DocumentRepository(DocumentStore):
                     "SELECT id, title, content, url, metadata, "
                     + "content_type, published, site_category, "
                     + "site_category_confidence, site_category_source, "
-                    + "kids_domain_hit, news_domain_hit "
+                    + "kids_domain_hit, news_domain_hit, fetch_ms "
                     + "FROM documents WHERE id = ?",
                     (doc_id,),
                 ).fetchone()
@@ -596,7 +764,8 @@ class DocumentRepository(DocumentStore):
                     "SELECT id, title, content, url, metadata,"
                     " content_type, published, site_category,"
                     " site_category_confidence, site_category_source,"
-                    " kids_domain_hit, news_domain_hit FROM documents"
+                    " kids_domain_hit, news_domain_hit, fetch_ms"
+                    " FROM documents"
                     " ORDER BY id ASC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
@@ -668,7 +837,7 @@ class DocumentRepository(DocumentStore):
                     "SELECT d.id, d.title, d.content, d.url, d.metadata,"  # noqa: S608
                     " d.content_type, d.published, d.site_category,"
                     " d.site_category_confidence, d.site_category_source,"
-                    " d.kids_domain_hit, d.news_domain_hit,"
+                    " d.kids_domain_hit, d.news_domain_hit, d.fetch_ms,"
                     " -bm25(documents_fts) AS score"
                     " FROM documents_fts"
                     " JOIN documents d ON d.id = documents_fts.doc_id"
@@ -764,6 +933,18 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         and "news_domain_hit" not in metadata
     ):
         metadata["news_domain_hit"] = column_news_hit
+    # Promoted fetch latency fills the metadata view when the stored
+    # JSON predates the column; short rows (partial SELECTs) skip it.
+    try:
+        column_fetch_ms = row["fetch_ms"]
+    except (IndexError, KeyError):
+        column_fetch_ms = None
+    if (
+        isinstance(column_fetch_ms, (int, float))
+        and not isinstance(column_fetch_ms, bool)
+        and "fetch_ms" not in metadata
+    ):
+        metadata["fetch_ms"] = float(column_fetch_ms)
     return Document(
         id=row["id"],
         title=row["title"],

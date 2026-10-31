@@ -109,6 +109,8 @@ def test_missing_signals_default_to_neutral_without_keyerror() -> None:
         + profile.fairness_weight
         + profile.news_trust_weight
         + profile.sponsored_weight
+        + profile.authority_weight
+        + profile.performance_weight
     )
     assert score == pytest.approx(profile.relevance_weight * 1.0 + expected_offset)
 
@@ -177,6 +179,29 @@ def test_pinned_weights_for_all_modes() -> None:
 
 
 # --- Profiles: validation ----------------------------------------------------
+
+
+def test_breakdown_lists_top_contributors_and_total() -> None:
+    ranker = Ranker()
+    profile = get_profile("default")
+    hit = _hit("a", "Alpha", original=2.0)
+    hit.metadata["signals"] = {"authority": 1.0, "performance": 0.0}
+    line = ranker.breakdown(profile, hit)
+    assert line.startswith("ranking: ")
+    # Relevance (2.0 x 1.0) dominates, authority (1.0 x 0.5) second.
+    assert "+2.00 relevance" in line
+    assert "+0.50 authority" in line
+    assert line.endswith(f"= {ranker.composite(profile, hit):.2f}")
+
+
+def test_breakdown_runs_in_pipeline_reasons() -> None:
+    ranker = Ranker()
+    hit = _hit("a", "Alpha", original=1.0)
+    ctx = SearchContext(request=SearchRequest(query="q", mode="default"))
+    ctx.results = [hit]
+    ranker.run(ctx)
+    assert any(r.startswith("ranked with profile") for r in hit.reasons)
+    assert any(r.startswith("ranking: ") for r in hit.reasons)
 
 
 def test_unknown_profile_key_still_raises() -> None:

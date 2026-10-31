@@ -43,6 +43,8 @@ class RankingProfile:
     fairness_weight: float = 0.0
     news_trust_weight: float = 0.0
     sponsored_weight: float = 0.0
+    authority_weight: float = 0.0
+    performance_weight: float = 0.0
 
 
 BUILTIN_PROFILES: dict[str, RankingProfile] = {
@@ -57,6 +59,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         privacy_weight=0.5,
         fairness_weight=0.25,
         sponsored_weight=0.5,
+        authority_weight=0.5,
+        performance_weight=0.25,
     ),
     "child-safe": RankingProfile(
         name="child-safe",
@@ -71,6 +75,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         privacy_weight=1.0,
         fairness_weight=1.0,
         sponsored_weight=1.0,
+        authority_weight=0.5,
+        performance_weight=0.25,
     ),
     "news": RankingProfile(
         name="news",
@@ -86,6 +92,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         fairness_weight=0.5,
         news_trust_weight=1.5,
         sponsored_weight=1.0,
+        authority_weight=0.5,
+        performance_weight=0.25,
     ),
     "shopping": RankingProfile(
         name="shopping",
@@ -101,6 +109,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         privacy_weight=0.25,
         fairness_weight=0.25,
         sponsored_weight=1.0,
+        authority_weight=0.5,
+        performance_weight=0.25,
     ),
     "travel": RankingProfile(
         name="travel",
@@ -116,6 +126,8 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         privacy_weight=0.25,
         fairness_weight=0.25,
         sponsored_weight=1.0,
+        authority_weight=0.5,
+        performance_weight=0.25,
     ),
 }
 
@@ -203,6 +215,8 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
         "fairness_weight",
         "news_trust_weight",
         "sponsored_weight",
+        "authority_weight",
+        "performance_weight",
     }
     unknown = set(data) - known
     if unknown:
@@ -230,6 +244,8 @@ def profile_from_dict(name: str, data: dict[str, Any]) -> RankingProfile:
             fairness_weight=_signal_weight(data, "fairness_weight", name),
             news_trust_weight=_signal_weight(data, "news_trust_weight", name),
             sponsored_weight=_signal_weight(data, "sponsored_weight", name),
+            authority_weight=_signal_weight(data, "authority_weight", name),
+            performance_weight=_signal_weight(data, "performance_weight", name),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(

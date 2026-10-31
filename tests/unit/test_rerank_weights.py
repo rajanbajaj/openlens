@@ -77,6 +77,12 @@ def test_commerce_weight_only_in_shopping_and_travel() -> None:
         assert get_profile(mode).commerce_weight == pytest.approx(0.0)
 
 
+def test_authority_and_performance_weights_in_every_mode() -> None:
+    for mode in ("default", "child-safe", "news", "shopping", "travel"):
+        assert get_profile(mode).authority_weight == pytest.approx(0.5)
+        assert get_profile(mode).performance_weight == pytest.approx(0.25)
+
+
 # --- profile_from_dict: new keys ---------------------------------------------
 
 
@@ -86,20 +92,26 @@ def test_new_weight_keys_accepted_with_defaults() -> None:
         profile.diversity_weight,
         profile.perspective_weight,
         profile.commerce_weight,
-    ) == (0.0, 0.0, 0.0)
+        profile.authority_weight,
+        profile.performance_weight,
+    ) == (0.0, 0.0, 0.0, 0.0, 0.0)
     profile = profile_from_dict(
         "x",
         {
             "diversity_weight": 0.25,
             "perspective_weight": "1",
             "commerce_weight": 1.5,
+            "authority_weight": 0.5,
+            "performance_weight": "0.25",
         },
     )
     assert (
         profile.diversity_weight,
         profile.perspective_weight,
         profile.commerce_weight,
-    ) == (0.25, 1.0, 1.5)
+        profile.authority_weight,
+        profile.performance_weight,
+    ) == (0.25, 1.0, 1.5, 0.5, 0.25)
 
 
 def test_new_weight_keys_validated() -> None:
@@ -162,6 +174,8 @@ def test_missing_signal_keys_default_to_neutral_without_keyerror() -> None:
             + profile.fairness_weight
             + profile.news_trust_weight
             + profile.sponsored_weight
+            + profile.authority_weight
+            + profile.performance_weight
         )
         + 0.5 * profile.trust_weight  # trust=1.0 adds half a weight more
     )

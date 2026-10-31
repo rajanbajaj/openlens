@@ -1387,6 +1387,10 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
     return {key: out[key] for key in sorted(out) if key in EXTRACTED_METADATA_KEYS}
 
 
+#: Cap on outlinks stored per document (authority graph stays bounded).
+MAX_OUTLINKS_PER_PAGE = 200
+
+
 @dataclass
 class _FetchedPage:
     status: int
@@ -1397,6 +1401,8 @@ class _FetchedPage:
     bytes_aborted: bool = False
     requested_url: str = ""
     redirect_chain: list[str] = field(default_factory=list)
+    #: Wall-clock fetch duration in milliseconds (performance signal).
+    fetch_ms: float = 0.0
 
 
 class PoliteCrawler:
@@ -2081,6 +2087,7 @@ class PoliteCrawler:
         headers: dict[str, str] = {"User-Agent": self.user_agent}
         conditional = self._conditional.get(normalize_url(url), {})
         headers.update(conditional)
+        started = time.monotonic()
         try:
             with httpx.Client(
                 timeout=self.timeout_s,
@@ -2118,6 +2125,7 @@ class PoliteCrawler:
                         bytes_aborted=aborted,
                         requested_url=url,
                         redirect_chain=chain,
+                        fetch_ms=(time.monotonic() - started) * 1000.0,
                     )
         except CrawlError:
             raise
@@ -2179,6 +2187,13 @@ class PoliteCrawler:
                 # -> URL: SVG icon titles never garble the headline.
                 title = parser.resolved_title(page.url)
         metadata: dict[str, Any] = {"content_type": page.content_type}
+        # Authority/performance signals: fetch latency and the capped
+        # outlink set travel in metadata (the link table is the queryable
+        # index; metadata keeps the verdict when the table is absent).
+        # Zero means unmeasured (a real fetch always takes > 0ms), so it
+        # stays out rather than posing as an instant page.
+        if isinstance(page.fetch_ms, (int, float)) and page.fetch_ms > 0:
+            metadata["fetch_ms"] = float(page.fetch_ms)
         if page.headers.get("etag"):
             metadata["etag"] = page.headers["etag"]
         if page.headers.get("last-modified"):
@@ -2192,6 +2207,21 @@ class PoliteCrawler:
             # site-category quintet; signal-less input yields {} and the
             # document keeps just its content type.
             metadata.update(extract_page_attributes(text, url=page.url))
+            outlinks: list[str] = []
+            seen_links: set[str] = set()
+            for link in self._extract_links(page):
+                normalized = normalize_url(link)
+                if not normalized or normalized in seen_links:
+                    continue
+                # Self-links carry no authority signal.
+                if normalized == normalize_url(page.url):
+                    continue
+                seen_links.add(normalized)
+                outlinks.append(normalized)
+                if len(outlinks) >= MAX_OUTLINKS_PER_PAGE:
+                    break
+            if outlinks:
+                metadata["outlinks"] = outlinks
         if page.redirect_chain:
             metadata["redirect_chain"] = list(page.redirect_chain)
         if page.requested_url and page.url != page.requested_url:

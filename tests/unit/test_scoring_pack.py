@@ -183,11 +183,11 @@ def test_fixture_corpus_is_neutral_smoke() -> None:
     assert after == before
 
 
-def test_default_yaml_ships_scoring_pack_disabled() -> None:
+def test_default_yaml_ships_scoring_pack_enabled() -> None:
     path = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
     config = yaml.safe_load(path.read_text())
     entries = {e["name"]: e for e in config["plugins"]}
     for name in ("trust-scorer", "freshness-scorer", "preference-scorer"):
         assert name in entries, f"{name} missing from configs/default.yaml"
-        assert entries[name]["enabled"] is False, f"{name} must ship disabled"
+        assert entries[name]["enabled"] is True, f"{name} must ship enabled"
     assert entries["baseline-scorer"]["enabled"] is True

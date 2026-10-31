@@ -18,6 +18,16 @@ Composite signal per hit::
             + fairness_weight * signals["fairness"]
             + news_trust_weight * signals["news_trust"]
             + sponsored_weight * signals["sponsored"]
+            + authority_weight * signals["authority"]
+            + performance_weight * signals["performance"]
+
+The same terms are produced by ``_contributions`` (which
+:meth:`Ranker.composite` sums) and surfaced per hit by
+:meth:`Ranker.breakdown`: the top three contributors plus the total,
+so the "why ranked here" explanation can never disagree with the
+ordering.
+            + authority_weight * signals["authority"]
+            + performance_weight * signals["performance"]
 
 Missing signal keys degrade to the neutral 0.5 default (never ``KeyError``),
 so with no scorer enabled every hit carries the same constant offset and
@@ -108,8 +118,15 @@ class Ranker(BasePlugin):
         self._lookup(fallback)  # validate loudly at startup
         self._fallback_profile = fallback
 
-    def composite(self, profile: RankingProfile, result: SearchResult) -> float:
-        """Compute the composite score for one result under ``profile``."""
+    def _contributions(
+        self, profile: RankingProfile, result: SearchResult
+    ) -> list[tuple[str, float, float, float]]:
+        """Per-factor ``(name, signal, weight, contribution)`` for one hit.
+
+        Pure; mirrors :meth:`composite` term for term so the explanation
+        can never disagree with the ordering. Missing signals read
+        neutral 0.5 through the same accessor the composite uses.
+        """
         trusted = 1.0 if result.metadata.get("trusted") is True else 0.0
         try:
             recency = float(result.metadata.get("recency_score", 0.0))
@@ -120,24 +137,65 @@ class Ranker(BasePlugin):
         if profile.keywords:
             haystack = f"{result.title}\n{result.snippet}".lower()
             keyword_hits = sum(haystack.count(kw.lower()) for kw in profile.keywords)
-        return (
-            profile.relevance_weight * result.final_score
-            + profile.trust_boost * trusted
-            + profile.recency_boost * recency
-            + profile.keyword_boost * keyword_hits
-            - profile.warning_penalty * len(result.warnings)
-            + profile.trust_weight * get_signal(result, "trust")
-            + profile.freshness_weight * get_signal(result, "freshness")
-            + profile.preference_weight * get_signal(result, "preference")
-            + profile.diversity_weight * get_signal(result, "diversity")
-            + profile.perspective_weight * get_signal(result, "perspective")
-            + profile.commerce_weight * get_signal(result, "commerce")
-            + profile.safety_weight * get_signal(result, "safety")
-            + profile.privacy_weight * get_signal(result, "privacy")
-            + profile.fairness_weight * get_signal(result, "fairness")
-            + profile.news_trust_weight * get_signal(result, "news_trust")
-            + profile.sponsored_weight * get_signal(result, "sponsored")
+        terms: list[tuple[str, float, float, float]] = [
+            ("relevance", result.final_score, profile.relevance_weight, 0.0),
+            ("trusted", trusted, profile.trust_boost, 0.0),
+            ("recency", recency, profile.recency_boost, 0.0),
+            ("keywords", float(keyword_hits), profile.keyword_boost, 0.0),
+        ]
+        for name in (
+            "trust",
+            "freshness",
+            "preference",
+            "diversity",
+            "perspective",
+            "commerce",
+            "safety",
+            "privacy",
+            "fairness",
+            "news_trust",
+            "sponsored",
+            "authority",
+            "performance",
+        ):
+            weight = getattr(profile, f"{name}_weight", 0.0)
+            signal = get_signal(result, name)
+            terms.append((name, signal, weight, 0.0))
+        if result.warnings:
+            terms.append(
+                ("warnings", float(len(result.warnings)), -profile.warning_penalty, 0.0)
+            )
+        return [
+            (name, signal, weight, signal * weight) for name, signal, weight, _ in terms
+        ]
+
+    def breakdown(self, profile: RankingProfile, result: SearchResult) -> str:
+        """One-line ranking explanation: top contributors plus the total.
+
+        Sorted by absolute contribution so the factors that actually
+        decided the position come first; at most three, then the final
+        score. Deterministic (ties break by factor name).
+        """
+        ranked = sorted(
+            self._contributions(profile, result),
+            key=lambda term: (-abs(term[3]), term[0]),
         )
+        shown = [term for term in ranked if abs(term[3]) > 0.0][:3]
+        parts = [
+            f"{contribution:+.2f} {name} ({signal:.2f}x{weight:g})"
+            for name, signal, weight, contribution in shown
+        ]
+        total = sum(term[3] for term in ranked)
+        detail = "; ".join(parts) if parts else "no weighted factors"
+        return f"ranking: {detail} = {total:.2f}"
+
+    def composite(self, profile: RankingProfile, result: SearchResult) -> float:
+        """Compute the composite score for one result under ``profile``.
+
+        Sums :meth:`_contributions` so the score and the explanation
+        share one implementation and can never disagree.
+        """
+        return sum(term[3] for term in self._contributions(profile, result))
 
     def _weight_overrides(self, context: SearchContext) -> dict[str, float]:
         """Validate per-request ``weight_overrides`` (fail closed).
@@ -194,6 +252,7 @@ class Ranker(BasePlugin):
         for result in context.results:
             result.final_score = self.composite(profile, result)
             result.reasons.append(f"ranked with profile '{profile.name}'")
+            result.reasons.append(self.breakdown(profile, result))
             if overrides:
                 result.reasons.append(
                     "custom weights: "

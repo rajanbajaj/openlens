@@ -20,6 +20,8 @@ profiles:
     privacy_weight: 0.5
     fairness_weight: 0.25
     news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
     sponsored_weight: 0.5
   child-safe:
     description: "Warnings demote heavily; trusted sources boosted."
@@ -39,6 +41,8 @@ profiles:
     privacy_weight: 1.0
     fairness_weight: 1.0
     news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
     sponsored_weight: 1.0
   news:
     description: "Boosts recent hits via metadata recency_score (0..1)."
@@ -58,6 +62,8 @@ profiles:
     privacy_weight: 0.25
     fairness_weight: 0.5
     news_trust_weight: 1.5
+    authority_weight: 0.5
+    performance_weight: 0.25
     sponsored_weight: 1.0
   shopping:
     description: "Boosts hits mentioning purchase-oriented keywords."
@@ -77,6 +83,8 @@ profiles:
     privacy_weight: 0.25
     fairness_weight: 0.25
     news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
     sponsored_weight: 1.0
   travel:
     description: "Boosts hits mentioning travel-oriented keywords."
@@ -96,4 +104,6 @@ profiles:
     privacy_weight: 0.25
     fairness_weight: 0.25
     news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
     sponsored_weight: 1.0

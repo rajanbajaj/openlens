@@ -113,40 +113,49 @@ plugins:
   # Scoring-pack signals (scoring-pack plan, step 6). Opt-in: disabled by
   # default so shipped behavior is unchanged. Tests enable these explicitly.
   - name: trust-scorer
-    enabled: false
+    enabled: true
     config:
       reputation:
         trusted: []
         distrusted: []
+  - name: authority-scorer
+    enabled: true
+    config:
+      half_saturation: 10
+  - name: performance-scorer
+    enabled: true
+    config:
+      fast_ms: 300
+      slow_ms: 8000
   - name: freshness-scorer
-    enabled: false
+    enabled: true
     config:
       half_life_days: 30
   - name: preference-scorer
-    enabled: false
+    enabled: true
     config: {}
   # Rerank pack (rerank-pack plan). Opt-in: disabled by default so shipped
   # behavior is unchanged. Tests enable these explicitly.
   - name: attribute-enricher
-    enabled: false
+    enabled: true
     config: {}
   - name: diversity-reranker
-    enabled: false
+    enabled: true
     config: {}
   - name: news-reranker
-    enabled: false
+    enabled: true
     config: {}
   - name: commerce-reranker
-    enabled: false
+    enabled: true
     config: {}
   # Integrity pack (IMPL-2): safety/privacy/fairness/news-trust/sponsored
   # signals scored purely from indexed metadata + indexed text. Opt-in:
   # disabled by default so shipped behavior is unchanged.
   - name: integrity-scorer
-    enabled: false
+    enabled: true
     config: {}
   - name: opinion-detector
-    enabled: false
+    enabled: true
     config: {}
   # AI summary (Cat10): opt-in, disabled by default so shipped behavior
   # is unchanged. Needs an enabled `models:` backend (configs/models.yaml);

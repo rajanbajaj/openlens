@@ -28,6 +28,8 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "trust-enricher": "openlens.plugins.trust_enricher:TrustEnricher",
     "baseline-scorer": "openlens.plugins.relevance_scorer:BaselineRelevanceScorer",
     "trust-scorer": "openlens.plugins.trust_scorer:TrustScorer",
+    "authority-scorer": "openlens.plugins.authority_scorer:AuthorityScorer",
+    "performance-scorer": "openlens.plugins.performance_scorer:PerformanceScorer",
     "freshness-scorer": "openlens.plugins.freshness_scorer:FreshnessScorer",
     "preference-scorer": "openlens.plugins.preference_scorer:PreferenceScorer",
     "attribute-enricher": "openlens.plugins.attribute_enricher:AttributeEnricher",

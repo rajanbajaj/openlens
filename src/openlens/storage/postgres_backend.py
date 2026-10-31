@@ -73,6 +73,8 @@ from openlens.storage.repository import (
     SITE_CATEGORY_VALUES,
     content_hash_of,
     doc_columns,
+    document_link_rows,
+    fetch_ms_column,
     site_category_columns,
 )
 
@@ -186,6 +188,7 @@ def _doc_to_row(
         source,
         kids_hit,
         news_hit,
+        fetch_ms_column(doc),
     )
 
 
@@ -211,6 +214,14 @@ def _row_to_document(row: tuple[Any, ...]) -> Document:
             metadata.setdefault("published", published)
     if len(row) > 11:
         _backfill_category_metadata(metadata, row[7:12])
+    if len(row) > 12:
+        fetch_ms = row[12]
+        if (
+            isinstance(fetch_ms, (int, float))
+            and not isinstance(fetch_ms, bool)
+            and "fetch_ms" not in metadata
+        ):
+            metadata["fetch_ms"] = float(fetch_ms)
     return Document(
         id=str(row[0]),
         title=str(row[1]),
@@ -433,6 +444,30 @@ class PostgresDocumentStore(DocumentStore):
             " ADD COLUMN IF NOT EXISTS kids_domain_hit INTEGER,"
             " ADD COLUMN IF NOT EXISTS news_domain_hit INTEGER"
         )
+        ddl_fetch_ms = (
+            f"ALTER TABLE {qualified}"  # noqa: S608
+            " ADD COLUMN IF NOT EXISTS fetch_ms DOUBLE PRECISION"
+        )
+        links_qualified = f'"{self._schema}"."document_links"'
+        ddl_links_table = (
+            f"CREATE TABLE IF NOT EXISTS {links_qualified} ("  # noqa: S608
+            " source_id TEXT NOT NULL,"
+            " source_host TEXT NOT NULL DEFAULT '',"
+            " target TEXT NOT NULL,"
+            " target_host TEXT NOT NULL DEFAULT '')"
+        )
+        ddl_links_target_idx = (
+            'CREATE INDEX IF NOT EXISTS "idx_document_links_target"'  # noqa: S608
+            f" ON {links_qualified} (target)"
+        )
+        ddl_links_source_idx = (
+            'CREATE INDEX IF NOT EXISTS "idx_document_links_source"'  # noqa: S608
+            f" ON {links_qualified} (source_id)"
+        )
+        ddl_fetch_ms_idx = (
+            f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_fetch_ms"'  # noqa: S608
+            f" ON {qualified} (fetch_ms)"
+        )
         ddl_content_hash_idx = (
             f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_content_hash"'  # noqa: S608
             f" ON {qualified} (content_hash)"
@@ -466,6 +501,11 @@ class PostgresDocumentStore(DocumentStore):
                     cur.execute(ddl_published)
                     cur.execute(ddl_content_hash)
                     cur.execute(ddl_category)
+                    cur.execute(ddl_fetch_ms)
+                    cur.execute(ddl_links_table)
+                    cur.execute(ddl_links_target_idx)
+                    cur.execute(ddl_links_source_idx)
+                    cur.execute(ddl_fetch_ms_idx)
                     cur.execute(ddl_content_type_idx)
                     cur.execute(ddl_published_idx)
                     cur.execute(ddl_content_hash_idx)
@@ -503,9 +543,9 @@ class PostgresDocumentStore(DocumentStore):
                 " content_type, published, content_hash,"
                 " site_category, site_category_confidence,"
                 " site_category_source, kids_domain_hit, news_domain_hit,"
-                " search_tsv)"
+                " fetch_ms, search_tsv)"
                 " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s,"
-                " %s, %s, %s, %s, %s,"
+                " %s, %s, %s, %s, %s, %s,"
                 " to_tsvector('english', coalesce(%s, '')"
                 " || ' ' || coalesce(%s, '')))"
                 " ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title,"
@@ -519,6 +559,7 @@ class PostgresDocumentStore(DocumentStore):
                 " site_category_source = EXCLUDED.site_category_source,"
                 " kids_domain_hit = EXCLUDED.kids_domain_hit,"
                 " news_domain_hit = EXCLUDED.news_domain_hit,"
+                " fetch_ms = EXCLUDED.fetch_ms,"
                 " search_tsv = EXCLUDED.search_tsv"
             )
             params = [
@@ -536,6 +577,7 @@ class PostgresDocumentStore(DocumentStore):
                     r[10],
                     r[11],
                     r[12],
+                    r[13],
                     r[1],
                     r[2],
                 )
@@ -545,6 +587,7 @@ class PostgresDocumentStore(DocumentStore):
                 try:
                     with conn.cursor() as cur:
                         cur.executemany(sql, params)
+                        self._sync_document_links(cur, chunk)
                     conn.commit()
                 except Exception as exc:
                     with contextlib.suppress(Exception):
@@ -557,6 +600,68 @@ class PostgresDocumentStore(DocumentStore):
             total += len(chunk)
         return total
 
+    def _sync_document_links(self, cur: Any, rows: list[tuple[Any, ...]]) -> None:
+        """Replace authority-graph rows for an indexed chunk.
+
+        Delete-then-insert per source id keeps reindex idempotent.
+        ``rows`` are :func:`_doc_to_row` tuples (id at 0, url at 3,
+        metadata JSON at 4).
+        """
+        links: list[tuple[Any, ...]] = []
+        for row in rows:
+            try:
+                metadata: Any = json.loads(row[4] or "{}")
+            except (ValueError, TypeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            # Reuse the shared row builder over a light Document view.
+            for link in document_link_rows(
+                Document(id=row[0], title="", content="", url=row[3], metadata=metadata)
+            ):
+                links.append(link)
+            # S608 false positive: validated identifiers, bound %s.
+            cur.execute(
+                f'DELETE FROM "{self._schema}"."document_links"'  # noqa: S608
+                " WHERE source_id = %s",
+                (row[0],),
+            )
+        if links:
+            # S608 false positive: validated identifiers, bound %s.
+            cur.executemany(
+                f'INSERT INTO "{self._schema}"."document_links"'  # noqa: S608
+                " (source_id, source_host, target, target_host)"
+                " VALUES (%s, %s, %s, %s)",
+                links,
+            )
+
+    def inlink_counts(self, targets: list[str]) -> dict[str, int]:
+        """Distinct linking hosts per target URL (authority signal source).
+
+        Unknown targets are absent (never zero-filled); any failure
+        yields ``{}`` so ranking degrades to neutral.
+        """
+        wanted = [t for t in targets if isinstance(t, str) and t]
+        if not wanted:
+            return {}
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    placeholders = ",".join(["%s"] * len(wanted))
+                    # S608 false positive: validated identifiers, bound %s.
+                    cur.execute(
+                        f"SELECT target, COUNT(DISTINCT source_host)"  # noqa: S608
+                        f' FROM "{self._schema}"."document_links"'
+                        f" WHERE target IN ({placeholders}) GROUP BY target",
+                        wanted,
+                    )
+                    rows = cur.fetchall()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    conn.rollback()
+                return {}
+        return {str(row[0]): int(row[1]) for row in rows}
+
     def delete(self, doc_id: str) -> bool:
         with self._connection() as conn:
             try:
@@ -567,6 +672,11 @@ class PostgresDocumentStore(DocumentStore):
                         (doc_id,),
                     )
                     removed = cur.rowcount not in (0, None)
+                    cur.execute(
+                        f'DELETE FROM "{self._schema}"."document_links"'  # noqa: S608
+                        " WHERE source_id = %s",
+                        (doc_id,),
+                    )
                 conn.commit()
             except Exception as exc:
                 with contextlib.suppress(Exception):
@@ -585,7 +695,7 @@ class PostgresDocumentStore(DocumentStore):
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
                         f"SELECT id, title, content, url, metadata,"  # noqa: S608
-                        f" content_type, published, {CATEGORY_SELECT}"
+                        f" content_type, published, {CATEGORY_SELECT}, fetch_ms"
                         f" FROM {self._qualified()} WHERE id = %s",
                         (doc_id,),
                     )
@@ -720,7 +830,7 @@ class PostgresDocumentStore(DocumentStore):
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
                         f"SELECT id, title, content, url, metadata,"  # noqa: S608
-                        f" content_type, published, {CATEGORY_SELECT}"
+                        f" content_type, published, {CATEGORY_SELECT}, fetch_ms"
                         f" FROM {self._qualified()} ORDER BY id ASC"
                         " LIMIT %s OFFSET %s",
                         (limit, offset),
@@ -794,7 +904,7 @@ class PostgresDocumentStore(DocumentStore):
         count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
         page_sql = (
             f"SELECT id, title, content, url, metadata, content_type, published,"  # noqa: S608
-            f" {CATEGORY_SELECT},"
+            f" {CATEGORY_SELECT}, fetch_ms,"
             f" {rank} AS score FROM {self._qualified()}"
             f" WHERE {match}{narrowing}"
             " ORDER BY score DESC LIMIT %s OFFSET %s"
@@ -820,9 +930,10 @@ class PostgresDocumentStore(DocumentStore):
                     provider_name=_PROVIDER_NAME,
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
-        # Score is the trailing column (index 12): the promoted
-        # content_type/published/category columns shifted it from the old spot.
-        return [(_row_to_document(r), float(r[12])) for r in rows], total
+        # Score is the trailing column (index 13 on full rows): the
+        # promoted content_type/published/category/fetch_ms columns
+        # shifted it. Trailing access keeps short test doubles working.
+        return [(_row_to_document(r), float(r[-1])) for r in rows], total
 
     def close(self) -> None:
         with self._state_lock:
