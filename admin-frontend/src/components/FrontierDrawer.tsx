@@ -38,6 +38,9 @@ const DEFAULT_SETTINGS: FrontierSettings = {
   skip_domains: [],
   allow_domains: [],
   deny_domains: [],
+  discovery_feeds: [],
+  refresh_after_days: 30.0,
+  discovery_interval_s: 21600.0,
 };
 
 /**
@@ -103,6 +106,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [skipInput, setSkipInput] = useState('');
   const [allowInput, setAllowInput] = useState('');
   const [denyInput, setDenyInput] = useState('');
+  const [feedInput, setFeedInput] = useState('');
   const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [live, setLive] = useState(false);
 
@@ -319,6 +323,39 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     });
   }
 
+  function normalizeFeedUrl(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+      return parsed.toString();
+    } catch {
+      return '';
+    }
+  }
+
+  function handleAddFeed() {
+    const feed = normalizeFeedUrl(feedInput);
+    if (!feed) {
+      pushToast('Enter a valid http(s) feed or sitemap URL.', 'error');
+      return;
+    }
+    if ((settings.discovery_feeds ?? []).includes(feed)) {
+      pushToast('Feed is already added.', 'error');
+      return;
+    }
+    setSettings({ ...settings, discovery_feeds: [...(settings.discovery_feeds ?? []), feed] });
+    setFeedInput('');
+  }
+
+  function handleRemoveFeed(feed: string) {
+    setSettings({
+      ...settings,
+      discovery_feeds: (settings.discovery_feeds ?? []).filter((entry) => entry !== feed),
+    });
+  }
+
   const queue = status ? readFrontierQueue(status) : [];
   const newUrls = status ? readFrontierNewUrls(status) : [];
   const checkpoint = status?.checkpoint;
@@ -501,6 +538,34 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                   className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                 />
               </label>
+              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Refresh pages older than (days; 0 disables)
+                <input
+                  data-testid="frontier-setting-refresh-after"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={settings.refresh_after_days}
+                  onChange={(event) =>
+                    setSettings({ ...settings, refresh_after_days: Number(event.target.value) })
+                  }
+                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                />
+              </label>
+              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Discovery pass interval (s; 0 disables)
+                <input
+                  data-testid="frontier-setting-discovery-interval"
+                  type="number"
+                  min={0}
+                  step={60}
+                  value={settings.discovery_interval_s}
+                  onChange={(event) =>
+                    setSettings({ ...settings, discovery_interval_s: Number(event.target.value) })
+                  }
+                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                />
+              </label>
               <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
                 <input
                   data-testid="frontier-setting-robots"
@@ -620,6 +685,41 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                           variant="ghost"
                           data-testid={`frontier-deny-remove-${domain}`}
                           onClick={() => handleRemoveDenyDomain(domain)}
+                        >
+                          ×
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Discovery feeds / sitemaps (new URLs are queued from these)
+                <div className="flex gap-ol-xs">
+                  <input
+                    data-testid="frontier-feed-input"
+                    type="text"
+                    aria-label="Feed or sitemap URL"
+                    value={feedInput}
+                    onChange={(event) => setFeedInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') handleAddFeed();
+                    }}
+                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                  <Button variant="secondary" onClick={handleAddFeed}>
+                    Add
+                  </Button>
+                </div>
+                {(settings.discovery_feeds ?? []).length > 0 && (
+                  <ul data-testid="frontier-feed-list" className="flex flex-col gap-ol-xs">
+                    {(settings.discovery_feeds ?? []).map((feed) => (
+                      <li key={feed} className="flex items-center gap-ol-xs">
+                        <Badge>{feed}</Badge>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-feed-remove-${feed}`}
+                          onClick={() => handleRemoveFeed(feed)}
                         >
                           ×
                         </Button>

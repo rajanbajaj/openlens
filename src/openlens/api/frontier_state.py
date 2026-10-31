@@ -24,6 +24,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "respect_robots": True,
     "allow_domains": [],
     "deny_domains": [],
+    "discovery_feeds": [],
+    "refresh_after_days": 0,
+    "discovery_interval_s": 21600,
 }
 
 

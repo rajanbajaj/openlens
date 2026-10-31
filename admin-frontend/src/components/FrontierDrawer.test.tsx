@@ -25,6 +25,9 @@ const SETTINGS = {
   skip_domains: [],
   allow_domains: [],
   deny_domains: [],
+  discovery_feeds: [],
+  refresh_after_days: 30.0,
+  discovery_interval_s: 21600.0,
 };
 
 /** Minimal socket stand-in: the drawer only needs onopen/onmessage/close. */
@@ -298,6 +301,28 @@ describe('FrontierDrawer skip domains', () => {
       allow_domains: ['news.example.com'],
       deny_domains: ['ads.example'],
     });
+  });
+
+  it('adds and saves discovery feeds', async () => {
+    MockSocket.instances = [];
+    const capture: { body: unknown } = { body: null };
+    stubFetchCapture(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const feedInput = await screen.findByTestId('frontier-feed-input');
+    expect(screen.queryByTestId('frontier-feed-list')).not.toBeInTheDocument();
+
+    fireEvent.change(feedInput, { target: { value: 'example.com/feed.xml' } });
+    fireEvent.keyDown(feedInput, { key: 'Enter' });
+    expect(screen.getByTestId('frontier-feed-list')).toHaveTextContent(
+      'https://example.com/feed.xml',
+    );
+
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
+    });
+    expect(capture.body).toMatchObject({ discovery_feeds: ['https://example.com/feed.xml'] });
   });
 
   it('shows the skipped count in the queue header', async () => {

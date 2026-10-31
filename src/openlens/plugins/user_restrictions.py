@@ -168,7 +168,24 @@ SAFETY_PRESET_VALUES: frozenset[str] = frozenset({"strict", "balanced", "standar
 #: Closed value set for the ``site_category`` filter. Unknown *values*
 #: (well-formed strings outside this set) are fail-closed; malformed
 #: payloads (non-string/list, empty) leave the filter inactive.
-SITE_CATEGORY_VALUES: frozenset[str] = frozenset({"shopping", "news", "kids", "other"})
+SITE_CATEGORY_VALUES: frozenset[str] = frozenset(
+    {
+        "shopping",
+        "news",
+        "kids",
+        "video",
+        "reference",
+        "tech",
+        "finance",
+        "health",
+        "government",
+        "travel",
+        "forums",
+        "social",
+        "gambling",
+        "other",
+    }
+)
 
 #: Metadata keys consulted by the ``site_category`` filter, in order.
 #: ``site_category`` is canonical; ``category`` is the provider-declared

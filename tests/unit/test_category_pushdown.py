@@ -59,6 +59,17 @@ def test_provider_mode_prefilter_is_exact() -> None:
     assert all(h.metadata.get("site_category") == "news" for h in hits)
 
 
+def test_provider_travel_mode_prefilter_is_exact() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    provider._repository.add_documents([_doc("t1", "travel"), _doc("o1", "other")])
+    request = SearchRequest(query="python", mode="travel", limit=10, offset=0)
+    hits, total = provider.search_with_total(request)
+    assert total == 1
+    assert [h.id for h in hits] == ["t1"]
+    assert hits[0].metadata.get("site_category") == "travel"
+
+
 def test_provider_explicit_category_beats_mode() -> None:
     provider = _provider()
     request = SearchRequest(

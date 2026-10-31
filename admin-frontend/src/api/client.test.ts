@@ -36,6 +36,9 @@ const SETTINGS: FrontierSettings = {
   skip_domains: [],
   allow_domains: [],
   deny_domains: [],
+  discovery_feeds: [],
+  refresh_after_days: 30.0,
+  discovery_interval_s: 21600.0,
 };
 
 function jsonResponse(payload: unknown, status = 200): Response {

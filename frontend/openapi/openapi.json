@@ -1592,6 +1592,31 @@
             "type": "array",
             "title": "Deny Domains",
             "description": "Domain blocklist applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal."
+          },
+          "discovery_feeds": {
+            "items": {
+              "type": "string",
+              "maxLength": 2000,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Discovery Feeds",
+            "description": "Sitemap/RSS/Atom URLs polled by workers for new articles; empty disables discovery. Malformed entries are ignored, never fatal."
+          },
+          "refresh_after_days": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Refresh After Days",
+            "description": "Requeue done URLs older than this many days for a conditional refetch (0 disables the refresh pass).",
+            "default": 0
+          },
+          "discovery_interval_s": {
+            "type": "integer",
+            "maximum": 86400.0,
+            "minimum": 300.0,
+            "title": "Discovery Interval S",
+            "description": "Minimum seconds between worker discovery passes (feeds + refresh). Applies live without restarting workers.",
+            "default": 21600
           }
         },
         "additionalProperties": false,

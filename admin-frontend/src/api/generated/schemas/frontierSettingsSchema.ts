@@ -42,4 +42,21 @@ export interface FrontierSettingsSchema {
    * @items.maxLength 253
    */
   deny_domains?: string[];
+  /**
+   * Sitemap/RSS/Atom URLs polled by workers for new articles; empty disables discovery. Malformed entries are ignored, never fatal.
+   * @items.minLength 1
+   * @items.maxLength 2000
+   */
+  discovery_feeds?: string[];
+  /**
+   * Requeue done URLs older than this many days for a conditional refetch (0 disables the refresh pass).
+   * @minimum 0
+   */
+  refresh_after_days?: number;
+  /**
+   * Minimum seconds between worker discovery passes (feeds + refresh). Applies live without restarting workers.
+   * @minimum 300
+   * @maximum 86400
+   */
+  discovery_interval_s?: number;
 }

@@ -155,6 +155,44 @@ def new_worker_id(explicit: str | None = None) -> str:
 PAUSE_SETTINGS_KEY = "paused"
 
 
+#: Bounds for feed/refresh discovery settings (dashboard-managed).
+_MAX_FEEDS_PER_PASS = 50
+_MAX_SITEMAP_CHILDREN = 20
+_MAX_REFRESH_PER_PASS = 500
+_MIN_DISCOVERY_INTERVAL_S = 300
+_MAX_DISCOVERY_INTERVAL_S = 86400
+_DEFAULT_DISCOVERY_INTERVAL_S = 21600
+
+
+def _live_feed_list(value: Any) -> list[str] | None:
+    """Validate a discovery feed list: http(s) URL strings only.
+
+    Missing/non-list values yield None (keep the boot configuration);
+    a present list normalizes per entry (bad entries ignored) and may
+    legitimately be [] (discovery off). Capped so a corrupt row cannot
+    point the worker at thousands of URLs.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return None
+    feeds: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        feed = entry.strip()
+        if (
+            len(feed) < 11
+            or len(feed) > 2000
+            or not feed.lower().startswith(("http://", "https://"))
+        ):
+            continue
+        feeds.append(feed)
+        if len(feeds) >= _MAX_FEEDS_PER_PASS:
+            break
+    return feeds
+
+
 def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     """Validate dashboard crawl limits; invalid/missing keys become None.
 
@@ -203,6 +241,21 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
         "skip_domains": skip,
         "allow_domains": allow,
         "deny_domains": deny,
+        "discovery_feeds": _live_feed_list(settings.get("discovery_feeds")),
+        "refresh_after_days": (
+            days
+            if isinstance(days := settings.get("refresh_after_days"), int)
+            and not isinstance(days, bool)
+            and days >= 0
+            else None
+        ),
+        "discovery_interval_s": (
+            interval
+            if isinstance(interval := settings.get("discovery_interval_s"), int)
+            and not isinstance(interval, bool)
+            and _MIN_DISCOVERY_INTERVAL_S <= interval <= _MAX_DISCOVERY_INTERVAL_S
+            else None
+        ),
     }
 
 
@@ -285,6 +338,15 @@ class CrawlerWorker:
     skip_domains: list[str] = field(default_factory=list)
     #: Rows bulk-skipped by the last :meth:`refresh_limits` (diagnostics).
     last_skip_bulk_count: int = 0
+    #: Validated discovery feed URLs from the last :meth:`refresh_limits`.
+    #: Empty disables discovery.
+    discovery_feeds: list[str] = field(default_factory=list)
+    #: Stale-refresh age in days (``0`` disables the refresh pass).
+    refresh_after_days: int = 0
+    #: Minimum seconds between discovery passes.
+    discovery_interval_s: int = _DEFAULT_DISCOVERY_INTERVAL_S
+    #: Last :meth:`run_discovery_pass` outcome (diagnostics).
+    last_discovery: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.worker_id:
@@ -292,6 +354,7 @@ class CrawlerWorker:
         self._stop_requested = threading.Event()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
+        self._last_discovery_at: float = 0.0
 
     # -- stop signals --------------------------------------------------------
 
@@ -376,6 +439,143 @@ class CrawlerWorker:
         with contextlib.suppress(Exception):
             if live.get("deny_domains") is not None:
                 crawler.deny_domains = list(live["deny_domains"])
+        with contextlib.suppress(Exception):
+            if live.get("discovery_feeds") is not None:
+                self.discovery_feeds = list(live["discovery_feeds"])
+        with contextlib.suppress(Exception):
+            if live.get("refresh_after_days") is not None:
+                self.refresh_after_days = live["refresh_after_days"]
+        with contextlib.suppress(Exception):
+            if live.get("discovery_interval_s") is not None:
+                self.discovery_interval_s = live["discovery_interval_s"]
+
+    def run_discovery_pass(self, http_fetch: Any = None) -> dict[str, int]:
+        """Fetch discovery feeds, enqueue new URLs, requeue stale done rows.
+
+        One discovery pass: every configured feed/sitemap is fetched
+        (sitemap indexes are followed one level), unseen URLs are
+        enqueued at depth 0 (the frontier dedups, so only genuinely new
+        pages enter), then ``done`` rows older than
+        :attr:`refresh_after_days` re-enter the queue for a conditional
+        refetch. ``http_fetch`` injects ``(url, **kwargs) -> text|None``
+        for tests; the default is the bounded
+        :func:`discovery.fetch_discovery_text`. Never raises: per-feed
+        and per-store failures only shrink the counts. Returns
+        ``{"feeds_checked", "new_urls", "refreshed"}`` and records it on
+        :attr:`last_discovery`.
+        """
+        from openlens.indexing import discovery as discovery_module
+
+        result = {"feeds_checked": 0, "new_urls": 0, "refreshed": 0}
+        store = self.frontier_store
+        feeds = (
+            list(self.discovery_feeds or [])
+            if isinstance(self.discovery_feeds, list)
+            else []
+        )
+        fetch = http_fetch or discovery_module.fetch_discovery_text
+        user_agent = "OpenLensBot/1.0"
+        with contextlib.suppress(Exception):
+            configured = getattr(self.crawler, "user_agent", "") or ""
+            if isinstance(configured, str) and configured.strip():
+                user_agent = configured.strip()
+        for feed_url in feeds[:_MAX_FEEDS_PER_PASS]:
+            result["feeds_checked"] += 1
+            try:
+                text = fetch(
+                    feed_url, user_agent=user_agent, timeout_s=15.0, max_bytes=1_000_000
+                )
+            except Exception:  # noqa: S112 — dead feeds degrade to zero new URLs
+                continue
+            if not text:
+                continue
+            try:
+                kind = discovery_module.classify_discovery_xml(text)
+                if kind == "sitemap":
+                    pairs = discovery_module.discover_from_sitemap(text)
+                elif kind == "sitemap-index":
+                    pairs = []
+                    children = discovery_module.discover_from_sitemap(text)
+                    for child_url, _ in children[:_MAX_SITEMAP_CHILDREN]:
+                        try:
+                            child_text = fetch(
+                                child_url,
+                                user_agent=user_agent,
+                                timeout_s=15.0,
+                                max_bytes=1_000_000,
+                            )
+                        except Exception:  # noqa: S112 — dead sitemap children are skipped
+                            continue
+                        if not child_text:
+                            continue
+                        if (
+                            discovery_module.classify_discovery_xml(child_text)
+                            != "sitemap"
+                        ):
+                            continue
+                        pairs = pairs + discovery_module.discover_from_sitemap(
+                            child_text
+                        )
+                elif kind == "feed":
+                    pairs = discovery_module.discover_from_feed(text)
+                else:
+                    pairs = []
+            except Exception:  # noqa: S112 — malformed feeds degrade to zero new URLs
+                continue
+            if store is None:
+                continue
+            seen_urls: set[str] = set()
+            for article_url, _ in pairs:
+                if not isinstance(article_url, str) or not article_url.strip():
+                    continue
+                normalized = article_url.strip()
+                if normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                try:
+                    if store.enqueue(normalized, depth=0):
+                        result["new_urls"] += 1
+                except Exception:  # noqa: S112 — duplicate/racy URLs are skipped
+                    continue
+        days = self.refresh_after_days
+        if store is not None and isinstance(days, int) and days > 0:
+            with contextlib.suppress(Exception):
+                result["refreshed"] = int(
+                    store.requeue_stale(days, _MAX_REFRESH_PER_PASS) or 0
+                )
+        self.last_discovery = dict(result)
+        return result
+
+    def maybe_run_discovery(self, http_fetch: Any = None) -> dict[str, int]:
+        """Time-gated :meth:`run_discovery_pass` (no-op until the interval
+        elapses, and never while paused). Returns zero counts when gated
+        so callers can log uniformly. Never raises.
+        """
+        zero = {"feeds_checked": 0, "new_urls": 0, "refreshed": 0}
+        try:
+            if self._paused_via_store():
+                return dict(zero)
+            now = time.monotonic()
+            interval = self.discovery_interval_s
+            if (
+                not isinstance(interval, int)
+                or isinstance(interval, bool)
+                or interval <= 0
+            ):
+                interval = _DEFAULT_DISCOVERY_INTERVAL_S
+            if now - self._last_discovery_at < interval:
+                return dict(zero)
+            self._last_discovery_at = now
+            outcome = self.run_discovery_pass(http_fetch=http_fetch)
+            if isinstance(outcome, dict):
+                return {
+                    "feeds_checked": int(outcome.get("feeds_checked", 0) or 0),
+                    "new_urls": int(outcome.get("new_urls", 0) or 0),
+                    "refreshed": int(outcome.get("refreshed", 0) or 0),
+                }
+            return dict(zero)
+        except Exception:
+            return dict(zero)
 
     def guarded_store(self) -> Any:
         """Frontier store view enforcing the refreshed skip list at take.
@@ -462,6 +662,8 @@ class CrawlerWorker:
                 store.register_worker(self.worker_id, self.crawl_id)
         self._beat()
         self.refresh_limits()
+        with contextlib.suppress(Exception):
+            self.maybe_run_discovery()
         self._heartbeat_stop.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True
@@ -684,6 +886,8 @@ def run_kafka_worker(
 
     def _drain_once() -> None:
         worker.refresh_limits()
+        with contextlib.suppress(Exception):
+            worker.maybe_run_discovery()
         drain_stats = run_index(
             [],
             repository,
@@ -758,6 +962,8 @@ def run_kafka_worker(
             counts["added"] += int(getattr(stats, "added", 0) or 0)
             counts["updated"] += int(getattr(stats, "updated", 0) or 0)
             kafka.commit()
+            with contextlib.suppress(Exception):
+                worker.maybe_run_discovery()
     finally:
         with contextlib.suppress(Exception):
             kafka.close()

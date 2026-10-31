@@ -76,7 +76,30 @@ def doc_columns(doc: Document) -> tuple[Any, Any]:
 
 
 #: Site-category values admitted by the ``site_category`` CHECK set.
-SITE_CATEGORY_VALUES: tuple[str, ...] = ("shopping", "news", "kids", "other")
+#: New values must also be added to the classifier (crawler.py
+#: ``SITE_CATEGORIES``) and the filter-term validation set
+#: (plugins/user_restrictions.py ``SITE_CATEGORY_VALUES``).
+SITE_CATEGORY_VALUES: tuple[str, ...] = (
+    "shopping",
+    "news",
+    "kids",
+    "video",
+    "reference",
+    "tech",
+    "finance",
+    "health",
+    "government",
+    "travel",
+    "forums",
+    "social",
+    "gambling",
+    "other",
+)
+
+#: Quoted ``site_category`` CHECK list, derived from the values above so
+#: the fresh-install DDL can never drift from the admitted set. Legacy
+#: databases (plain ``ADD COLUMN`` path below) stay unenforced.
+_SITE_CATEGORY_CHECK = ", ".join(f"'{value}'" for value in SITE_CATEGORY_VALUES)
 
 
 def site_category_columns(
@@ -171,21 +194,24 @@ class DocumentRepository(DocumentStore):
             self._conn.execute(  # noqa: S608
                 f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}"
             )
-            self._conn.executescript(
-                """
+            # S608 is a false positive here: the only interpolated value
+            # is the quoted module-constant CHECK list above, never user
+            # input. The '{}' inside DEFAULT is a literal (doubled braces).
+            self._conn.executescript(  # noqa: S608
+                f"""
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL,
                     url TEXT,
-                    metadata TEXT NOT NULL DEFAULT '{}',
+                    metadata TEXT NOT NULL DEFAULT '{{}}',
                     content_hash TEXT,
                     url_norm TEXT,
                     content_type TEXT,
                     published TEXT,
                     site_category TEXT DEFAULT 'other'
                         CHECK (site_category IN
-                            ('shopping', 'news', 'kids', 'other')),
+                            ({_SITE_CATEGORY_CHECK})),
                     site_category_confidence REAL,
                     site_category_source TEXT,
                     kids_domain_hit INTEGER DEFAULT 0,

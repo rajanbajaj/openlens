@@ -219,6 +219,12 @@ export interface FrontierSettings {
   allow_domains: string[];
   /** Domains workers never fetch (exact host or subdomain). */
   deny_domains: string[];
+  /** Feed/sitemap URLs the discovery pass polls for new URLs. */
+  discovery_feeds: string[];
+  /** Done pages older than this are requeued (days; 0 disables). */
+  refresh_after_days: number;
+  /** Seconds between worker discovery passes (0 disables). */
+  discovery_interval_s: number;
 }
 
 /** GET/PUT /api/v1/frontier/settings response body. */

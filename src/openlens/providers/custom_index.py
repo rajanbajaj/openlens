@@ -48,10 +48,12 @@ SUPPORTED_BACKENDS = ("sqlite", "mysql", "postgres")
 _FETCH_DOCUMENT_CAP = 10
 
 #: Modes whose results are pre-filtered inside retrieval (exact totals).
-#: Travel has no category value, so it filters downstream instead.
+#: Travel pages carry the ``travel`` category from ``travel_allow``
+#: domains; untagged travel blogs still match downstream on keywords.
 MODE_SITE_CATEGORY: dict[str, str] = {
     "news": "news",
     "shopping": "shopping",
+    "travel": "travel",
 }
 
 

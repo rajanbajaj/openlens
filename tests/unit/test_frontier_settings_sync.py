@@ -270,6 +270,30 @@ def test_put_settings_persists_domain_scope(client: TestClient) -> None:
     assert settings["deny_domains"] == ["bad.example"]
 
 
+def test_put_settings_persists_discovery_keys(client: TestClient) -> None:
+    """PUT accepts the discovery/refresh keys and GET returns them back."""
+    put = client.put(
+        "/api/v1/frontier/settings",
+        json={
+            "max_pages": 10,
+            "max_queued_urls": 50,
+            "crawl_delay_s": 0.5,
+            "default_max_depth": 2,
+            "respect_robots": True,
+            "discovery_feeds": ["https://news.example/feed.xml"],
+            "refresh_after_days": 7,
+            "discovery_interval_s": 3600,
+        },
+    )
+    assert put.status_code == 200, put.text
+    got = client.get("/api/v1/frontier/settings")
+    assert got.status_code == 200, got.text
+    settings = got.json()["settings"]
+    assert settings["discovery_feeds"] == ["https://news.example/feed.xml"]
+    assert settings["refresh_after_days"] == 7
+    assert settings["discovery_interval_s"] == 3600
+
+
 def test_refresh_limits_no_store_or_crawler_is_noop() -> None:
     worker = CrawlWorker(crawler=None, repository=None, frontier_store=None)
     worker.refresh_limits()

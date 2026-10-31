@@ -49,6 +49,7 @@ from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 _MODE_SITE_CATEGORY: dict[str, str] = {
     "news": "news",
     "shopping": "shopping",
+    "travel": "travel",
 }
 
 #: Deepest fetch window the pagination fill loop may open while covering

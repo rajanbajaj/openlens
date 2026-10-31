@@ -258,7 +258,11 @@ export function isFrontierSettingsResponse(value: unknown): value is FrontierSet
     Array.isArray(settings.allow_domains) &&
     settings.allow_domains.every((domain) => typeof domain === 'string') &&
     Array.isArray(settings.deny_domains) &&
-    settings.deny_domains.every((domain) => typeof domain === 'string')
+    settings.deny_domains.every((domain) => typeof domain === 'string') &&
+    Array.isArray(settings.discovery_feeds) &&
+    settings.discovery_feeds.every((feed) => typeof feed === 'string') &&
+    typeof settings.refresh_after_days === 'number' &&
+    typeof settings.discovery_interval_s === 'number'
   );
 }
 

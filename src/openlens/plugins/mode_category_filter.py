@@ -3,9 +3,9 @@
 Ranking profiles only rescore; without this filter ``news`` / ``shopping`` /
 ``travel`` modes return the identical result set as ``default`` (e.g. code
 hosts presented as news). This FILTERING plugin keeps, per mode, only hits
-whose indexed ``site_category`` metadata matches — ``travel`` has no
-category value, so it matches the ranking profile's travel keywords
-against title/snippet/url instead.
+whose indexed ``site_category`` metadata matches — ``travel`` also keeps
+untagged pages matching the ranking profile's travel keywords against
+title/snippet/url (untagged travel blogs).
 
 Fail-open on empty: when the filter would remove every hit (common on a
 corpus with no categorized pages yet), the original results are served
@@ -22,11 +22,13 @@ from openlens.core.context import SearchContext
 from openlens.core.interfaces import PipelineStage, PluginType
 from openlens.plugins.base import BasePlugin
 
-#: Modes this filter acts on. ``travel`` has no ``site_category`` value;
-#: it matches against text instead (same keywords the travel profile boosts).
+#: Modes this filter acts on. ``travel`` matches the ``travel``
+#: category exactly and, for untagged pages, text keywords (same words
+#: the travel profile boosts).
 MODE_CATEGORY: dict[str, str] = {
     "news": "news",
     "shopping": "shopping",
+    "travel": "travel",
 }
 
 #: Text fallback for ``travel`` (mirrors the travel ranking keywords).
@@ -79,7 +81,10 @@ class ModeCategoryFilter(BasePlugin):
             result
             for result in context.results
             if (
-                _matches_travel(result)
+                (
+                    _site_category(result) == MODE_CATEGORY[mode]
+                    or _matches_travel(result)
+                )
                 if mode == "travel"
                 else _site_category(result) == MODE_CATEGORY[mode]
             )

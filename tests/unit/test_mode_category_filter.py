@@ -1,10 +1,10 @@
 """Mode-category filter tests: modes return categorical results.
 
-Covers ``plugins/mode_category_filter.py``: news/shopping modes keep only
-hits with the matching indexed ``site_category``; travel matches the
-ranking profile's keywords (no travel category exists); default/agent
-modes are no-ops; an empty filter falls back to the original results with
-a metadata flag instead of serving a blank page.
+Covers ``plugins/mode_category_filter.py``: news/shopping/travel modes
+keep hits with the matching indexed ``site_category``; travel additionally
+keeps untagged pages matching the ranking profile's keywords;
+default/agent modes are no-ops; an empty filter falls back to the
+original results with a metadata flag instead of serving a blank page.
 """
 
 from __future__ import annotations
@@ -88,6 +88,20 @@ def test_travel_mode_matches_keywords() -> None:
         )
     )
     assert [r.id for r in out.results] == ["t"]
+
+
+def test_travel_mode_keeps_category_exact_hits() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("tagged", "travel", title="Python guide"),
+                _hit("code", "other", title="Python github repo"),
+            ],
+            "travel",
+        )
+    )
+    assert [r.id for r in out.results] == ["tagged"]
 
 
 def test_default_and_agent_modes_are_noops() -> None:

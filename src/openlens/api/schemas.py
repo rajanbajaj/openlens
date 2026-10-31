@@ -332,6 +332,31 @@ class FrontierSettingsSchema(BaseModel):
             "malformed entries are ignored, never fatal."
         ),
     )
+    discovery_feeds: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(
+        default_factory=list,
+        description=(
+            "Sitemap/RSS/Atom URLs polled by workers for new articles; "
+            "empty disables discovery. Malformed entries are ignored, "
+            "never fatal."
+        ),
+    )
+    refresh_after_days: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Requeue done URLs older than this many days for a conditional "
+            "refetch (0 disables the refresh pass)."
+        ),
+    )
+    discovery_interval_s: int = Field(
+        default=21600,
+        ge=300,
+        le=86400,
+        description=(
+            "Minimum seconds between worker discovery passes (feeds + "
+            "refresh). Applies live without restarting workers."
+        ),
+    )
 
 
 class FrontierSettingsResponseSchema(BaseModel):

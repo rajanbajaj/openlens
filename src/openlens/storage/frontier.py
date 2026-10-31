@@ -37,7 +37,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from openlens.core.interfaces import ProviderError
@@ -249,6 +249,20 @@ class FrontierStore(ABC):
         Returns True when a row was moved.
         """
         raise NotImplementedError
+
+    def requeue_stale(self, max_age_days: int, limit: int) -> int:
+        """Return ``done`` rows older than ``max_age_days`` to ``queued``.
+
+        Powers the refresh pass: stale pages refetch (conditionally via
+        stored ETag/Last-Modified, so unchanged pages cost one 304) and
+        re-index. Rows never fetched (``fetched_at`` NULL) count as
+        stale. Attempts reset so a refresh is a fresh fetch, not a
+        retry. Invalid bounds fail closed to ``0``; oldest first up to
+        ``limit``. Concrete default (``0``) so older/test doubles keep
+        working; the shipped SQLite and Postgres stores override it.
+        """
+        _ = (max_age_days, limit)
+        return 0
 
     @abstractmethod
     def clear_queued(self) -> int:
@@ -1166,6 +1180,39 @@ class SqliteFrontierStore(FrontierStore):
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to requeue frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def requeue_stale(self, max_age_days: int, limit: int) -> int:
+        if (
+            not isinstance(max_age_days, int)
+            or isinstance(max_age_days, bool)
+            or max_age_days < 0
+            or not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+        ):
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        try:
+            with self._lock, self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE frontier_queue SET status = 'queued',"
+                    " attempts = 0, owner = NULL, leased_at = NULL,"
+                    " heartbeat_at = NULL, last_error = NULL"
+                    " WHERE url IN (SELECT url FROM frontier_queue"
+                    " WHERE status = 'done'"
+                    " AND (fetched_at IS NULL OR fetched_at < ?)"
+                    " ORDER BY fetched_at ASC LIMIT ?)",
+                    (cutoff, limit),
+                )
+                return cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to requeue stale frontier URLs: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -2136,6 +2183,35 @@ class PostgresFrontierStore(FrontierStore):
                 " WHERE url = %s AND status IN ('active', 'failed')",
                 (normalize_frontier_url(url),),
             )
+        )
+
+    def requeue_stale(self, max_age_days: int, limit: int) -> int:
+        if (
+            not isinstance(max_age_days, int)
+            or isinstance(max_age_days, bool)
+            or max_age_days < 0
+            or not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+        ):
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        table = self._qualified("frontier_queue")
+        return int(
+            self._write(
+                f"UPDATE {table} SET status = 'queued',"  # noqa: S608
+                " attempts = 0, owner = NULL, leased_at = NULL,"
+                " heartbeat_at = NULL, last_error = NULL"
+                " WHERE url IN (SELECT url FROM"
+                f" {table}"  # noqa: S608
+                " WHERE status = 'done'"
+                " AND (fetched_at IS NULL OR fetched_at < %s)"
+                " ORDER BY fetched_at ASC NULLS FIRST LIMIT %s)",
+                (cutoff, limit),
+            )
+            or 0
         )
 
     def clear_queued(self) -> int:

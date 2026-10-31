@@ -595,7 +595,22 @@ EXTRACTED_METADATA_KEYS: frozenset[str] = frozenset(
 CATEGORY_RULES_VERSION = "rules-v1"
 
 #: Allowed site-category values (mirrors the repository CHECK set).
-SITE_CATEGORIES: tuple[str, ...] = ("shopping", "news", "kids", "other")
+SITE_CATEGORIES: tuple[str, ...] = (
+    "shopping",
+    "news",
+    "kids",
+    "video",
+    "reference",
+    "tech",
+    "finance",
+    "health",
+    "government",
+    "travel",
+    "forums",
+    "social",
+    "gambling",
+    "other",
+)
 
 #: Category-domain config keys (see ``configs/category_domains.yaml``).
 _CATEGORY_DOMAIN_KEYS: tuple[str, ...] = (
@@ -603,6 +618,16 @@ _CATEGORY_DOMAIN_KEYS: tuple[str, ...] = (
     "news_allow",
     "kids_allow",
     "adult_block",
+    "social_block",
+    "gambling_block",
+    "video_allow",
+    "reference_allow",
+    "tech_allow",
+    "finance_allow",
+    "health_allow",
+    "government_allow",
+    "travel_allow",
+    "forums_allow",
 )
 
 #: Fallback when no ``category_domains.yaml`` is found: no domain claims
@@ -653,10 +678,10 @@ def _category_domains_config_path(explicit: str | None = None) -> str | None:
 def load_category_domains(path: str | None = None) -> dict[str, frozenset[str]]:
     """Load category domain allow/block sets (cached, never raises).
 
-    Reads ``configs/category_domains.yaml`` (``shopping_allow``,
-    ``news_allow``, ``kids_allow``, ``adult_block``); missing or
-    unparsable files yield empty sets (fail-closed). Matching is by
-    registered suffix: ``example.com`` also matches ``shop.example.com``.
+    Reads ``configs/category_domains.yaml`` (``*_allow`` and ``*_block``
+    keys); missing or unparsable files yield empty sets (fail-closed).
+    Matching is by registered suffix: ``example.com`` also matches
+    ``shop.example.com``.
     """
     resolved = _category_domains_config_path(path)
     cache_key = resolved or ""
@@ -713,11 +738,13 @@ def classify_site_category(
     """Rules-first site-category classification (``rules-v1``).
 
     Evaluates every candidate and keeps the highest confidence
-    (tie-break: kids > shopping > news):
+    (tie-break: kids > shopping > news > gambling > social >
+    video > reference > tech > finance > health > government >
+    travel > forums):
 
-    - kids: fail-closed — ``kids_allow`` domain hit AND not adult
-      (``content_safety == "adult"`` or ``adult_block`` hit) -> 1.0.
-      Adult pages are never kids.
+    - kids: fail-closed — ``kids_allow`` domain hit AND not blocked
+      (``content_safety == "adult"`` or an ``adult``/``social``/
+      ``gambling`` block hit) -> 1.0. Blocked pages are never kids.
     - shopping: domain hit -> 1.0; price + (availability | currency |
       brand) -> 0.9; price alone or Product type + brand -> 0.7;
       cart/checkout/product-path URL + price -> 0.6.
@@ -725,6 +752,12 @@ def classify_site_category(
       author & published) -> 0.85; article type alone -> 0.6.
       A 0.6 news verdict is provisional: consumers must never hard-filter
       on it, only demote or label.
+    - blocked categories: ``social_block``/``gambling_block`` hits
+      label the page ``social``/``gambling`` -> 1.0 (and veto kids).
+      ``adult_block`` only vetoes (no ``adult`` value exists).
+    - allow categories: ``video``/``reference``/``tech``/``finance``/
+      ``health``/``government``/``travel``/``forums`` domain hits
+      default the page to that category -> 1.0.
     - otherwise -> ("other", 1.0).
 
     Always returns all five keys: ``site_category``,
@@ -738,7 +771,27 @@ def classify_site_category(
     news_hit = _domain_hit(host, domain_sets.get("news_allow", frozenset()))
     kids_hit = _domain_hit(host, domain_sets.get("kids_allow", frozenset()))
     adult_block_hit = _domain_hit(host, domain_sets.get("adult_block", frozenset()))
-    adult = meta.get("content_safety") == "adult" or adult_block_hit
+    social_hit = _domain_hit(host, domain_sets.get("social_block", frozenset()))
+    gambling_hit = _domain_hit(host, domain_sets.get("gambling_block", frozenset()))
+    blocked = (
+        meta.get("content_safety") == "adult"
+        or adult_block_hit
+        or social_hit
+        or gambling_hit
+    )
+    category_hits = {
+        category: _domain_hit(host, domain_sets.get(f"{category}_allow", frozenset()))
+        for category in (
+            "video",
+            "reference",
+            "tech",
+            "finance",
+            "health",
+            "government",
+            "travel",
+            "forums",
+        )
+    }
 
     price = meta.get("price")
     has_price = isinstance(price, (int, float)) and not isinstance(price, bool)
@@ -761,8 +814,12 @@ def classify_site_category(
     )
 
     candidates: list[tuple[str, float]] = []
-    if kids_hit and not adult:
+    if kids_hit and not blocked:
         candidates.append(("kids", 1.0))
+    if social_hit:
+        candidates.append(("social", 1.0))
+    if gambling_hit:
+        candidates.append(("gambling", 1.0))
     if shopping_hit:
         candidates.append(("shopping", 1.0))
     elif has_price and has_avail_or_currency_or_brand:
@@ -773,6 +830,9 @@ def classify_site_category(
         candidates.append(("shopping", 0.6))
     elif has_price or (has_product and has_brand):
         candidates.append(("shopping", 0.7))
+    for category, hit in category_hits.items():
+        if hit:
+            candidates.append((category, 1.0))
     if news_hit:
         candidates.append(("news", 0.9))
     elif has_article and (has_section or (has_author and has_published)):
@@ -780,8 +840,24 @@ def classify_site_category(
     elif has_article:
         candidates.append(("news", 0.6))
 
-    # Highest confidence wins; ties break kids > shopping > news.
-    order = {"kids": 0, "shopping": 1, "news": 2}
+    # Highest confidence wins; ties break kids > shopping > news >
+    # gambling > social > video > reference > tech > finance > health >
+    # government > travel > forums.
+    order = {
+        "kids": 0,
+        "shopping": 1,
+        "news": 2,
+        "gambling": 3,
+        "social": 4,
+        "video": 5,
+        "reference": 6,
+        "tech": 7,
+        "finance": 8,
+        "health": 9,
+        "government": 10,
+        "travel": 11,
+        "forums": 12,
+    }
     best: tuple[str, float] | None = None
     for category, confidence in candidates:
         if best is None:

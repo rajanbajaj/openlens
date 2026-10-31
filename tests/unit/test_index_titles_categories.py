@@ -248,6 +248,76 @@ def test_news_ladder() -> None:
     ) == ("news", 0.6)
 
 
+NEW_DOMAINS: dict[str, frozenset[str]] = {
+    **DOMAINS,
+    "video_allow": frozenset({"video.example"}),
+    "reference_allow": frozenset({"ref.example"}),
+    "tech_allow": frozenset({"tech.example"}),
+    "finance_allow": frozenset({"money.example"}),
+    "health_allow": frozenset({"health.example"}),
+    "government_allow": frozenset({"gov.example", "gov.in"}),
+    "travel_allow": frozenset({"travel.example"}),
+    "forums_allow": frozenset({"forum.example"}),
+    "social_block": frozenset({"social.example"}),
+    "gambling_block": frozenset({"bets.example"}),
+}
+
+
+def test_new_allow_lists_default_their_category() -> None:
+    cases = {
+        "https://video.example/watch": "video",
+        "https://ref.example/wiki": "reference",
+        "https://tech.example/docs": "tech",
+        "https://money.example/market": "finance",
+        "https://health.example/guide": "health",
+        "https://portal.gov.example/service": "government",
+        "https://agency.gov.in/notice": "government",
+        "https://travel.example/flights": "travel",
+        "https://forum.example/t/1": "forums",
+    }
+    for url, category in cases.items():
+        verdict = classify_site_category(url, {}, domains=NEW_DOMAINS)
+        assert (verdict["site_category"], verdict["site_category_confidence"]) == (
+            category,
+            1.0,
+        ), url
+
+
+def test_social_gambling_blocks_label_and_veto_kids() -> None:
+    social = classify_site_category("https://social.example/u", {}, domains=NEW_DOMAINS)
+    assert (social["site_category"], social["site_category_confidence"]) == (
+        "social",
+        1.0,
+    )
+    gambling = classify_site_category(
+        "https://bets.example/play", {}, domains=NEW_DOMAINS
+    )
+    assert (gambling["site_category"], gambling["site_category_confidence"]) == (
+        "gambling",
+        1.0,
+    )
+    vetoed = classify_site_category(
+        "https://kids.example/game",
+        {},
+        domains={
+            **NEW_DOMAINS,
+            "kids_allow": frozenset({"kids.example"}),
+            "social_block": frozenset({"kids.example"}),
+        },
+    )
+    assert vetoed["site_category"] != "kids"
+
+
+def test_travel_domain_beats_article_news_signal() -> None:
+    verdict = classify_site_category(
+        "https://travel.example/guide",
+        {"author": "A", "published": "2024-01-01"},
+        domains=NEW_DOMAINS,
+        has_article=True,
+    )
+    assert verdict["site_category"] == "travel"
+
+
 def test_kids_fail_closed() -> None:
     allowed = classify_site_category("https://kids.example/game", {}, domains=DOMAINS)
     assert (allowed["site_category"], allowed["site_category_confidence"]) == (
@@ -289,10 +359,24 @@ def test_category_domains_yaml_loads() -> None:
         "news_allow",
         "kids_allow",
         "adult_block",
+        "social_block",
+        "gambling_block",
+        "video_allow",
+        "reference_allow",
+        "tech_allow",
+        "finance_allow",
+        "health_allow",
+        "government_allow",
+        "travel_allow",
+        "forums_allow",
     }
     assert "amazon.com" in domains["shopping_allow"]
     assert "bbc.com" in domains["news_allow"]
     assert "pbskids.org" in domains["kids_allow"]
+    assert "youtube.com" in domains["video_allow"]
+    assert "wikipedia.org" in domains["reference_allow"]
+    assert "github.com" in domains["tech_allow"]
+    assert "reddit.com" in domains["social_block"]
 
 
 # --- ranking-key parity -------------------------------------------------------
