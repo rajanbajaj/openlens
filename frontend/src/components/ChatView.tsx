@@ -164,9 +164,7 @@ export function CitationChips({ citations }: { citations: ChatCitation[] }) {
 export function ChatTraceView({ trace }: { trace: ChatTrace | null | undefined }) {
   if (!trace || Object.keys(trace).length === 0) return null;
   const filterKeys =
-    trace.filters && Object.keys(trace.filters).length > 0
-      ? Object.keys(trace.filters).sort()
-      : [];
+    trace.filters && Object.keys(trace.filters).length > 0 ? Object.keys(trace.filters).sort() : [];
   return (
     <div data-testid="chat-trace" className="mt-ol-s">
       <h4 className="mt-ol-m mb-ol-s text-ol-m">Agent trace</h4>
@@ -194,10 +192,7 @@ export function ChatTraceView({ trace }: { trace: ChatTrace | null | undefined }
         </dl>
       ) : null}
       {trace.steps && trace.steps.length > 0 ? (
-        <ol
-          data-testid="chat-trace-steps"
-          className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-        >
+        <ol data-testid="chat-trace-steps" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
           {trace.steps.map((step, index) => (
             <li key={`${step.kind ?? 'step'}-${index}`}>
               {step.kind ? <Badge>{step.kind}</Badge> : null} {step.detail ?? step.kind ?? 'step'}
@@ -206,10 +201,7 @@ export function ChatTraceView({ trace }: { trace: ChatTrace | null | undefined }
         </ol>
       ) : null}
       {trace.fallbacks && trace.fallbacks.length > 0 ? (
-        <ul
-          data-testid="chat-trace-fallbacks"
-          className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-        >
+        <ul data-testid="chat-trace-fallbacks" className="flex flex-col gap-ol-xs my-ol-s pl-ol-m">
           {trace.fallbacks.map((fallback) => (
             <li key={fallback}>
               <Badge>Fallback</Badge> {fallback}
@@ -299,8 +291,8 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
     <section aria-label="AI chat" data-testid="chat-view" className="flex min-w-0 flex-col gap-4">
       {transcript.length === 0 && !loading ? (
         <p data-testid="chat-empty" className="text-ol-s text-ol-ink-soft m-0">
-          Ask a question in plain language. Answers are grounded in retrieved sources — every
-          claim links back with a [n] citation chip you can open in a new tab.
+          Ask a question in plain language. Answers are grounded in retrieved sources — every claim
+          links back with a [n] citation chip you can open in a new tab.
         </p>
       ) : null}
       <div
@@ -393,7 +385,11 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
           ),
         )}
         {loading ? (
-          <p data-testid="chat-loading" aria-live="polite" className="text-ol-s text-ol-ink-soft m-0">
+          <p
+            data-testid="chat-loading"
+            aria-live="polite"
+            className="text-ol-s text-ol-ink-soft m-0"
+          >
             {CHAT_LOADING_STAGES[stage] ?? CHAT_LOADING_STAGES[0]}
           </p>
         ) : null}

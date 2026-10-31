@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildChatBody,
-  clampChatLimit,
-  validateChatMessage,
-} from './chat.ts';
+import { buildChatBody, clampChatLimit, validateChatMessage } from './chat.ts';
 import { isChatResponse, readChatResponse } from './guard.ts';
 
 const HIT = {

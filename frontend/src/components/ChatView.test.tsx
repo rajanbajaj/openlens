@@ -175,10 +175,7 @@ describe('ChatView persistence', () => {
     unmount();
     cleanup();
 
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('must not fetch on reload')),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('must not fetch on reload')));
     render(<ChatView />);
     // Reloaded from storage: no fetch, transcript intact.
     expect(screen.getByTestId('chat-message-user')).toHaveTextContent('remember me?');

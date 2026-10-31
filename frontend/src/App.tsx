@@ -352,9 +352,7 @@ export default function App() {
                 <p aria-live="polite" data-testid="result-announcer" className="ol-sr-only sr-only">
                   {announcement}
                 </p>
-                {view === 'chat' ? (
-                  <ChatView onFallbackSearch={handleChatFallbackSearch} />
-                ) : null}
+                {view === 'chat' ? <ChatView onFallbackSearch={handleChatFallbackSearch} /> : null}
                 {view === 'search' && loading ? <LoadingState /> : null}
                 {view === 'search' && !loading && error ? (
                   <ErrorState code={error.code} message={error.message} />
