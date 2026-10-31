@@ -221,33 +221,73 @@ def _related_tokens(text: str) -> set[str]:
     return expanded
 
 
+def _count_weights(counts: Any) -> dict[str, int]:
+    """Best-effort coercion of a count map to casefolded weights."""
+    if not isinstance(counts, Mapping):
+        return {}
+    weights: dict[str, int] = {}
+    for raw_candidate, raw_count in counts.items():
+        if not isinstance(raw_candidate, str) or not raw_candidate.strip():
+            continue
+        if not isinstance(raw_count, (int, float)) or isinstance(raw_count, bool):
+            continue
+        key = raw_candidate.strip().casefold()
+        if key not in weights:
+            weights[key] = int(raw_count)
+    return weights
+
+
 def related_queries(
-    query: Any, counts: Any, *, limit: int = _DEFAULT_LIMIT
+    query: Any,
+    counts: Any = None,
+    *,
+    vocabulary: Any = None,
+    limit: int = _DEFAULT_LIMIT,
 ) -> list[str]:
     """Related queries sharing a token with ``query``, ranked by count.
 
-    ``counts`` maps past query text to observed frequency. Candidates must
-    share at least one token with the input (normalized-token overlap:
-    case and punctuation insensitive, hyphen- and synonym-aware) and must
-    not equal the input itself. Ordered by count (descending), then
-    alphabetically for determinism.
+    When ``vocabulary`` (live index terms) is supplied, candidates come
+    from vocabulary overlap with the input (normalized-token overlap:
+    case and punctuation insensitive, hyphen- and synonym-aware,
+    excluding the input itself); ``counts`` then only orders them
+    (missing entries weigh 0), so live vocabulary is preferred and
+    static counts are just a fallback ordering. Without a vocabulary
+    the legacy path applies: candidates come from the ``counts`` map
+    itself (past query text to observed frequency), ordered by count
+    (descending), then alphabetically for determinism.
     """
     cleaned = _clean_query(query)
     if cleaned is None:
         return []
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         return []
+    tokens = _related_tokens(cleaned)
+    folded = cleaned.casefold()
+    vocab_terms = _clean_terms(vocabulary) if vocabulary is not None else []
+    if vocab_terms:
+        weights = _count_weights(counts)
+        seen: set[str] = set()
+        candidates: list[tuple[int, str]] = []
+        for term in vocab_terms:
+            key = term.casefold()
+            if key in seen or key == folded:
+                continue
+            seen.add(key)
+            if tokens.isdisjoint(_related_tokens(term)):
+                continue
+            candidates.append((weights.get(key, 0), term))
+        candidates.sort(key=lambda item: (-item[0], item[1].casefold()))
+        return [candidate for _, candidate in candidates[:limit]]
     if not isinstance(counts, Mapping):
         return []
-    tokens = _related_tokens(cleaned)
-    candidates: list[tuple[int, str]] = []
+    candidates = []
     for raw_candidate, raw_count in counts.items():
         if not isinstance(raw_candidate, str) or not raw_candidate.strip():
             continue
         if not isinstance(raw_count, (int, float)) or isinstance(raw_count, bool):
             continue
         candidate = raw_candidate.strip()
-        if candidate.casefold() == cleaned.casefold():
+        if candidate.casefold() == folded:
             continue
         if tokens.isdisjoint(_related_tokens(candidate)):
             continue

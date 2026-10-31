@@ -174,22 +174,28 @@ class CustomIndexProvider(SearchProvider):
         """Best-effort live index vocabulary for query assistance.
 
         Returns distinct title words (length > 2) plus full titles from
-        the SQLite store, sorted case-insensitively for determinism and
-        capped at ``limit``. Any failure (non-SQLite backend, closed
+        any backing store exposing ``list_titles`` (SQLite, Postgres,
+        MySQL, ...), sorted case-insensitively for determinism and
+        capped at ``limit``. Any failure (store without the hook, closed
         store) yields ``[]`` so the API layer falls back to its static
         vocabulary instead of failing the request.
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             return []
         try:
-            if not isinstance(self._repository, DocumentRepository):
+            hook = getattr(self._repository, "list_titles", None)
+            if not callable(hook):
                 return []
-            titles = self._repository.list_titles(limit=limit)
+            titles = hook(limit=limit)
         except Exception:
+            return []
+        if not isinstance(titles, list):
             return []
         seen: set[str] = set()
         terms: list[str] = []
         for title in titles:
+            if not isinstance(title, str):
+                continue
             for candidate in [title, *title.split()]:
                 cleaned = candidate.strip()
                 if len(cleaned) <= 2:

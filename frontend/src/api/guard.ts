@@ -5,6 +5,8 @@
  */
 
 import type {
+  AgentTrace,
+  AgentTraceStep,
   AiCitation,
   CacheStatus,
   Diagnostics,
@@ -169,6 +171,66 @@ export function readSpelling(response: unknown): string | null {
   if (!isRecord(response)) return null;
   const spelling = response['spelling'];
   return typeof spelling === 'string' && spelling !== '' ? spelling : null;
+}
+
+/**
+ * Narrow one raw agentic-planning step: keep entries with at least
+ * one usable string field, dropping malformed entries. Returns
+ * `null` when the entry carries nothing renderable.
+ */
+function readAgentTraceStep(value: unknown): AgentTraceStep | null {
+  if (!isRecord(value)) return null;
+  const step: AgentTraceStep = {};
+  if (typeof value['kind'] === 'string' && value['kind'] !== '') step.kind = value['kind'];
+  if (typeof value['detail'] === 'string' && value['detail'] !== '') step.detail = value['detail'];
+  return step.kind !== undefined || step.detail !== undefined ? step : null;
+}
+
+/**
+ * Narrow a raw `metadata.agent_trace` value into a renderable
+ * {@link AgentTrace}, or `null` when absent or malformed. Every
+ * field is optional: partial traces render only the fields present,
+ * and non-string list entries are dropped instead of crashing.
+ */
+function narrowAgentTrace(value: unknown): AgentTrace | null {
+  if (!isRecord(value)) return null;
+  const trace: AgentTrace = {};
+  if (typeof value['rewritten_query'] === 'string' && value['rewritten_query'] !== '') {
+    trace.rewritten_query = value['rewritten_query'];
+  }
+  if (isRecord(value['filters'])) trace.filters = value['filters'];
+  if (Array.isArray(value['steps'])) {
+    const steps = value['steps']
+      .map(readAgentTraceStep)
+      .filter((s): s is AgentTraceStep => s !== null);
+    if (steps.length > 0) trace.steps = steps;
+  }
+  if (Array.isArray(value['fallbacks'])) {
+    const fallbacks = value['fallbacks'].filter(
+      (f): f is string => typeof f === 'string' && f !== '',
+    );
+    if (fallbacks.length > 0) trace.fallbacks = fallbacks;
+  }
+  if (
+    typeof value['model_calls'] === 'number' &&
+    Number.isInteger(value['model_calls']) &&
+    value['model_calls'] >= 0
+  ) {
+    trace.model_calls = value['model_calls'];
+  }
+  return Object.keys(trace).length > 0 ? trace : null;
+}
+
+/**
+ * `metadata.agent_trace` from a search payload, or `null` when the
+ * backend omitted it (non-agent modes, older envelopes) or it is
+ * malformed. Never throws, so a bad trace renders as absent.
+ */
+export function readAgentTrace(response: unknown): AgentTrace | null {
+  if (!isRecord(response)) return null;
+  const metadata = response['metadata'];
+  if (!isRecord(metadata)) return null;
+  return narrowAgentTrace(metadata['agent_trace']);
 }
 
 /** `next_offset`, or `null` when absent, null, or malformed. */

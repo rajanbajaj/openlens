@@ -2,7 +2,14 @@ import type { SearchMode } from '../api/types.ts';
 import { Select } from './ui/Select.tsx';
 
 /** Modes offered by the selector, in display order. `default` first. */
-export const SEARCH_MODES: SearchMode[] = ['default', 'child-safe', 'news', 'shopping', 'travel'];
+export const SEARCH_MODES: SearchMode[] = [
+  'default',
+  'child-safe',
+  'news',
+  'shopping',
+  'travel',
+  'agent',
+];
 
 export interface ModeSelectorProps {
   /** Currently selected mode. Defaults to `"default"`. */
@@ -21,10 +28,11 @@ function isSearchMode(value: string): value is SearchMode {
 
 /**
  * Mode selector for the search request (`default`, `child-safe`,
- * `news`, `shopping`, `travel`). Controlled by the parent, which
- * forwards the selection as `mode` in the request body. Mounted once
- * per page — either in the empty-state hero or in the post-search
- * sticky header, reusing the same component.
+ * `news`, `shopping`, `travel`, `agent`). Controlled by the parent, which
+ * forwards the selection as `mode` in the request body; the parent
+ * re-runs page 1 on every change, so `agent` needs no special path.
+ * Mounted once per page — either in the empty-state hero or in the
+ * post-search sticky header, reusing the same component.
  */
 export default function ModeSelector({
   mode,

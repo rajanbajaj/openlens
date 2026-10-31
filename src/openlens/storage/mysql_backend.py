@@ -498,6 +498,43 @@ class MySQLDocumentStore(DocumentStore):
                 ) from exc
         return [_row_to_document(row) for row in rows]
 
+    def list_titles(self, limit: int = 500) -> list[str]:
+        """Return up to ``limit`` document titles (suggest-vocabulary source).
+
+        Best-effort read for the query-assistance path: a closed store or
+        any failure yields ``[]`` rather than raising, so suggest
+        degrades to its static fallback instead of failing the request.
+        Mirrors ``storage/repository.py::DocumentRepository.list_titles``.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        with self._state_lock:
+            if self._closed:
+                return []
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    # Validated table name; limit is a bound %s parameter.
+                    cur.execute(
+                        "SELECT title FROM `" + self._table + "` LIMIT %s",  # noqa: S608
+                        (limit,),
+                    )
+                    rows = cur.fetchall()
+        except Exception:
+            return []
+        titles: list[str] = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                value = row.get("title")
+            else:
+                try:
+                    value = row[0]
+                except (IndexError, TypeError):
+                    continue
+            if isinstance(value, str) and value:
+                titles.append(value)
+        return titles
+
     def search(
         self, fts_query: str, limit: int = 10, offset: int = 0
     ) -> tuple[list[tuple[Document, float]], int]:

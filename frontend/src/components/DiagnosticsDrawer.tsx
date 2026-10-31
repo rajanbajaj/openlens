@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Diagnostics } from '../api/types';
+import type { AgentTrace, Diagnostics } from '../api/types';
 import { summarizePluginExecution } from '../api/enrichments.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
@@ -8,6 +8,12 @@ import { GlassPanel } from './ui/GlassPanel.tsx';
 
 export interface DiagnosticsDrawerProps {
   diagnostics: Diagnostics;
+  /**
+   * Narrowed agentic-mode trace (`metadata.agent_trace`, via
+   * `readAgentTrace`). Null outside agent mode or when the backend
+   * omitted it — the section renders nothing then.
+   */
+  agentTrace?: AgentTrace | null;
 }
 
 /** Copy text to the clipboard; false when the API is unavailable. */
@@ -39,11 +45,12 @@ function cacheLabel(diagnostics: Diagnostics): string | null {
 /**
  * Diagnostics rail: request id (copyable), provider latency / result /
  * cost timeline, plugin executions with stage/status/latency, fallback
- * indicator, cache lookup badge, query provenance, and errors. Raw
- * metadata stays behind an explicit developer-details disclosure; every
- * optional key degrades gracefully when the backend omits it.
+ * indicator, cache lookup badge, query provenance, agent trace, and
+ * errors. Raw metadata stays behind an explicit developer-details
+ * disclosure; every optional key degrades gracefully when the backend
+ * omits it.
  */
-export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
+export function DiagnosticsDrawer({ diagnostics, agentTrace = null }: DiagnosticsDrawerProps) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const providers = Object.keys(diagnostics.provider_latencies_ms).sort();
@@ -51,6 +58,10 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
   const requestId = diagnostics.request_id?.trim() ? diagnostics.request_id : null;
   const provenance = diagnostics.query;
   const cache = cacheLabel(diagnostics);
+  const traceFilters =
+    agentTrace?.filters && Object.keys(agentTrace.filters).length > 0
+      ? Object.keys(agentTrace.filters).sort()
+      : [];
 
   async function handleCopy() {
     if (!requestId) return;
@@ -147,6 +158,61 @@ export function DiagnosticsDrawer({ diagnostics }: DiagnosticsDrawerProps) {
                 </div>
               ) : null}
             </dl>
+          </>
+        ) : null}
+        {agentTrace ? (
+          <>
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Agent trace</h4>
+            <div data-testid="diagnostics-agent-trace">
+              {agentTrace.rewritten_query ? (
+                <p data-testid="diagnostics-agent-rewritten" className="my-ol-s">
+                  Rewritten query: {agentTrace.rewritten_query}
+                </p>
+              ) : null}
+              {agentTrace.model_calls !== undefined ? (
+                <p data-testid="diagnostics-agent-model-calls" className="my-ol-s">
+                  Model calls: {agentTrace.model_calls}
+                </p>
+              ) : null}
+              {traceFilters.length > 0 && agentTrace.filters ? (
+                <dl
+                  data-testid="diagnostics-agent-filters"
+                  className="grid grid-cols-[auto_1fr] gap-x-ol-m gap-y-ol-xs m-0 my-ol-s"
+                >
+                  {traceFilters.map((key) => (
+                    <div key={key} className="contents">
+                      <dt>{key}</dt>
+                      <dd>{JSON.stringify(agentTrace.filters?.[key])}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+              {agentTrace.steps && agentTrace.steps.length > 0 ? (
+                <ol
+                  data-testid="diagnostics-agent-steps"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {agentTrace.steps.map((step, index) => (
+                    <li key={`${step.kind ?? 'step'}-${index}`}>
+                      {step.kind ? <Badge>{step.kind}</Badge> : null}{' '}
+                      {step.detail ?? step.kind ?? 'step'}
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+              {agentTrace.fallbacks && agentTrace.fallbacks.length > 0 ? (
+                <ul
+                  data-testid="diagnostics-agent-fallbacks"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {agentTrace.fallbacks.map((fallback) => (
+                    <li key={fallback}>
+                      <Badge>Fallback</Badge> {fallback}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           </>
         ) : null}
         <h4 className="mt-ol-m mb-ol-s text-ol-m">Errors ({diagnostics.errors.length})</h4>

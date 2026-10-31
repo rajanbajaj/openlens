@@ -35,6 +35,7 @@ from openlens.ranking.profiles import (
     profile_from_dict,
 )
 from openlens.ranking.ranker import Ranker
+from openlens.retrieval.agent import AGENT_MODE, run_agent_search
 from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 
 #: Display bound for the per-request ``query`` provenance entry recorded in
@@ -520,6 +521,10 @@ class SearchEngine(Engine):
             context.metadata["cache"] = {"status": BACKEND_ERROR}
 
     def search(self, request: SearchRequest) -> SearchResponse:
+        # Agentic mode: model-guided rewrite + single-tool search. Every
+        # other mode falls through byte-identical to the plain pipeline.
+        if request.mode == AGENT_MODE:
+            return run_agent_search(request, self)
         # Pre-retrieval query stage: normalize -> intent -> expand ahead of
         # provider selection. Explicit mode always wins (the processor
         # records the suggestion separately); otherwise the suggested mode

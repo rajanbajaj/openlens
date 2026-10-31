@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readAgentTrace } from '../api/guard.ts';
 import type { Diagnostics } from '../api/types.ts';
 import { DiagnosticsDrawer } from './DiagnosticsDrawer.tsx';
 
@@ -140,5 +141,95 @@ describe('DiagnosticsDrawer rail', () => {
     expect(screen.queryByTestId('diagnostics-request-id')).not.toBeInTheDocument();
     expect(screen.getByTestId('diagnostics-plugins')).toHaveTextContent('unknown');
     expect(screen.queryByTestId('diagnostics-cache')).not.toBeInTheDocument();
+  });
+});
+
+const FULL_TRACE = {
+  rewritten_query: 'cheap bluetooth headphones',
+  filters: { max_price: 50, exclude_sponsored: true },
+  steps: [
+    { kind: 'rewrite', detail: 'expanded with bluetooth' },
+    { kind: 'retrieve', detail: 'queried 3 providers' },
+  ],
+  fallbacks: ['provider mock timed out, used cache'],
+  model_calls: 2,
+};
+
+/**
+ * Render the rail with a raw `metadata.agent_trace` value narrowed
+ * through the production `readAgentTrace` path, then expand.
+ */
+function renderOpenWithTrace(diagnostics: Diagnostics, rawTrace: unknown) {
+  const agentTrace = readAgentTrace({ metadata: { agent_trace: rawTrace } });
+  render(<DiagnosticsDrawer diagnostics={diagnostics} agentTrace={agentTrace} />);
+  fireEvent.click(screen.getByRole('button', { name: /show diagnostics/i }));
+}
+
+describe('DiagnosticsDrawer agent trace', () => {
+  it('renders the full trace when the backend reports one', () => {
+    renderOpenWithTrace(FULL_DIAGNOSTICS, FULL_TRACE);
+
+    expect(screen.getByTestId('diagnostics-agent-trace')).toBeInTheDocument();
+    expect(screen.getByTestId('diagnostics-agent-rewritten')).toHaveTextContent(
+      'cheap bluetooth headphones',
+    );
+    const steps = screen.getByTestId('diagnostics-agent-steps');
+    expect(steps).toHaveTextContent('rewrite');
+    expect(steps).toHaveTextContent('expanded with bluetooth');
+    expect(steps).toHaveTextContent('retrieve');
+    expect(screen.getByTestId('diagnostics-agent-fallbacks')).toHaveTextContent(
+      'provider mock timed out, used cache',
+    );
+    expect(screen.getByTestId('diagnostics-agent-model-calls')).toHaveTextContent('Model calls: 2');
+    const filters = screen.getByTestId('diagnostics-agent-filters');
+    expect(filters).toHaveTextContent('max_price');
+    expect(filters).toHaveTextContent('50');
+  });
+
+  it('renders nothing trace-related when the trace is absent (non-agent modes)', () => {
+    renderOpen(SPARSE_DIAGNOSTICS);
+
+    expect(screen.queryByTestId('diagnostics-agent-trace')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-rewritten')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-steps')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-fallbacks')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-model-calls')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-filters')).not.toBeInTheDocument();
+  });
+
+  it('renders only the reported fields on a partial trace', () => {
+    renderOpenWithTrace(SPARSE_DIAGNOSTICS, {
+      rewritten_query: 'cheap bluetooth headphones',
+      model_calls: 0,
+    });
+
+    expect(screen.getByTestId('diagnostics-agent-trace')).toBeInTheDocument();
+    expect(screen.getByTestId('diagnostics-agent-rewritten')).toHaveTextContent(
+      'cheap bluetooth headphones',
+    );
+    expect(screen.getByTestId('diagnostics-agent-model-calls')).toHaveTextContent('Model calls: 0');
+    expect(screen.queryByTestId('diagnostics-agent-steps')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-fallbacks')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-filters')).not.toBeInTheDocument();
+  });
+
+  it('renders a trace with only steps and degrades malformed entries', () => {
+    renderOpenWithTrace(SPARSE_DIAGNOSTICS, {
+      steps: [{ kind: 'retrieve' }, { detail: 'no kind here' }, {}, 42, 'nope'],
+    });
+
+    const steps = screen.getByTestId('diagnostics-agent-steps');
+    expect(steps).toHaveTextContent('retrieve');
+    expect(steps).toHaveTextContent('no kind here');
+    expect(screen.queryByTestId('diagnostics-agent-rewritten')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('diagnostics-agent-fallbacks')).not.toBeInTheDocument();
+  });
+
+  it('treats empty or malformed traces as absent', () => {
+    for (const trace of [{}, { steps: [], fallbacks: [] }, 'trace', 42, { steps: [{}] }]) {
+      cleanup();
+      renderOpenWithTrace(SPARSE_DIAGNOSTICS, trace);
+      expect(screen.queryByTestId('diagnostics-agent-trace')).not.toBeInTheDocument();
+    }
   });
 });

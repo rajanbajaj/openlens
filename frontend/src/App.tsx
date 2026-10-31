@@ -18,7 +18,7 @@ import type {
   SearchResponse,
   SearchResult,
 } from './api/types.ts';
-import { readRelated, readSpelling } from './api/guard.ts';
+import { readAgentTrace, readRelated, readSpelling } from './api/guard.ts';
 import {
   loadSavedResults,
   recordRecentSearch,
@@ -359,7 +359,10 @@ export default function App() {
               <div className="ol-shell-rail min-w-0">
                 {!loading && !error && response ? (
                   <Suspense fallback={<p>Loading diagnostics…</p>}>
-                    <DiagnosticsRail diagnostics={response.diagnostics} />
+                    <DiagnosticsRail
+                      diagnostics={response.diagnostics}
+                      agentTrace={readAgentTrace(response)}
+                    />
                   </Suspense>
                 ) : null}
               </div>

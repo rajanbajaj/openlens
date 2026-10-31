@@ -121,6 +121,9 @@ class DiagnosticsSchema(BaseModel):
     query: dict[str, Any] = Field(default_factory=dict)
     request_id: str = ""
     cache: dict[str, str] = Field(default_factory=dict)
+    # Agentic search trace (mode="agent" only; {} otherwise):
+    # {rewritten_query, filters, steps, fallbacks, model_calls}.
+    agent_trace: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_core(cls, diagnostics: dict[str, Any]) -> "DiagnosticsSchema":
@@ -135,6 +138,11 @@ class DiagnosticsSchema(BaseModel):
             plugin_executions=list(diagnostics.get("plugin_executions", [])),
             errors=list(diagnostics.get("errors", [])),
             query=dict(query_entry) if isinstance(query_entry, dict) else {},
+            agent_trace=(
+                dict(diagnostics["agent_trace"])
+                if isinstance(diagnostics.get("agent_trace"), dict)
+                else {}
+            ),
             request_id=str(diagnostics.get("request_id", "")),
             cache={
                 str(key): str(value)

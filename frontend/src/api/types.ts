@@ -7,7 +7,7 @@
  */
 
 /** Supported search modes (plan contract; backend validates non-blank). */
-export type SearchMode = 'default' | 'child-safe' | 'news' | 'shopping' | 'travel';
+export type SearchMode = 'default' | 'child-safe' | 'news' | 'shopping' | 'travel' | 'agent';
 
 /** Per-query provider preferences for federated selection (T13). */
 export interface ProviderPrefs {
@@ -106,6 +106,43 @@ export interface AiCitation {
   url?: string | null;
 }
 
+/**
+ * One agentic-planning step inside an agent trace. Every field is
+ * optional so malformed entries degrade instead of crashing; the
+ * reader keeps entries with at least one usable string field.
+ */
+export interface AgentTraceStep {
+  /** Step kind (e.g. "rewrite", "retrieve", "rerank"); absent when unreported. */
+  kind?: string;
+  /** Human-readable step detail; absent when unreported. */
+  detail?: string;
+}
+
+/**
+ * Agentic-mode planning trace (`metadata.agent_trace` on the search
+ * response envelope). Every field is optional: the backend omits the
+ * whole key outside agent mode, and partial traces render only the
+ * fields present.
+ */
+export interface AgentTrace {
+  /** Query rewritten by the agent planner; absent when unreported. */
+  rewritten_query?: string;
+  /** Filters the agent applied; absent when unreported. */
+  filters?: Record<string, unknown>;
+  /** Ordered planning/execution steps; absent when unreported. */
+  steps?: AgentTraceStep[];
+  /** Fallback notices (e.g. degraded providers); absent when unreported. */
+  fallbacks?: string[];
+  /** Model call count; absent when unreported. */
+  model_calls?: number;
+}
+
+/** Opaque top-level response metadata; new keys degrade to absent. */
+export interface SearchResponseMetadata {
+  /** Agentic-mode trace; absent outside agent mode or on older envelopes. */
+  agent_trace?: AgentTrace;
+}
+
 /** POST /api/v1/search response body. */
 export interface SearchResponse {
   query: string;
@@ -126,6 +163,8 @@ export interface SearchResponse {
   related?: string[];
   applied_filters: string[];
   diagnostics: Diagnostics;
+  /** Opaque response metadata (carries `agent_trace` in agent mode). */
+  metadata?: SearchResponseMetadata;
 }
 
 /** GET /api/v1/suggest response body (`SuggestResponseSchema`). */

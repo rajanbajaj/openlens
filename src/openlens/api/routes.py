@@ -319,7 +319,12 @@ def _assistance(
     except Exception:
         spelling = None
     try:
-        related = related_queries(query, _STATIC_QUERY_COUNTS, limit=ASSISTANCE_LIMIT)
+        related = related_queries(
+            query,
+            _STATIC_QUERY_COUNTS,
+            vocabulary=terms,
+            limit=ASSISTANCE_LIMIT,
+        )
     except Exception:
         related = []
     return suggestions, spelling, related
