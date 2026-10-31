@@ -406,6 +406,47 @@ class ProviderManager:
         collected.sort(key=str.casefold)
         return collected[:limit]
 
+    def fetch_documents(self, doc_ids: list[str]) -> dict[str, Any]:
+        """Bulk-fetch documents by id (read-only agent grounding).
+
+        First provider hook that resolves anything wins; misses degrade
+        to ``{}``. Never raises.
+        """
+        if not isinstance(doc_ids, list):
+            return {}
+        wanted = [d for d in doc_ids if isinstance(d, str) and d][:10]
+        if not wanted:
+            return {}
+        for name in sorted(self._providers):
+            hook = getattr(self._providers[name], "fetch_documents", None)
+            if not callable(hook):
+                continue
+            found: Any = None
+            with suppress(Exception):
+                found = hook(list(wanted))
+            if isinstance(found, dict) and found:
+                return {k: v for k, v in found.items() if isinstance(k, str)}
+        return {}
+
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        """(host, doc count) pairs, most-indexed first (read-only).
+
+        First provider hook with a non-empty answer wins. Never raises:
+        failures degrade to ``[]``.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        for name in sorted(self._providers):
+            hook = getattr(self._providers[name], "list_domains", None)
+            if not callable(hook):
+                continue
+            pairs: Any = None
+            with suppress(Exception):
+                pairs = hook(limit=limit)
+            if isinstance(pairs, list) and pairs:
+                return pairs
+        return []
+
     def _select_providers(self, prefs: Any) -> list[str]:
         """Resolve per-query provider preferences to entry names.
 

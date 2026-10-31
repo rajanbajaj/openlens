@@ -1,8 +1,9 @@
 """Agentic search mode (``mode="agent"``): model-guided rewrite + tool search.
 
 Tool-using agent built on existing blocks only (chat turns in
-:func:`run_agent_chat` may also answer small-talk directly, list indexed
-domains, or fetch full source texts before summarizing):
+:func:`run_agent_chat` may also answer small-talk directly, describe their
+own capabilities, list indexed domains, or fetch full source texts before
+summarizing):
 
 * step 1 — :meth:`ModelManager.complete` with a constrained prompt that
   demands strict JSON ``{"query": str, "filters": dict, "mode": str}``;
@@ -356,10 +357,36 @@ def _normalize_chat_turns(history: Any) -> list[tuple[str, str]]:
     return turns[-MAX_CHAT_HISTORY_TURNS:]
 
 
+#: Plan-selected tools beyond the default index search. ``compare`` and
+#: ``prices`` share the search+fetch path but synthesize with a focused
+#: prompt (still two model calls); ``trust`` and ``safety`` answer
+#: deterministically from indexed signals (one model call, the rewrite).
+_PLAN_TOOLS = (
+    "search",
+    "domains",
+    "capabilities",
+    "compare",
+    "prices",
+    "trust",
+    "safety",
+)
+
+
 def _plan_tool(data: dict[str, Any]) -> str:
     """Which agent tool the plan selects; unknown values mean search."""
     tool = data.get("tool")
-    return tool if tool == "domains" else "search"
+    return tool if tool in _PLAN_TOOLS else "search"
+
+
+def _capabilities_answer() -> str:
+    """Canned tool card: what the assistant itself can do (no search)."""
+    return (
+        "I can search this platform's index (including news, shopping, "
+        "travel, and child-safe modes); pull the full text of the top "
+        "results and summarize them with cited sources; and list which "
+        "domains are indexed here. I answer only from indexed sources — "
+        "if the index lacks it, I'll say so. Ask me a question to begin."
+    )
 
 
 def _fetch_source_lines(
@@ -445,6 +472,89 @@ def _domains_answer(domains: list[tuple[str, int]]) -> str:
     return f"Indexed domains ({len(domains)}): {parts}{suffix}"
 
 
+def _hit_metadata(hit: Any) -> dict[str, Any]:
+    metadata = getattr(hit, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _hit_warnings(hit: Any) -> list[str]:
+    warnings = getattr(hit, "warnings", None)
+    if not isinstance(warnings, list):
+        return []
+    return [w for w in warnings if isinstance(w, str) and w.strip()]
+
+
+def _recorded_signal(hit: Any, name: str) -> tuple[bool, float]:
+    """(recorded, value) for a 0..1 indexed signal; absent when unrecorded."""
+    signals = _hit_metadata(hit).get("signals")
+    if not isinstance(signals, dict) or name not in signals:
+        return False, 0.0
+    try:
+        return True, float(signals[name])
+    except (TypeError, ValueError):
+        return False, 0.0
+
+
+def _signal_band(recorded: bool, value: float) -> str:
+    if not recorded:
+        return "not recorded"
+    if value >= 0.75:
+        return "strong"
+    if value <= 0.25:
+        return "weak"
+    return "neutral"
+
+
+def _hit_label(hit: Any, index: int) -> str:
+    title = getattr(hit, "title", "")
+    title = title if isinstance(title, str) and title else f"result {index}"
+    return f"[{index}] {title}"
+
+
+def _trust_answer(hits: list[Any]) -> str:
+    """Deterministic trust summary from indexed trust signals + warnings."""
+    lines = [f"Trust signals for the top {len(hits)} sources:"]
+    for index, hit in enumerate(hits, start=1):
+        metadata = _hit_metadata(hit)
+        tier = metadata.get("trust_tier")
+        tier = tier if isinstance(tier, str) and tier else "unrated"
+        recorded, sponsored = _recorded_signal(hit, "sponsored")
+        sponsored_note = (
+            ("sponsored" if sponsored >= 0.75 else "not sponsored")
+            if recorded
+            else "sponsorship unrated"
+        )
+        warnings = _hit_warnings(hit)
+        lines.append(
+            f"{_hit_label(hit, index)} — trust tier: {tier}; "
+            f"{sponsored_note}; warnings: "
+            f"{'; '.join(warnings) if warnings else 'none'}"
+        )
+    return "\n".join(lines)
+
+
+def _safety_answer(hits: list[Any]) -> str:
+    """Deterministic safety summary from indexed safety/privacy signals."""
+    lines = [f"Safety screening for the top {len(hits)} sources:"]
+    for index, hit in enumerate(hits, start=1):
+        recorded_safety, safety = _recorded_signal(hit, "safety")
+        recorded_privacy, privacy = _recorded_signal(hit, "privacy")
+        label = _hit_metadata(hit).get("content_safety")
+        label = label if isinstance(label, str) and label else "unlabeled"
+        warnings = _hit_warnings(hit)
+        lines.append(
+            f"{_hit_label(hit, index)} — content: {label}; "
+            f"safety: {_signal_band(recorded_safety, safety)}; "
+            f"privacy: {_signal_band(recorded_privacy, privacy)}; warnings: "
+            f"{'; '.join(warnings) if warnings else 'none'}"
+        )
+    lines.append(
+        "Signals come from the indexed crawl only; unrated sources carry "
+        "no verdict either way."
+    )
+    return "\n".join(lines)
+
+
 def build_chat_rewrite_prompt(message: str, history: Any) -> str:
     """Constrained rewrite prompt: transcript plus strict-JSON instruction."""
     turns = _normalize_chat_turns(history)
@@ -454,9 +564,17 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
         'exactly these keys: "query" (string, the standalone rewritten '
         'query), "filters" (object, search filters), "mode" (string, one of '
         '"default", "news", "shopping", "travel", "child-safe"), '
-        '"tool" (string, one of "search", "domains"). Set "tool" to '
-        '"domains" ONLY when the user asks which websites, domains, or '
-        'sources are searchable on this platform; otherwise use "search".'
+        '"tool" (string, one of "search", "domains", "capabilities", '
+        '"compare", "prices", "trust", "safety"). Set "tool" to "domains" '
+        "ONLY when the user asks which websites, domains, or sources are "
+        'searchable on this platform; to "capabilities" ONLY when the user '
+        "asks what you (the assistant) can do, which tools you have, or how "
+        'to use you; to "compare" ONLY when the user asks to compare '
+        'coverage, viewpoints, or reporting across sources; to "prices" '
+        'ONLY when the user asks to compare prices or offers; to "trust" '
+        "ONLY when the user asks whether sources are trustworthy; to "
+        '"safety" ONLY when the user asks whether sources are safe for '
+        'kids or privacy-clean; otherwise use "search".'
     )
     if turns:
         lines.append("Conversation so far (oldest first):")
@@ -465,6 +583,35 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
     lines.append("Last user message:")
     lines.append(message)
     return "\n".join(lines)
+
+
+def _answer_preamble(instructions: list[str], message: str, history: Any) -> list[str]:
+    """Shared grounded-prompt head: instructions, transcript, message."""
+    turns = _normalize_chat_turns(history)
+    lines = list(instructions)
+    if turns:
+        lines.append("Conversation so far (oldest first):")
+        for role, content in turns:
+            lines.append(f"{role}: {content}")
+    lines.append("Last user message:")
+    lines.append(message)
+    return lines
+
+
+def _answer_sources_block(hits: list[Any], source_lines: list[str] | None) -> list[str]:
+    """``Sources:`` block from prebuilt lines or title plus snippet."""
+    if source_lines is not None:
+        return ["Sources:", "\n".join(source_lines)[:MAX_ANSWER_SOURCES_CHARS]]
+    block = ["Sources:"]
+    for index, hit in enumerate(hits, start=1):
+        title = getattr(hit, "title", "")
+        snippet = getattr(hit, "snippet", "")
+        if not isinstance(title, str):
+            title = ""
+        if not isinstance(snippet, str):
+            snippet = ""
+        block.append(f"[{index}] {title}: {snippet[:MAX_CHAT_SNIPPET_CHARS]}")
+    return block
 
 
 def build_chat_answer_prompt(
@@ -479,37 +626,60 @@ def build_chat_answer_prompt(
     excerpts when the fetch tool resolved them); without them the prompt
     falls back to title plus snippet per hit.
     """
-    turns = _normalize_chat_turns(history)
-    lines = [
-        "Answer the last user message using ONLY the sources below.",
-        "Cite every factual claim as [1], [2], and so on, matching the "
-        "source numbers. Never answer from general knowledge or explain "
-        "the topic in your own words: when the sources lack the answer, "
-        "say so instead. When the sources are topically relevant but do "
-        "not fully answer the question, summarize what they do say (with "
-        "citations) and briefly note what is missing instead of refusing. "
-        "Only when none of the sources is relevant at all, say plainly that "
-        "they do not contain the answer instead of guessing.",
-    ]
-    if turns:
-        lines.append("Conversation so far (oldest first):")
-        for role, content in turns:
-            lines.append(f"{role}: {content}")
-    lines.append("Last user message:")
-    lines.append(message)
-    lines.append("Sources:")
-    if source_lines is not None:
-        sources = "\n".join(source_lines)[:MAX_ANSWER_SOURCES_CHARS]
-        lines.append(sources)
-    else:
-        for index, hit in enumerate(hits, start=1):
-            title = getattr(hit, "title", "")
-            snippet = getattr(hit, "snippet", "")
-            if not isinstance(title, str):
-                title = ""
-            if not isinstance(snippet, str):
-                snippet = ""
-            lines.append(f"[{index}] {title}: {snippet[:MAX_CHAT_SNIPPET_CHARS]}")
+    lines = _answer_preamble(
+        [
+            "Answer the last user message using ONLY the sources below.",
+            "Cite every factual claim as [1], [2], and so on, matching the "
+            "source numbers. Never answer from general knowledge or explain "
+            "the topic in your own words: when the sources lack the answer, "
+            "say so instead. When the sources are topically relevant but do "
+            "not fully answer the question, summarize what they do say (with "
+            "citations) and briefly note what is missing instead of refusing. "
+            "Only when none of the sources is relevant at all, say plainly that "
+            "they do not contain the answer instead of guessing.",
+        ],
+        message,
+        history,
+    )
+    lines.extend(_answer_sources_block(hits, source_lines))
+    return "\n".join(lines)
+
+
+def build_compare_prompt(
+    message: str, history: Any, source_lines: list[str] | None
+) -> str:
+    """Perspective-comparison prompt: positions with citations, deltas named."""
+    lines = _answer_preamble(
+        [
+            "Compare how the sources below cover the last user message.",
+            "Group the coverage by distinct position or claim: state each "
+            "position with [1], [2] citations, name the sources holding it, "
+            "and call out disagreements explicitly. If all sources agree, "
+            "say so with citations. Never answer from general knowledge.",
+        ],
+        message,
+        history,
+    )
+    lines.extend(_answer_sources_block([], source_lines))
+    return "\n".join(lines)
+
+
+def build_prices_prompt(
+    message: str, history: Any, source_lines: list[str] | None
+) -> str:
+    """Price-comparison prompt: table of offers, sponsored marked."""
+    lines = _answer_preamble(
+        [
+            "Compare the prices and offers in the sources below as one "
+            "short table: product, price, seller [n]. Mark any sponsored "
+            "result as sponsored. If no usable prices appear, say so "
+            "plainly instead of guessing. Never answer from general "
+            "knowledge.",
+        ],
+        message,
+        history,
+    )
+    lines.extend(_answer_sources_block([], source_lines))
     return "\n".join(lines)
 
 
@@ -634,6 +804,15 @@ def run_agent_chat(
         steps.append({"kind": "domains", "detail": f"{len(domains)} domains"})
         return _done(_domains_answer(domains), [], None)
 
+    # -- step 2b: capabilities tool (canned tool card, no search) --------
+    if tool == "capabilities":
+        steps.append({"kind": "capabilities", "detail": "answered from the tool card"})
+        return _done(_capabilities_answer(), [], None)
+
+    # -- prices always compare offers, so they search the shopping index --
+    if tool == "prices":
+        plan_mode = "shopping"
+
     # -- step 2: the single tool — engine.search with validated params ----
     merged_filters = dict(plan_filters)
     response = engine.search(
@@ -665,12 +844,24 @@ def run_agent_chat(
     if not hits:
         return _done(UNKNOWN_ANSWER, [], None)
 
-    # -- step 2c: fetch full source texts for the top hits -------------
+    # -- step 2c: trust/safety tools answer from signals, no synthesis --
+    if tool in ("trust", "safety"):
+        steps.append({"kind": tool, "detail": f"{len(hits)} sources"})
+        answer = _trust_answer(hits) if tool == "trust" else _safety_answer(hits)
+        steps.append({"kind": "synthesize", "detail": answer[:MAX_SUMMARY_CHARS]})
+        return _done(answer, hits, None)
+
+    # -- step 2d: fetch full source texts for the top hits -------------
     source_lines = _fetch_source_lines(engine, hits, steps, fallbacks)
 
     # -- step 3: grounded synthesis (second and last model call) ---------
     try:
-        answer_prompt = build_chat_answer_prompt(raw, history, hits, source_lines)
+        if tool == "compare":
+            answer_prompt = build_compare_prompt(raw, history, source_lines)
+        elif tool == "prices":
+            answer_prompt = build_prices_prompt(raw, history, source_lines)
+        else:
+            answer_prompt = build_chat_answer_prompt(raw, history, hits, source_lines)
         answer = model_manager.complete(answer_prompt)
         trace["model_calls"] += 1
         answer = answer.strip()[:MAX_CHAT_ANSWER_CHARS]

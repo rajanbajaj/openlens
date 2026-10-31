@@ -29,6 +29,7 @@ from openlens.main import create_app
 from openlens.models.fake import FakeModelProvider
 from openlens.models.manager import ModelManager
 from openlens.providers.base import BaseSearchProvider
+from openlens.providers.manager import ProviderManager
 from openlens.retrieval.agent import (
     AGENT_STATUS_PREFIX,
     build_chat_answer_prompt,
@@ -36,7 +37,9 @@ from openlens.retrieval.agent import (
 )
 
 
-def _hit(doc_id: str, snippet: str = "") -> SearchResult:
+def _hit(
+    doc_id: str, snippet: str = "", metadata: dict[str, Any] | None = None
+) -> SearchResult:
     return SearchResult(
         id=doc_id,
         title=f"title-{doc_id}",
@@ -45,6 +48,7 @@ def _hit(doc_id: str, snippet: str = "") -> SearchResult:
         final_score=1.0,
         url=f"https://example.com/{doc_id}",
         provider="test",
+        metadata=dict(metadata or {}),
     )
 
 
@@ -550,6 +554,54 @@ def test_chat_domains_tool_lists_domains() -> None:
     assert any(s["kind"] == "domains" for s in outcome["trace"]["steps"])
 
 
+def _manager_engine(
+    model_script: list[Any] | None,
+    hits: list[SearchResult] | None = None,
+    docs: dict[str, str] | None = None,
+    domains: list[tuple[str, int]] | None = None,
+) -> tuple[SearchEngine, _HitsProvider, _ScriptedModel | None]:
+    """Manager-built engine: the production construction path."""
+    provider = _HitsProvider(hits, docs=docs, domains=domains)
+    manager = ProviderManager(providers={"test": provider}, primary="test")
+    if model_script is None:
+        return SearchEngine.from_manager(manager), provider, None
+    model = _ScriptedModel(model_script)
+    model_manager = ModelManager(backends={"fake": model}, primary="fake")
+    engine = SearchEngine.from_manager(manager, model_manager=model_manager)
+    return engine, provider, model
+
+
+def test_chat_domains_tool_via_manager_lists_domains() -> None:
+    """Regression: prod builds the engine from a manager (no _providers).
+
+    The tools must delegate to the manager; otherwise every lookup
+    returns empty despite a populated index.
+    """
+    engine, provider, _ = _manager_engine(
+        [
+            '{"query": "domains", "filters": {}, "mode": "default", "tool": "domains"}',
+            "unused",
+        ],
+        domains=[("example.com", 2), ("other.test", 1)],
+    )
+    outcome = run_agent_chat("what domains can I search?", [], 5, engine)
+    assert "example.com (2 docs)" in outcome["answer"]
+    assert outcome["trace"]["model_calls"] == 1
+    assert provider.seen == []
+
+
+def test_chat_fetch_via_manager_grounds_synthesis() -> None:
+    engine, _, model = _manager_engine(
+        ['{"query": "q", "filters": {}, "mode": "default"}', "Summary [1]."],
+        [_hit("a", snippet="short snippet")],
+        docs={"a": "FULL TEXT MARKER via manager path."},
+    )
+    assert model is not None
+    outcome = run_agent_chat("q", [], 5, engine)
+    assert outcome["trace"]["model_calls"] == 2
+    assert "FULL TEXT MARKER via manager path." in model.calls[1]
+
+
 def test_chat_unknown_tool_searches() -> None:
     engine, provider, _ = _engine(
         ['{"query": "q", "filters": {}, "mode": "default", "tool": "evil"}', "S [1]."],
@@ -557,6 +609,117 @@ def test_chat_unknown_tool_searches() -> None:
     outcome = run_agent_chat("q", [], 5, engine)
     assert provider.seen  # unknown tool degrades to the search tool
     assert outcome["trace"]["model_calls"] == 2
+
+
+def test_chat_capabilities_tool_answers_without_search() -> None:
+    engine, provider, _ = _engine(
+        [
+            '{"query": "tools", "filters": {}, "mode": "default", '
+            '"tool": "capabilities"}',
+            "unused",
+        ],
+    )
+    outcome = run_agent_chat("what tools can you call for me?", [], 5, engine)
+    assert "indexed sources" in outcome["answer"]
+    assert outcome["results"] == []
+    assert outcome["citations"] == []
+    assert outcome["notice"] is None
+    assert outcome["trace"]["model_calls"] == 1
+    assert provider.seen == []
+    assert any(s["kind"] == "capabilities" for s in outcome["trace"]["steps"])
+
+
+# --- compare / prices / trust / safety tools ----------------------------------
+
+
+def test_chat_compare_tool_synthesizes_positions() -> None:
+    engine, provider, model = _engine(
+        [
+            '{"query": "q", "filters": {}, "mode": "default", "tool": "compare"}',
+            "A says X [1]; B says Y [2].",
+        ],
+        [_hit("a"), _hit("b")],
+    )
+    assert model is not None
+    outcome = run_agent_chat("compare the coverage", [], 5, engine)
+    assert outcome["answer"] == "A says X [1]; B says Y [2]."
+    assert outcome["trace"]["model_calls"] == 2
+    assert provider.seen  # shared search path still ran
+    assert "distinct position" in model.calls[1]
+
+
+def test_chat_prices_tool_searches_shopping() -> None:
+    engine, provider, _ = _engine(
+        [
+            '{"query": "q", "filters": {}, "mode": "default", "tool": "prices"}',
+            "Widget $9 [1].",
+        ],
+        [_hit("a")],
+    )
+    outcome = run_agent_chat("compare prices", [], 5, engine)
+    assert provider.seen[-1].mode == "shopping"
+    assert outcome["trace"]["model_calls"] == 2
+    assert "$9" in outcome["answer"]
+
+
+def test_chat_trust_tool_answers_from_signals() -> None:
+    hits = [
+        _hit(
+            "a",
+            metadata={
+                "trust_tier": "trusted",
+                "signals": {"sponsored": 0.0},
+            },
+        ),
+        _hit("b", metadata={"trust_tier": "distrusted"}),
+    ]
+    engine, provider, model = _engine(
+        ['{"query": "q", "filters": {}, "mode": "default", "tool": "trust"}', "unused"],
+        hits,
+    )
+    assert model is not None
+    outcome = run_agent_chat("are these sources trustworthy?", [], 5, engine)
+    assert "trust tier: trusted" in outcome["answer"]
+    assert "trust tier: distrusted" in outcome["answer"]
+    assert "not sponsored" in outcome["answer"]
+    assert outcome["trace"]["model_calls"] == 1  # no synthesis call
+    assert len(model.calls) == 1
+    assert provider.seen  # search still ran
+
+
+def test_chat_trust_tool_without_signals_is_honest() -> None:
+    engine, _, _ = _engine(
+        ['{"query": "q", "filters": {}, "mode": "default", "tool": "trust"}', "unused"],
+        [_hit("a")],
+    )
+    outcome = run_agent_chat("trustworthy?", [], 5, engine)
+    assert "unrated" in outcome["answer"]
+    assert "warnings: none" in outcome["answer"]
+
+
+def test_chat_safety_tool_screens_sources() -> None:
+    hits = [
+        _hit(
+            "a",
+            metadata={
+                "content_safety": "safe",
+                "signals": {"safety": 0.9, "privacy": 0.1},
+            },
+        ),
+    ]
+    engine, _, model = _engine(
+        [
+            '{"query": "q", "filters": {}, "mode": "default", "tool": "safety"}',
+            "unused",
+        ],
+        hits,
+    )
+    assert model is not None
+    outcome = run_agent_chat("is this safe for kids?", [], 5, engine)
+    assert "safety: strong" in outcome["answer"]
+    assert "privacy: weak" in outcome["answer"]
+    assert outcome["trace"]["model_calls"] == 1
+    assert len(model.calls) == 1
 
 
 def test_chat_domains_empty_index_is_honest() -> None:

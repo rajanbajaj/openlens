@@ -246,11 +246,20 @@ class SearchEngine(Engine):
         wanted = [d for d in doc_ids if isinstance(d, str) and d][:10]
         if not wanted:
             return {}
+        if self._manager is not None:
+            hook = getattr(self._manager, "fetch_documents", None)
+            if callable(hook):
+                found: Any = None
+                with suppress(Exception):
+                    found = hook(list(wanted))
+                if isinstance(found, dict) and found:
+                    return {k: v for k, v in found.items() if isinstance(k, str)}
+            return {}
         for provider in self._providers:
             hook = getattr(provider, "fetch_documents", None)
             if not callable(hook):
                 continue
-            found: Any = None
+            found = None
             with suppress(Exception):
                 found = hook(wanted)
             if isinstance(found, dict) and found:
@@ -265,11 +274,20 @@ class SearchEngine(Engine):
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             return []
+        if self._manager is not None:
+            hook = getattr(self._manager, "list_domains", None)
+            if callable(hook):
+                pairs: Any = None
+                with suppress(Exception):
+                    pairs = hook(limit=limit)
+                if isinstance(pairs, list) and pairs:
+                    return pairs
+            return []
         for provider in self._providers:
             hook = getattr(provider, "list_domains", None)
             if not callable(hook):
                 continue
-            pairs: Any = None
+            pairs = None
             with suppress(Exception):
                 pairs = hook(limit=limit)
             if isinstance(pairs, list) and pairs:
