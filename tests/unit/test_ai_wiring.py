@@ -145,10 +145,12 @@ def test_all_disabled_searches_identical_minus_ai_fields() -> None:
 
 
 def test_shipped_models_yaml_boots_without_ai() -> None:
+    from openlens.models.manager import _is_enabled
+
     config = load_app_config(REPO_ROOT / "configs" / "default.yaml")
     assert "models" in config
     assert all(
-        not entry.get("enabled", False)
+        not _is_enabled(entry.get("enabled", False))
         for key, entry in config["models"].items()
         if key != "primary" and isinstance(entry, dict)
     )

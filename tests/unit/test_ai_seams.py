@@ -214,11 +214,15 @@ def test_manager_rejects_empty_and_bad_primary() -> None:
 
 
 def test_models_yaml_loads_offline_with_everything_disabled() -> None:
+    from openlens.models.manager import _is_enabled
+
     config = load_config(REPO_ROOT / "configs" / "models.yaml")
     section = config["models"]
     entries = {k: v for k, v in section.items() if k != "primary"}
     assert {"fake", "claude", "muse", "local"} <= set(entries)
-    assert all(not entry.get("enabled", False) for entry in entries.values())
+    assert all(
+        not _is_enabled(entry.get("enabled", False)) for entry in entries.values()
+    )
     with pytest.raises(ConfigError):
         ModelManager.from_config(config)
 
@@ -226,6 +230,7 @@ def test_models_yaml_loads_offline_with_everything_disabled() -> None:
 def test_models_yaml_enabling_fake_only_works() -> None:
     config = load_config(REPO_ROOT / "configs" / "models.yaml")
     config["models"]["fake"]["enabled"] = True
+    config["models"]["primary"] = "fake"
     manager = ModelManager.from_config(config)
     assert manager.primary == "fake"
     assert "fake completion" in manager.complete("smoke test")

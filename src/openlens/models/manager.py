@@ -16,6 +16,31 @@ from openlens.models.registry import create, register_builtin_models
 
 _RESERVED_KEYS = ("primary",)
 
+_TRUE_STRINGS = frozenset({"1", "on", "true", "yes"})
+
+
+def _is_enabled(value: Any) -> bool:
+    """Whether a backend ``enabled`` flag turns the backend on.
+
+    Env interpolation in ``load_config`` resolves ``${VAR:-default}`` at the
+    string level, so an env-driven flag arrives here as a *string* — and a
+    non-empty string is always truthy, which would make
+    ``enabled: ${MODEL_ENABLED:-false}`` enable the backend unconditionally.
+    Parse explicitly instead: ``True``/``1``/``"true"``/``"yes"``/``"1"``/
+    ``"on"`` (case-insensitive) enable; everything else — including unknown
+    strings — stays disabled (fail-closed).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    if isinstance(value, str):
+        folded = value.strip().casefold()
+        if folded in _TRUE_STRINGS:
+            return True
+        return False
+    return False
+
 
 class ModelManager:
     """Owns model-backend instances and routes inference to the primary."""
@@ -65,7 +90,7 @@ class ModelManager:
                     f"Model entry '{entry_name}' must be a mapping, "
                     f"got {type(entry).__name__}. Startup validation failed."
                 )
-            if not entry.get("enabled", False):
+            if not _is_enabled(entry.get("enabled", False)):
                 continue  # disabled: never instantiate, never contact
             model_type = entry.get("type", entry_name)
             if not isinstance(model_type, str) or not model_type:

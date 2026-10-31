@@ -14,15 +14,16 @@
 #
 # `openai_compat` is the neutral OpenAI-compatible chat-completions
 # transport (OpenAI, Meta developer API, Ollama, vLLM, ...): no vendor
-# SDK, key via ${MODEL_API_KEY}. Enable it and point `primary` at it
-# for live summaries; the default below stays offline-safe.
+# SDK. Turn it on with MODEL_ENABLED=true (plus MODEL_API_KEY); the
+# backend stays fully offline-safe until then. MODEL_PRIMARY overrides
+# which enabled backend answers (default openai_compat).
 #
 # The `fake` backend is the deterministic offline stand-in used by tests and
 # the AI plugin stub. Real backends (claude/muse/local) validate their own
 # credentials at startup when enabled, but perform no live calls yet.
 
 models:
-  primary: fake
+  primary: ${MODEL_PRIMARY:-openai_compat}
 
   fake:
     enabled: false
@@ -53,7 +54,7 @@ models:
     timeout_s: 10
 
   openai_compat:
-    enabled: false
+    enabled: ${MODEL_ENABLED:-false}
     type: openai_compat
     base_url: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
     api_key: ${MODEL_API_KEY:-}
