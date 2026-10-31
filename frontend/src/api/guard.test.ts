@@ -37,9 +37,10 @@ describe('readAgentTrace', () => {
   });
 
   it('keeps partial traces with only the renderable fields', () => {
-    expect(
-      readAgentTrace(envelope({ rewritten_query: 'headphones', model_calls: 0 })),
-    ).toEqual({ rewritten_query: 'headphones', model_calls: 0 });
+    expect(readAgentTrace(envelope({ rewritten_query: 'headphones', model_calls: 0 }))).toEqual({
+      rewritten_query: 'headphones',
+      model_calls: 0,
+    });
   });
 
   it('drops malformed steps and fallbacks instead of crashing', () => {

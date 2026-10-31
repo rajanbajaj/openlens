@@ -97,19 +97,19 @@ describe('spelling hint', () => {
   it('offers a clickable correction only when there are no results', () => {
     const onRelatedSelect = vi.fn();
     const { rerender } = render(
-      <ResultList results={[]} total={0} spelling="running shoes" onRelatedSelect={onRelatedSelect} />,
+      <ResultList
+        results={[]}
+        total={0}
+        spelling="running shoes"
+        onRelatedSelect={onRelatedSelect}
+      />,
     );
     const button = screen.getByTestId('spelling-suggestion');
     expect(button).toHaveTextContent('running shoes');
     fireEvent.click(button);
     expect(onRelatedSelect).toHaveBeenCalledWith('running shoes');
     rerender(
-      <ResultList
-        results={[]}
-        total={0}
-        spelling={null}
-        onRelatedSelect={onRelatedSelect}
-      />,
+      <ResultList results={[]} total={0} spelling={null} onRelatedSelect={onRelatedSelect} />,
     );
     expect(screen.queryByTestId('spelling-hint')).not.toBeInTheDocument();
   });
