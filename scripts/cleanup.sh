@@ -60,6 +60,15 @@ echo "== 3/5 truncate documents + crawler state =="
 for t in documents frontier_queue crawl_workers domain_politeness crawl_checkpoints; do
   docker exec "$PGCONT" psql -U "$PGUSER" -d "$PGDB" -c "TRUNCATE public.$t;"
 done
+# Authority graph (newer backends only): skip when the release that
+# creates it has not deployed yet, so the wipe never aborts there.
+if docker exec "$PGCONT" psql -U "$PGUSER" -d "$PGDB" -t -c \
+  "SELECT 1 FROM information_schema.tables WHERE table_name = 'document_links';" \
+  | grep -q 1; then
+  docker exec "$PGCONT" psql -U "$PGUSER" -d "$PGDB" -c "TRUNCATE public.document_links;"
+else
+  echo "(document_links absent: nothing to wipe)"
+fi
 
 echo "== 4/5 purge kafka backlog =="
 CLEAR="$(curl -sS -X POST "$API/api/v1/frontier/clear" "${auth[@]}")"
