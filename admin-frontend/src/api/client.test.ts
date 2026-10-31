@@ -34,6 +34,8 @@ const SETTINGS: FrontierSettings = {
   respect_robots: true,
   user_agent: 'TestBot/1.0 (+https://example.com)',
   skip_domains: [],
+  allow_domains: [],
+  deny_domains: [],
 };
 
 function jsonResponse(payload: unknown, status = 200): Response {

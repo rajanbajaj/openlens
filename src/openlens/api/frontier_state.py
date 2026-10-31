@@ -22,6 +22,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "crawl_delay_s": 0.5,
     "default_max_depth": 3,
     "respect_robots": True,
+    "allow_domains": [],
+    "deny_domains": [],
 }
 
 

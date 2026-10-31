@@ -15,4 +15,5 @@ export interface FrontierWorkerSchema {
   /** @minimum 0 */
   claimed?: number;
   status?: string;
+  role?: string;
 }

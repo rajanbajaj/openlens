@@ -18,4 +18,28 @@ export interface FrontierSettingsSchema {
   /** @minimum 0 */
   default_max_depth?: number;
   respect_robots?: boolean;
+  /**
+   * Crawler User-Agent applied live by workers; empty/oversize values keep the previous agent.
+   * @minLength 1
+   * @maxLength 256
+   */
+  user_agent?: string;
+  /**
+   * Domain skip-list applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal.
+   * @items.minLength 1
+   * @items.maxLength 253
+   */
+  skip_domains?: string[];
+  /**
+   * Domain allowlist applied live by workers: when non-empty, only these bare lowercase hostnames (subdomains match too) are fetched — the same-domain-only switch. Empty means all domains are allowed. Malformed entries are ignored, never fatal.
+   * @items.minLength 1
+   * @items.maxLength 253
+   */
+  allow_domains?: string[];
+  /**
+   * Domain blocklist applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal.
+   * @items.minLength 1
+   * @items.maxLength 253
+   */
+  deny_domains?: string[];
 }

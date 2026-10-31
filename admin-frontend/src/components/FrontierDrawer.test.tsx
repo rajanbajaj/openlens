@@ -23,6 +23,8 @@ const SETTINGS = {
   respect_robots: true,
   user_agent: 'TestBot/1.0 (+https://example.com)',
   skip_domains: [],
+  allow_domains: [],
+  deny_domains: [],
 };
 
 /** Minimal socket stand-in: the drawer only needs onopen/onmessage/close. */
@@ -248,11 +250,11 @@ describe('FrontierDrawer skip domains', () => {
     expect(screen.queryByTestId('frontier-skip-list')).not.toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'https://Ads.Example.com/feed' } });
-    fireEvent.click(screen.getByText('Add'));
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByTestId('frontier-skip-list')).toHaveTextContent('ads.example.com');
 
     fireEvent.change(input, { target: { value: 'ads.example.com' } });
-    fireEvent.click(screen.getByText('Add'));
+    fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('already skipped');
     });
@@ -261,12 +263,41 @@ describe('FrontierDrawer skip domains', () => {
     expect(screen.queryByTestId('frontier-skip-list')).not.toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'tracker.example' } });
-    fireEvent.click(screen.getByText('Add'));
+    fireEvent.keyDown(input, { key: 'Enter' });
     fireEvent.click(screen.getByText('Save settings'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
     expect(capture.body).toMatchObject({ skip_domains: ['tracker.example'] });
+  });
+
+  it('adds and saves allow and block domains', async () => {
+    MockSocket.instances = [];
+    const capture: { body: unknown } = { body: null };
+    stubFetchCapture(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const allowInput = await screen.findByTestId('frontier-allow-input');
+    const denyInput = await screen.findByTestId('frontier-deny-input');
+    expect(screen.queryByTestId('frontier-allow-list')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('frontier-deny-list')).not.toBeInTheDocument();
+
+    fireEvent.change(allowInput, { target: { value: 'https://News.Example.com/top' } });
+    fireEvent.keyDown(allowInput, { key: 'Enter' });
+    expect(screen.getByTestId('frontier-allow-list')).toHaveTextContent('news.example.com');
+
+    fireEvent.change(denyInput, { target: { value: 'ads.example' } });
+    fireEvent.keyDown(denyInput, { key: 'Enter' });
+    expect(screen.getByTestId('frontier-deny-list')).toHaveTextContent('ads.example');
+
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
+    });
+    expect(capture.body).toMatchObject({
+      allow_domains: ['news.example.com'],
+      deny_domains: ['ads.example'],
+    });
   });
 
   it('shows the skipped count in the queue header', async () => {
@@ -316,5 +347,50 @@ describe('FrontierDrawer skip domains', () => {
     await waitFor(() => {
       expect(screen.getByText(/2\s+skipped/)).toBeInTheDocument();
     });
+  });
+
+  it('wraps long queue URLs so narrow screens do not scroll sideways', async () => {
+    MockSocket.instances = [];
+    const longUrl = `https://example.com/${'path-segment-'.repeat(20)}?a=1&b=2`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () =>
+            Promise.resolve(
+              JSON.stringify(
+                url.includes('/api/v1/frontier/settings')
+                  ? { settings: SETTINGS }
+                  : {
+                      ...STATUS,
+                      queue: [{ url: longUrl, depth: 0, status: 'queued', priority: 0 }],
+                      queue_depth: 1,
+                    },
+              ),
+            ),
+          json: () =>
+            Promise.resolve(
+              url.includes('/api/v1/frontier/settings')
+                ? { settings: SETTINGS }
+                : {
+                    ...STATUS,
+                    queue: [{ url: longUrl, depth: 0, status: 'queued', priority: 0 }],
+                    queue_depth: 1,
+                  },
+            ),
+        }),
+      ),
+    );
+    vi.stubGlobal('WebSocket', MockSocket);
+    const { container } = render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-queue')).toBeInTheDocument();
+    });
+    const row = screen.getByTestId('frontier-queue').querySelector('li');
+    expect(row?.className).toMatch(/break-all/);
+    expect(container.querySelector('.break-all')).toHaveTextContent(longUrl.slice(0, 32));
   });
 });

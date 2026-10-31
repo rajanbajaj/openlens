@@ -564,8 +564,8 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    'sidebar'
     'results'
+    'sidebar'
     'rail';
   gap: var(--ol-space-m);
   align-items: start;

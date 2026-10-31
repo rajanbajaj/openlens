@@ -212,6 +212,13 @@ export interface FrontierSettings {
   user_agent: string;
   /** Domains whose queued URLs workers skip (exact host or subdomain). */
   skip_domains: string[];
+  /**
+   * Allowlist: when non-empty, workers fetch only these domains.
+   * The same-domain-only switch; empty means all domains allowed.
+   */
+  allow_domains: string[];
+  /** Domains workers never fetch (exact host or subdomain). */
+  deny_domains: string[];
 }
 
 /** GET/PUT /api/v1/frontier/settings response body. */

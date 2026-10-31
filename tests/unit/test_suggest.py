@@ -31,26 +31,56 @@ def _fixture() -> dict:
 
 
 def test_complete_prefix_matches_sorted_and_limited() -> None:
+    # Google-style ranking: minimal extension first (shortest completion
+    # is closest to the typed query), alphabetical tiebreak. Popularity
+    # proper needs query logs we deliberately do not keep; completion
+    # length is the offline proxy.
     data = _fixture()
     assert complete("run", data["terms"]) == [
         "running shoes",
-        "running shoes for flat feet",
         "running watch",
+        "running shoes for flat feet",
     ]
     assert complete("run", data["terms"], limit=2) == [
         "running shoes",
-        "running shoes for flat feet",
+        "running watch",
     ]
 
 
 def test_complete_case_insensitive_and_deterministic() -> None:
     data = _fixture()
     first = complete("TRAIL", data["terms"])
-    assert first == ["trail running vest", "trail shoes"]
+    assert first == ["trail shoes", "trail running vest"]
     # Deterministic across repeated calls and input orderings.
     assert complete("trail", data["terms"]) == first
     assert complete("trail", list(reversed(data["terms"]))) == first
     assert complete("trail", data["terms"]) == complete("trail", data["terms"])
+
+
+def test_complete_typo_fills_remaining_slots() -> None:
+    """One-edit prefix slips (wireles->wireless) fill slots left empty
+    by exact matches, ranked after every exact match."""
+    data = _fixture()
+    assert complete("wireles", data["terms"]) == [
+        "wireless charger",
+        "wireless headphones",
+    ]
+    filled = complete("wireless headphons", data["terms"])
+    assert filled == ["wireless headphones"]
+
+
+def test_complete_typo_fill_gated_on_prefix_length() -> None:
+    """Short prefixes never typo-fill: distance-1 on 1-3 characters
+    matches nearly everything and reads as noise, not help."""
+    assert complete("run", ["ran shoes", "rug store"]) == []
+    assert complete("cof", ["cough syrup"]) == []
+
+
+def test_complete_typo_fill_never_outranks_exact() -> None:
+    got = complete(
+        "wireless", ["wireless headphones", "wirelesless", "wireless charger"]
+    )
+    assert got == ["wireless charger", "wireless headphones", "wirelesless"]
 
 
 def test_complete_empty_index_returns_empty() -> None:

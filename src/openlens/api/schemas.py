@@ -314,6 +314,24 @@ class FrontierSettingsSchema(BaseModel):
             "malformed entries are ignored, never fatal."
         ),
     )
+    allow_domains: list[Annotated[str, Field(min_length=1, max_length=253)]] = Field(
+        default_factory=list,
+        description=(
+            "Domain allowlist applied live by workers: when non-empty, "
+            "only these bare lowercase hostnames (subdomains match too) "
+            "are fetched — the same-domain-only switch. Empty means all "
+            "domains are allowed. Malformed entries are ignored, "
+            "never fatal."
+        ),
+    )
+    deny_domains: list[Annotated[str, Field(min_length=1, max_length=253)]] = Field(
+        default_factory=list,
+        description=(
+            "Domain blocklist applied live by workers; entries are "
+            "bare lowercase hostnames (subdomains match too); "
+            "malformed entries are ignored, never fatal."
+        ),
+    )
 
 
 class FrontierSettingsResponseSchema(BaseModel):

@@ -46,6 +46,48 @@
         }
       }
     },
+    "/api/v1/agent/chat": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Agent Chat",
+        "description": "One grounded chat turn over the search index.\n\nRewrites the turn with the transcript, searches via the engine as\nthe only tool, and synthesizes a cited answer. Fail-closed: a\nmissing/disabled model backend (or a model error) returns an empty\nanswer with a ``notice`` plus plain-search hits \u2014 never a 500.",
+        "operationId": "agent_chat_api_v1_agent_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequestSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/suggest": {
       "get": {
         "tags": [
@@ -108,7 +150,7 @@
           "search"
         ],
         "summary": "Feedback",
-        "description": "Record one anonymous feedback event as an in-process count.\n\nThe module-level tally is the canonical response source; when the\napp engine exposes ``record_feedback`` the event is mirrored there\ntoo (best-effort, never failing the request) so future ranking can\nconsume the counts.",
+        "description": "Record one anonymous feedback event as an in-process count.\n\nThe tally key is ``(doc_id, action, reason)`` with ``\"\"`` for absent\nreasons, so reason-less posts keep their exact historic shape. The\nmodule-level tally is the canonical response source; when the app\nengine exposes ``record_feedback`` the ``(doc_id, action)`` event is\nmirrored there too (best-effort, never failing the request) so\nfuture ranking can consume the counts.",
         "operationId": "feedback_api_v1_feedback_post",
         "requestBody": {
           "content": {
@@ -137,6 +179,28 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/feedback/summary": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Feedback Summary",
+        "description": "Admin-only feedback overview (same gate as config mutations).\n\nAggregates the anonymous tallies: totals by action and reason plus\nthe noisiest documents. Gated because even anonymous aggregates\ndescribe user behavior; reads stay open only when no admin token is\nconfigured (local dev), exactly like the other admin reads.",
+        "operationId": "admin_feedback_summary_api_v1_admin_feedback_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackSummarySchema"
                 }
               }
             }
@@ -228,13 +292,35 @@
         }
       }
     },
+    "/api/v1/frontier/clear": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Clear",
+        "description": "Pause crawling and drop every queued URL (admin-only).\n\nClears the persistent store's ``queued`` rows and purges the Kafka\ntopic when ``kafka:`` is enabled \u2014 the topic must go too, or already\npublished messages refill the queue on the next resume. In-flight\n(``active``) rows are kept, as is all history (``done``/``failed``),\ncheckpoints, and settings. The in-memory snapshot queue is emptied\nso the dashboard stops showing seeds that no longer exist anywhere.\nClearing is best-effort per step and always reports honestly: the\nresponse carries ``cleared_queued`` and ``kafka_purged``.",
+        "operationId": "frontier_clear_api_v1_frontier_clear_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierStatusSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/pause": {
       "post": {
         "tags": [
           "search"
         ],
         "summary": "Frontier Pause",
-        "description": "Pause crawling; the queue snapshot is preserved as-is.\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set (see\n`_frontier_admin_response`); reads stay open.",
+        "description": "Pause crawling; the queue snapshot is preserved as-is.\n\nAdmin-only (see `_frontier_admin_response`); reads stay open.",
         "operationId": "frontier_pause_api_v1_frontier_pause_post",
         "responses": {
           "200": {
@@ -256,7 +342,7 @@
           "search"
         ],
         "summary": "Frontier Resume",
-        "description": "Resume crawling, optionally replacing the queue with `seeds`.\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set: seed URLs\nchoose what gets crawled, so untrusted callers must not set them.",
+        "description": "Resume crawling, optionally replacing the queue with `seeds`.\n\nAdmin-only: seed URLs choose what gets crawled, so untrusted\ncallers must not set them.",
         "operationId": "frontier_resume_api_v1_frontier_resume_post",
         "requestBody": {
           "content": {
@@ -298,7 +384,7 @@
           "search"
         ],
         "summary": "Frontier Get Settings",
-        "description": "Current frontier settings (config-seeded, then PUT-overridden).",
+        "description": "Current frontier settings (config-seeded, then PUT-overridden).\n\nPUT values persist in the frontier store, so a saved dashboard edit\nsurvives restarts and reaches the crawler workers (which read the\nstore row, not backend memory). Stored values win over the seeds.",
         "operationId": "frontier_get_settings_api_v1_frontier_settings_get",
         "responses": {
           "200": {
@@ -318,7 +404,7 @@
           "search"
         ],
         "summary": "Frontier Put Settings",
-        "description": "Replace the frontier settings (strict body, unknown keys rejected).\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set.",
+        "description": "Replace the frontier settings (strict body, unknown keys rejected).\n\nAdmin-only.",
         "operationId": "frontier_put_settings_api_v1_frontier_settings_put",
         "requestBody": {
           "content": {
@@ -382,7 +468,7 @@
           "search"
         ],
         "summary": "Frontier Worker Heartbeat",
-        "description": "Record one worker heartbeat and return the live worker list.\n\nWorker-control plane: admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN`\nis set (same gate as pause/resume/settings). Blank worker ids are\nrejected with 422 so anonymous rows can never enter the registry.",
+        "description": "Record one worker heartbeat and return the live worker list.\n\nWorker-control plane: admin-only (same gate as pause/resume/settings).\nBlank worker ids are\nrejected with 422 so anonymous rows can never enter the registry.",
         "operationId": "frontier_worker_heartbeat_api_v1_frontier_workers_heartbeat_post",
         "requestBody": {
           "content": {
@@ -418,13 +504,234 @@
         }
       }
     },
+    "/api/v1/frontier/cluster-map": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Cluster Map",
+        "description": "Effective Kafka reachability for workers (admin-only).\n\nFile config seeds the map; a stored PUT overrides it and bumps\n``config_version``, which live workers pick up without restarting.",
+        "operationId": "frontier_cluster_map_api_v1_frontier_cluster_map_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterMapResponseSchema"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Put Cluster Map",
+        "description": "Replace the stored cluster map and bump its version (admin-only).\n\nWorkers poll the version and recreate their Kafka clients on change,\nso broker rotations need no restarts. Other settings keys are\npreserved; only the map (plus its new version) is written.",
+        "operationId": "frontier_put_cluster_map_api_v1_frontier_cluster_map_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClusterMapSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterMapResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/kafka/nodes": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Kafka Nodes",
+        "description": "Registered Kafka broker nodes (admin-only inventory).",
+        "operationId": "frontier_kafka_nodes_api_v1_frontier_kafka_nodes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KafkaNodesResponseSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/kafka/nodes/prepare": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Kafka Node Prepare",
+        "description": "Reserve a broker node id and return its join parameters (admin-only).\n\nThe operator (or provisioning script) formats the new broker with the\nreturned cluster id, starts it against the controller quorum, then\nmarks it joined. Ids are explicit so compose-owned 1-3 are never\nreallocated; duplicates are rejected with 409.",
+        "operationId": "frontier_kafka_node_prepare_api_v1_frontier_kafka_nodes_prepare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KafkaNodePrepareSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KafkaNodePrepareResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/kafka/nodes/{node_id}/joined": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Kafka Node Joined",
+        "description": "Mark a prepared broker joined after verifying it (admin-only).",
+        "operationId": "frontier_kafka_node_joined_api_v1_frontier_kafka_nodes__node_id__joined_post",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Node Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KafkaNodeJoinedSchema"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KafkaNodesResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/kafka/rebalance-plan": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Kafka Rebalance Plan",
+        "description": "Build an even-spread replica plan for new brokers (admin-only).\n\nReads live topic layout (partition count, replication factor unless\noverridden) from the broker, so the driver and a reachable broker\nare required \u2014 otherwise 503. The returned JSON feeds\n``kafka-reassign-partitions.sh``; nothing moves until the operator\nruns it, so existing brokers are never disturbed by planning.",
+        "operationId": "frontier_kafka_rebalance_plan_api_v1_frontier_kafka_rebalance_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebalancePlanRequestSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RebalancePlanResponseSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/config/{doc}": {
       "get": {
         "tags": [
           "search"
         ],
         "summary": "Admin Config Get",
-        "description": "Return one effective config doc plus its winning layer.\n\nReads stay open (same rule as the frontier reads): a persisted row\nwins with ``source: db``; otherwise the YAML-backed file section is\nreturned with ``source: file``. Unknown doc keys fail with 404.",
+        "description": "Return one effective config doc plus its winning layer.\n\nReads stay open (same rule as the frontier reads): a persisted row\nwins with ``source: db``; otherwise the YAML-backed file section is\nreturned with ``source: file``. Unknown doc keys fail with 404.\nLive secret values (``api_key`` and friends) are always replaced by\nthe ``REDACTED_SECRET`` sentinel before leaving the backend.",
         "operationId": "admin_config_get_api_v1_admin_config__doc__get",
         "parameters": [
           {
@@ -465,7 +772,7 @@
           "search"
         ],
         "summary": "Admin Config Put",
-        "description": "Persist one config doc (strict body, validated like boot).\n\nAdmin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set \u2014 reuses the\nexact frontier gate (`_frontier_admin_response`), no second auth\nscheme. The body is validated with the existing startup validators;\nanything the boot path would reject fails with 422. The write\nreplaces the row wholesale (version++); the running app's in-memory\nconfig is overlaid so reads stay consistent, and the next boot picks\nthe row up over the YAML seed.",
+        "description": "Persist one config doc (strict body, validated like boot).\n\nAdmin-only \u2014 reuses the exact frontier gate\n(`_frontier_admin_response`), no second auth\nscheme. The body is validated with the existing startup validators;\nanything the boot path would reject fails with 422. The\n``REDACTED_SECRET`` sentinel is accepted for secret fields and means\n\"keep the existing value\"; a sentinel with no prior value fails with\n422 instead of storing the sentinel as a credential. The write\nreplaces the row wholesale (version++); the running app's in-memory\nconfig is overlaid so reads stay consistent, and the next boot picks\nthe row up over the YAML seed. Responses carry the redacted body.",
         "operationId": "admin_config_put_api_v1_admin_config__doc__put",
         "parameters": [
           {
@@ -613,6 +920,267 @@
         "title": "AdminConfigPutSchema",
         "description": "PUT /api/v1/admin/config/{doc} body: one config doc section.\n\nThe wrapped mapping (or list, for the list-form ``plugins:``\nsection) is validated by the existing startup validators\n(models/providers/ranking/query/plugins); anything the boot path\nwould reject fails with 422. Extra top-level keys are rejected so no\nadjacent sections can be smuggled into a single-doc write."
       },
+      "ChatCitationSchema": {
+        "properties": {
+          "ref": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ref"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ref",
+          "title"
+        ],
+        "title": "ChatCitationSchema",
+        "description": "One server-side citation: 1-based ref into the returned hits."
+      },
+      "ChatHistoryTurnSchema": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatHistoryTurnSchema",
+        "description": "One prior chat turn (oldest first) sent with a chat request."
+      },
+      "ChatRequestSchema": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Message"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryTurnSchema"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "History"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 5
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ChatRequestSchema",
+        "description": "POST /api/v1/agent/chat request body."
+      },
+      "ChatResponseSchema": {
+        "properties": {
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ChatCitationSchema"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultSchema"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "trace": {
+            "$ref": "#/components/schemas/ChatTraceSchema"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          }
+        },
+        "type": "object",
+        "required": [
+          "answer"
+        ],
+        "title": "ChatResponseSchema",
+        "description": "POST /api/v1/agent/chat response body."
+      },
+      "ChatTraceSchema": {
+        "properties": {
+          "rewritten_query": {
+            "type": "string",
+            "title": "Rewritten Query",
+            "default": ""
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filters"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTraceStepSchema"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "fallbacks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fallbacks"
+          },
+          "model_calls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Calls",
+            "default": 0
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "ChatTraceSchema",
+        "description": "Per-turn chat trace: rewrite, tool searches, fallbacks, call count."
+      },
+      "ChatTraceStepSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "title": "ChatTraceStepSchema",
+        "description": "One step of the chat trace (fixed {kind, detail} shape)."
+      },
+      "ClusterMapResponseSchema": {
+        "properties": {
+          "bootstrap_servers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bootstrap Servers"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic",
+            "default": "crawl.urls"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id",
+            "default": "crawlers"
+          },
+          "config_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Config Version",
+            "default": 0
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "file"
+          }
+        },
+        "type": "object",
+        "title": "ClusterMapResponseSchema",
+        "description": "GET/PUT /api/v1/frontier/cluster-map response body."
+      },
+      "ClusterMapSchema": {
+        "properties": {
+          "bootstrap_servers": {
+            "items": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Bootstrap Servers"
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Topic"
+          },
+          "group_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Group Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bootstrap_servers",
+          "topic",
+          "group_id"
+        ],
+        "title": "ClusterMapSchema",
+        "description": "Live Kafka reachability for workers (strict PUT body)."
+      },
       "DiagnosticsSchema": {
         "properties": {
           "fallback_used": {
@@ -672,11 +1240,65 @@
             },
             "type": "object",
             "title": "Cache"
+          },
+          "agent_trace": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Agent Trace"
           }
         },
         "type": "object",
         "title": "DiagnosticsSchema",
         "description": "Per-request diagnostics embedded in the search response."
+      },
+      "FeedbackDocSummarySchema": {
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "helpful": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Helpful"
+          },
+          "not_helpful": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Not Helpful"
+          },
+          "reports": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Reports"
+          },
+          "top_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "doc_id",
+          "total",
+          "helpful",
+          "not_helpful",
+          "reports"
+        ],
+        "title": "FeedbackDocSummarySchema",
+        "description": "Per-document feedback rollup for the admin summary."
       },
       "FeedbackRequestSchema": {
         "properties": {
@@ -691,6 +1313,19 @@
             "maxLength": 64,
             "minLength": 1,
             "title": "Action"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "additionalProperties": false,
@@ -700,7 +1335,7 @@
           "action"
         ],
         "title": "FeedbackRequestSchema",
-        "description": "POST /api/v1/feedback body: anonymous (doc_id, action) counts only.\n\nExtra fields are rejected so no query text or identifiers can be\nsmuggled into the feedback store. `action` must name a canonical\nfeedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case\nvariants are normalized before validation. (Defined here because\nschemas.py is owned by wave0; the integrator may relocate it.)"
+        "description": "POST /api/v1/feedback body: anonymous counts with optional reason.\n\nExtra fields are rejected so no query text or identifiers can be\nsmuggled into the feedback store. `action` must name a canonical\nfeedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case\nvariants are normalized before validation. `reason` is optional and\nlimited to the closed `FEEDBACK_REASONS` taxonomy (\"what was not\nright\"); it is only accepted with negative/report actions.\n(Defined here because schemas.py is owned by wave0; the integrator\nmay relocate it.)"
       },
       "FeedbackResponseSchema": {
         "properties": {
@@ -716,6 +1351,17 @@
             "type": "integer",
             "minimum": 1.0,
             "title": "Count"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
@@ -725,7 +1371,46 @@
           "count"
         ],
         "title": "FeedbackResponseSchema",
-        "description": "Feedback acknowledgement: the pair plus its in-process count."
+        "description": "Feedback acknowledgement: the triple plus its in-process count."
+      },
+      "FeedbackSummarySchema": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "by_action": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Action"
+          },
+          "by_reason": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Reason"
+          },
+          "top_docs": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackDocSummarySchema"
+            },
+            "type": "array",
+            "title": "Top Docs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "by_action",
+          "by_reason",
+          "top_docs"
+        ],
+        "title": "FeedbackSummarySchema",
+        "description": "Admin feedback overview: totals plus the noisiest documents."
       },
       "FrontierCheckpointSchema": {
         "properties": {
@@ -785,6 +1470,11 @@
             "type": "string",
             "title": "Status",
             "default": "queued"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 0
           }
         },
         "type": "object",
@@ -803,12 +1493,23 @@
             },
             "type": "array",
             "title": "Seeds"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "FrontierResumeSchema",
-        "description": "POST /api/v1/frontier/resume body: optional replacement seeds."
+        "description": "POST /api/v1/frontier/resume body: optional replacement seeds.\n\n`priority` applies to every seed in the call: higher values dequeue\nfirst (`ORDER BY priority DESC, depth ASC`). Omitted/`None` keeps\nwhatever the store already has (``0`` for new rows). Negative\nvalues deprioritize below the default."
       },
       "FrontierSettingsResponseSchema": {
         "properties": {
@@ -853,6 +1554,44 @@
             "type": "boolean",
             "title": "Respect Robots",
             "default": true
+          },
+          "user_agent": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "User Agent",
+            "description": "Crawler User-Agent applied live by workers; empty/oversize values keep the previous agent.",
+            "default": "OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)"
+          },
+          "skip_domains": {
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Skip Domains",
+            "description": "Domain skip-list applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal."
+          },
+          "allow_domains": {
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Allow Domains",
+            "description": "Domain allowlist applied live by workers: when non-empty, only these bare lowercase hostnames (subdomains match too) are fetched \u2014 the same-domain-only switch. Empty means all domains are allowed. Malformed entries are ignored, never fatal."
+          },
+          "deny_domains": {
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Deny Domains",
+            "description": "Domain blocklist applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal."
           }
         },
         "additionalProperties": false,
@@ -895,6 +1634,45 @@
             },
             "type": "array",
             "title": "Workers"
+          },
+          "cleared_queued": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Cleared Queued",
+            "default": 0
+          },
+          "kafka_purged": {
+            "type": "boolean",
+            "title": "Kafka Purged",
+            "default": false
+          },
+          "kafka_lag_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kafka Lag Total"
+          },
+          "kafka_lag_partitions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kafka Lag Partitions"
+          },
+          "cluster_config_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Cluster Config Version",
+            "default": 0
           }
         },
         "type": "object",
@@ -929,6 +1707,12 @@
             "maxLength": 64,
             "title": "Status",
             "default": "alive"
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Role",
+            "default": "worker"
           }
         },
         "additionalProperties": false,
@@ -965,6 +1749,11 @@
             "type": "string",
             "title": "Status",
             "default": "alive"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "worker"
           }
         },
         "type": "object",
@@ -1007,6 +1796,130 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "KafkaNodeJoinedSchema": {
+        "properties": {
+          "advertise_listener": {
+            "type": "string",
+            "maxLength": 256,
+            "title": "Advertise Listener",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "KafkaNodeJoinedSchema",
+        "description": "POST /api/v1/frontier/kafka/nodes/{id}/joined body (strict)."
+      },
+      "KafkaNodePrepareResponseSchema": {
+        "properties": {
+          "node_id": {
+            "type": "integer",
+            "title": "Node Id"
+          },
+          "cluster_id": {
+            "type": "string",
+            "title": "Cluster Id"
+          },
+          "controller_quorum": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Controller Quorum"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "pending"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_id",
+          "cluster_id"
+        ],
+        "title": "KafkaNodePrepareResponseSchema",
+        "description": "Allocated broker identity + join parameters."
+      },
+      "KafkaNodePrepareSchema": {
+        "properties": {
+          "node_id": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Node Id"
+          },
+          "advertise_listener": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Advertise Listener"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node_id",
+          "advertise_listener"
+        ],
+        "title": "KafkaNodePrepareSchema",
+        "description": "POST /api/v1/frontier/kafka/nodes/prepare body (strict)."
+      },
+      "KafkaNodeSchema": {
+        "properties": {
+          "node_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Node Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "broker"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "pending"
+          },
+          "advertise_listener": {
+            "type": "string",
+            "title": "Advertise Listener",
+            "default": ""
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_id"
+        ],
+        "title": "KafkaNodeSchema",
+        "description": "One registered Kafka broker node (admin inventory)."
+      },
+      "KafkaNodesResponseSchema": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/KafkaNodeSchema"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "node_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Node Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "KafkaNodesResponseSchema",
+        "description": "GET /api/v1/frontier/kafka/nodes response body."
+      },
       "ProviderPrefsSchema": {
         "properties": {
           "include": {
@@ -1038,6 +1951,118 @@
         "type": "object",
         "title": "ProviderPrefsSchema",
         "description": "Optional per-query provider preferences on the wire."
+      },
+      "RebalanceAssignmentSchema": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "partition": {
+            "type": "integer",
+            "title": "Partition"
+          },
+          "replicas": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Replicas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic",
+          "partition",
+          "replicas"
+        ],
+        "title": "RebalanceAssignmentSchema",
+        "description": "One partition's planned replica set (reassign-partitions shape)."
+      },
+      "RebalancePlanRequestSchema": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Topic",
+            "default": "crawl.urls"
+          },
+          "broker_ids": {
+            "items": {
+              "type": "integer",
+              "maximum": 100000.0,
+              "minimum": 0.0
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Broker Ids"
+          },
+          "replication_factor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replication Factor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "broker_ids"
+        ],
+        "title": "RebalancePlanRequestSchema",
+        "description": "POST /api/v1/frontier/kafka/rebalance-plan body (strict)."
+      },
+      "RebalancePlanResponseSchema": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "partitions": {
+            "type": "integer",
+            "title": "Partitions"
+          },
+          "replication_factor": {
+            "type": "integer",
+            "title": "Replication Factor"
+          },
+          "broker_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Broker Ids"
+          },
+          "assignment": {
+            "items": {
+              "$ref": "#/components/schemas/RebalanceAssignmentSchema"
+            },
+            "type": "array",
+            "title": "Assignment"
+          },
+          "tool_hint": {
+            "type": "string",
+            "title": "Tool Hint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic",
+          "partitions",
+          "replication_factor",
+          "broker_ids",
+          "assignment",
+          "tool_hint"
+        ],
+        "title": "RebalancePlanResponseSchema",
+        "description": "Even-spread replica plan + the tool command that applies it."
       },
       "SavedPrefsListResponseSchema": {
         "properties": {

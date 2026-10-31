@@ -218,6 +218,58 @@ def test_refresh_limits_fail_open_on_store_error() -> None:
     assert worker.crawler.default_max_depth == 5
 
 
+def test_refresh_limits_applies_domain_scope_live() -> None:
+    """Dashboard allow/deny lists reach the crawler without a restart."""
+    worker = _worker({"allow_domains": ["Example.COM ", "sub.example.com"]})
+    assert worker.crawler.allow_domains == []
+    worker.refresh_limits()
+    assert worker.crawler.allow_domains == ["example.com", "sub.example.com"]
+    worker = _worker({"deny_domains": ["Bad.example "]})
+    worker.refresh_limits()
+    assert worker.crawler.deny_domains == ["bad.example"]
+
+
+def test_refresh_limits_ignores_invalid_domain_scope() -> None:
+    """Missing/non-list scope keeps the boot configuration; malformed
+    entries are ignored per entry (all-garbage clears, like skip_domains)."""
+    worker = _worker({})
+    worker.crawler.configure({"allow_domains": ["boot.test"]})
+    worker.refresh_limits()
+    assert worker.crawler.allow_domains == ["boot.test"]
+    for bad in ("example.com", True, None, 42):
+        worker = _worker({"allow_domains": bad, "deny_domains": bad})
+        worker.crawler.configure({"allow_domains": ["boot.test"]})
+        worker.refresh_limits()
+        assert worker.crawler.allow_domains == ["boot.test"]
+        assert worker.crawler.deny_domains == []
+    worker = _worker({"allow_domains": [None, 42], "deny_domains": [None]})
+    worker.refresh_limits()
+    assert worker.crawler.allow_domains == []
+    assert worker.crawler.deny_domains == []
+
+
+def test_put_settings_persists_domain_scope(client: TestClient) -> None:
+    """PUT accepts the new scope keys and GET returns them back."""
+    put = client.put(
+        "/api/v1/frontier/settings",
+        json={
+            "max_pages": 10,
+            "max_queued_urls": 50,
+            "crawl_delay_s": 0.5,
+            "default_max_depth": 2,
+            "respect_robots": True,
+            "allow_domains": ["example.com"],
+            "deny_domains": ["bad.example"],
+        },
+    )
+    assert put.status_code == 200, put.text
+    got = client.get("/api/v1/frontier/settings")
+    assert got.status_code == 200, got.text
+    settings = got.json()["settings"]
+    assert settings["allow_domains"] == ["example.com"]
+    assert settings["deny_domains"] == ["bad.example"]
+
+
 def test_refresh_limits_no_store_or_crawler_is_noop() -> None:
     worker = CrawlWorker(crawler=None, repository=None, frontier_store=None)
     worker.refresh_limits()

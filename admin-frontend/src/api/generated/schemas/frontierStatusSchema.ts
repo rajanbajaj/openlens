@@ -20,4 +20,11 @@ export interface FrontierStatusSchema {
   checkpoint?: FrontierCheckpointSchema;
   new_urls?: FrontierNewUrlSchema[];
   workers?: FrontierWorkerSchema[];
+  /** @minimum 0 */
+  cleared_queued?: number;
+  kafka_purged?: boolean;
+  kafka_lag_total?: number | null;
+  kafka_lag_partitions?: number | null;
+  /** @minimum 0 */
+  cluster_config_version?: number;
 }

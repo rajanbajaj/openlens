@@ -497,6 +497,15 @@ def test_chat_answer_prompt_prefers_partial_summary_over_refusal() -> None:
     assert "never answer from general knowledge" in prompt
 
 
+def test_chat_answer_prompt_asks_for_human_readable_prose() -> None:
+    """Summaries should read as prose, not extracted-fact bullet lists."""
+    prompt = build_chat_answer_prompt("summarize the news", [], [_hit("a")]).lower()
+    assert "natural flowing prose" in prompt
+    assert "not as a bullet list" in prompt
+    assert "at the end of each sentence" in prompt
+    assert "lead with the direct answer" in prompt
+
+
 def test_chat_trace_prefers_backend_model_id() -> None:
     engine, _, model = _engine(
         ['{"query": "q", "filters": {}, "mode": "default"}', "Summary [1]."],

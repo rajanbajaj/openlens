@@ -68,15 +68,27 @@ def _clean_query(query: Any) -> Optional[str]:
     return stripped if stripped else None
 
 
+#: Minimum prefix length for typo-tolerant fill. A one-edit slip on a
+#: 1-3 character prefix matches nearly everything and reads as noise,
+#: not help; longer prefixes make the intent unambiguous.
+_TYPO_MIN_PREFIX_LEN = 4
+
+
 def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[str]:
     """Prefix completion over an injectable term list.
 
     Case-insensitive prefix match; results are deduplicated (keeping the
-    first-seen spelling) and sorted case-insensitively for determinism.
-    Additive upgrades: last-token completion (for multi-word input, a
-    candidate also matches when any of its words starts with the last
-    query token) and the small synonym map (``js`` also completes
-    ``javascript`` terms, and so on).
+    first-seen spelling). Ranking mirrors the search-engine convention
+    (Google ranks by query popularity; offline we have no query logs by
+    design, so completion length is the proxy): full-phrase matches
+    first, then synonym-variant phrases, then last-token matches (for
+    multi-word input, a candidate also matches when any of its words
+    starts with the last query token, e.g. ``js`` also completes
+    ``javascript`` terms), each tier ordered by minimal extension
+    (shortest first) with an alphabetical tiebreak for determinism.
+    When exact matches leave slots unfilled and the prefix is long
+    enough to disambiguate, one-edit prefix slips (``wireles`` for
+    ``wireless``) fill the rest, ranked after every exact match.
     """
     cleaned_prefix = _clean_query(prefix)
     if cleaned_prefix is None:
@@ -84,8 +96,9 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         return []
     cleaned_terms = _clean_terms(terms)
+    folded = cleaned_prefix.casefold()
     seen: set[str] = set()
-    matches: list[str] = []
+    tiered: list[tuple[int, str]] = []
     for variant in _prefix_variants(cleaned_prefix):
         lowered = variant.casefold()
         for term in cleaned_terms:
@@ -93,7 +106,7 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
             if key in seen or not key.startswith(lowered):
                 continue
             seen.add(key)
-            matches.append(term)
+            tiered.append((0 if lowered == folded else 1, term))
     tokens = cleaned_prefix.split()
     if len(tokens) > 1:
         last_variants = {tokens[-1].casefold()} | _synonym_variants(tokens[-1])
@@ -104,8 +117,20 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
             words = key.split()
             if any(word.startswith(last) for word in words for last in last_variants):
                 seen.add(key)
-                matches.append(term)
-    matches.sort(key=str.casefold)
+                tiered.append((2, term))
+    tiered.sort(key=lambda item: (item[0], len(item[1]), item[1].casefold()))
+    matches = [term for _, term in tiered]
+    if len(matches) < limit and len(folded) >= _TYPO_MIN_PREFIX_LEN:
+        typo: list[str] = []
+        for term in cleaned_terms:
+            key = term.casefold()
+            if key in seen or len(key) < len(folded):
+                continue
+            if _edit_distance(folded, key[: len(folded)], 1) <= 1:
+                seen.add(key)
+                typo.append(term)
+        typo.sort(key=str.casefold)
+        matches.extend(typo)
     return matches[:limit]
 
 

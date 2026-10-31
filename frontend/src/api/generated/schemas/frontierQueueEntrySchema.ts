@@ -13,4 +13,5 @@ export interface FrontierQueueEntrySchema {
   /** @minimum 0 */
   depth: number;
   status?: string;
+  priority?: number;
 }

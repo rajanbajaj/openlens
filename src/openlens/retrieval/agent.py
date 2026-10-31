@@ -640,14 +640,18 @@ def build_chat_answer_prompt(
     lines = _answer_preamble(
         [
             "Answer the last user message using ONLY the sources below.",
-            "Cite every factual claim as [1], [2], and so on, matching the "
-            "source numbers. Never answer from general knowledge or explain "
-            "the topic in your own words: when the sources lack the answer, "
-            "say so instead. When the sources are topically relevant but do "
-            "not fully answer the question, summarize what they do say (with "
-            "citations) and briefly note what is missing instead of refusing. "
-            "Only when none of the sources is relevant at all, say plainly that "
-            "they do not contain the answer instead of guessing.",
+            "Write in natural flowing prose (short paragraphs), not as a "
+            "bullet list of extracted facts, unless the user asked for a list.",
+            "Lead with the direct answer; supporting details after. Put one "
+            "citation such as [1] at the end of each sentence covering the "
+            "claims in that sentence, instead of citing every clause. Skip "
+            "sources that turn out irrelevant instead of padding with them. "
+            "Never answer from general knowledge: when the sources lack the "
+            "answer, say so instead. When the sources are topically relevant "
+            "but do not fully answer the question, summarize what they do say "
+            "(with citations) and briefly note what is missing instead of "
+            "refusing. Only when none of the sources is relevant at all, say "
+            "plainly that they do not contain the answer instead of guessing.",
         ],
         message,
         history,

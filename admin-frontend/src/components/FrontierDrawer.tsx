@@ -36,6 +36,8 @@ const DEFAULT_SETTINGS: FrontierSettings = {
   respect_robots: true,
   user_agent: 'OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)',
   skip_domains: [],
+  allow_domains: [],
+  deny_domains: [],
 };
 
 /**
@@ -99,6 +101,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [seeds, setSeeds] = useState('');
   const [priority, setPriority] = useState('');
   const [skipInput, setSkipInput] = useState('');
+  const [allowInput, setAllowInput] = useState('');
+  const [denyInput, setDenyInput] = useState('');
   const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [live, setLive] = useState(false);
 
@@ -273,6 +277,48 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     });
   }
 
+  function handleAddAllowDomain() {
+    const domain = normalizeSkipDomain(allowInput);
+    if (!domain) {
+      pushToast('Enter a domain to allow.', 'error');
+      return;
+    }
+    if ((settings.allow_domains ?? []).includes(domain)) {
+      pushToast('Domain is already allowed.', 'error');
+      return;
+    }
+    setSettings({ ...settings, allow_domains: [...(settings.allow_domains ?? []), domain] });
+    setAllowInput('');
+  }
+
+  function handleRemoveAllowDomain(domain: string) {
+    setSettings({
+      ...settings,
+      allow_domains: (settings.allow_domains ?? []).filter((entry) => entry !== domain),
+    });
+  }
+
+  function handleAddDenyDomain() {
+    const domain = normalizeSkipDomain(denyInput);
+    if (!domain) {
+      pushToast('Enter a domain to block.', 'error');
+      return;
+    }
+    if ((settings.deny_domains ?? []).includes(domain)) {
+      pushToast('Domain is already blocked.', 'error');
+      return;
+    }
+    setSettings({ ...settings, deny_domains: [...(settings.deny_domains ?? []), domain] });
+    setDenyInput('');
+  }
+
+  function handleRemoveDenyDomain(domain: string) {
+    setSettings({
+      ...settings,
+      deny_domains: (settings.deny_domains ?? []).filter((entry) => entry !== domain),
+    });
+  }
+
   const queue = status ? readFrontierQueue(status) : [];
   const newUrls = status ? readFrontierNewUrls(status) : [];
   const checkpoint = status?.checkpoint;
@@ -328,7 +374,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
               >
                 {workers.map((worker) => (
-                  <li key={worker.worker_id}>
+                  <li key={worker.worker_id} className="break-all">
                     <Badge>{worker.status}</Badge> {worker.worker_id} · {worker.claimed} claimed ·
                     crawl {worker.crawl_id}
                   </li>
@@ -352,7 +398,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
               >
                 {queue.map((entry) => (
-                  <li key={entry.url}>
+                  <li key={entry.url} className="break-all">
                     <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth} · priority{' '}
                     {entry.priority ?? 0}
                   </li>
@@ -369,7 +415,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
               >
                 {newUrls.map((entry) => (
-                  <li key={entry.url}>
+                  <li key={entry.url} className="break-all">
                     <Badge>{entry.status}</Badge> {entry.url}
                   </li>
                 ))}
@@ -504,6 +550,76 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                           variant="ghost"
                           data-testid={`frontier-skip-remove-${domain}`}
                           onClick={() => handleRemoveSkipDomain(domain)}
+                        >
+                          ×
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Allow domains (when set, only these are ever fetched)
+                <div className="flex gap-ol-xs">
+                  <input
+                    data-testid="frontier-allow-input"
+                    type="text"
+                    aria-label="Domain to allow"
+                    value={allowInput}
+                    onChange={(event) => setAllowInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') handleAddAllowDomain();
+                    }}
+                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                  <Button variant="secondary" onClick={handleAddAllowDomain}>
+                    Add
+                  </Button>
+                </div>
+                {(settings.allow_domains ?? []).length > 0 && (
+                  <ul data-testid="frontier-allow-list" className="flex flex-wrap gap-ol-xs">
+                    {(settings.allow_domains ?? []).map((domain) => (
+                      <li key={domain}>
+                        <Badge>{domain}</Badge>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-allow-remove-${domain}`}
+                          onClick={() => handleRemoveAllowDomain(domain)}
+                        >
+                          ×
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Block domains (queued URLs from these are never fetched)
+                <div className="flex gap-ol-xs">
+                  <input
+                    data-testid="frontier-deny-input"
+                    type="text"
+                    aria-label="Domain to block"
+                    value={denyInput}
+                    onChange={(event) => setDenyInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') handleAddDenyDomain();
+                    }}
+                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                  <Button variant="secondary" onClick={handleAddDenyDomain}>
+                    Add
+                  </Button>
+                </div>
+                {(settings.deny_domains ?? []).length > 0 && (
+                  <ul data-testid="frontier-deny-list" className="flex flex-wrap gap-ol-xs">
+                    {(settings.deny_domains ?? []).map((domain) => (
+                      <li key={domain}>
+                        <Badge>{domain}</Badge>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-deny-remove-${domain}`}
+                          onClick={() => handleRemoveDenyDomain(domain)}
                         >
                           ×
                         </Button>

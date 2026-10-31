@@ -7,8 +7,13 @@
 import type {
   AdminConfigDocResponseSchema,
   AdminConfigPutSchema,
+  ChatRequestSchema,
+  ChatResponseSchema,
+  ClusterMapResponseSchema,
+  ClusterMapSchema,
   FeedbackRequestSchema,
   FeedbackResponseSchema,
+  FeedbackSummarySchema,
   FrontierResumeSchema,
   FrontierSettingsResponseSchema,
   FrontierSettingsSchema,
@@ -17,6 +22,12 @@ import type {
   FrontierWorkersResponseSchema,
   HTTPValidationError,
   HealthzHealthzGet200,
+  KafkaNodeJoinedSchema,
+  KafkaNodePrepareResponseSchema,
+  KafkaNodePrepareSchema,
+  KafkaNodesResponseSchema,
+  RebalancePlanRequestSchema,
+  RebalancePlanResponseSchema,
   SavedPrefsListResponseSchema,
   SavedPrefsResponseSchema,
   SavedPrefsSchema,
@@ -87,6 +98,75 @@ export const searchApiV1SearchPost = async (
 
   const data: searchApiV1SearchPostResponse['data'] = body ? JSON.parse(body) : {};
   return { data, status: res.status, headers: res.headers } as searchApiV1SearchPostResponse;
+};
+
+export type agentChatApiV1AgentChatPostResponse200 = {
+  data: ChatResponseSchema;
+  status: 200;
+};
+
+export type agentChatApiV1AgentChatPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type agentChatApiV1AgentChatPostResponseSuccess = agentChatApiV1AgentChatPostResponse200 & {
+  headers: Headers;
+};
+export type agentChatApiV1AgentChatPostResponseError = agentChatApiV1AgentChatPostResponse422 & {
+  headers: Headers;
+};
+
+export type agentChatApiV1AgentChatPostResponse =
+  agentChatApiV1AgentChatPostResponseSuccess | agentChatApiV1AgentChatPostResponseError;
+
+export const getAgentChatApiV1AgentChatPostUrl = () => {
+  return `/api/v1/agent/chat`;
+};
+
+/**
+ * One grounded chat turn over the search index.
+ *
+ * Rewrites the turn with the transcript, searches via the engine as
+ * the only tool, and synthesizes a cited answer. Fail-closed: a
+ * missing/disabled model backend (or a model error) returns an empty
+ * answer with a ``notice`` plus plain-search hits — never a 500.
+ * @summary Agent Chat
+ */
+export const agentChatApiV1AgentChatPost = async (
+  chatRequestSchema: ChatRequestSchema,
+  options?: RequestInit,
+): Promise<agentChatApiV1AgentChatPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getAgentChatApiV1AgentChatPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(chatRequestSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: agentChatApiV1AgentChatPostResponse['data'] = body ? JSON.parse(body) : {};
+  return { data, status: res.status, headers: res.headers } as agentChatApiV1AgentChatPostResponse;
 };
 
 export type suggestApiV1SuggestGetResponse200 = {
@@ -172,10 +252,12 @@ export const getFeedbackApiV1FeedbackPostUrl = () => {
 /**
  * Record one anonymous feedback event as an in-process count.
  *
- * The module-level tally is the canonical response source; when the
- * app engine exposes ``record_feedback`` the event is mirrored there
- * too (best-effort, never failing the request) so future ranking can
- * consume the counts.
+ * The tally key is ``(doc_id, action, reason)`` with ``""`` for absent
+ * reasons, so reason-less posts keep their exact historic shape. The
+ * module-level tally is the canonical response source; when the app
+ * engine exposes ``record_feedback`` the ``(doc_id, action)`` event is
+ * mirrored there too (best-effort, never failing the request) so
+ * future ranking can consume the counts.
  * @summary Feedback
  */
 export const feedbackApiV1FeedbackPost = async (
@@ -212,6 +294,51 @@ export const feedbackApiV1FeedbackPost = async (
 
   const data: feedbackApiV1FeedbackPostResponse['data'] = body ? JSON.parse(body) : {};
   return { data, status: res.status, headers: res.headers } as feedbackApiV1FeedbackPostResponse;
+};
+
+export type adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse200 = {
+  data: FeedbackSummarySchema;
+  status: 200;
+};
+
+export type adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponseSuccess =
+  adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse200 & {
+    headers: Headers;
+  };
+export type adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse =
+  adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponseSuccess;
+
+export const getAdminFeedbackSummaryApiV1AdminFeedbackSummaryGetUrl = () => {
+  return `/api/v1/admin/feedback/summary`;
+};
+
+/**
+ * Admin-only feedback overview (same gate as config mutations).
+ *
+ * Aggregates the anonymous tallies: totals by action and reason plus
+ * the noisiest documents. Gated because even anonymous aggregates
+ * describe user behavior; reads stay open only when no admin token is
+ * configured (local dev), exactly like the other admin reads.
+ * @summary Admin Feedback Summary
+ */
+export const adminFeedbackSummaryApiV1AdminFeedbackSummaryGet = async (
+  options?: RequestInit,
+): Promise<adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse> => {
+  const res = await fetch(getAdminFeedbackSummaryApiV1AdminFeedbackSummaryGetUrl(), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse;
 };
 
 export type listPrefsApiV1PrefsGetResponse200 = {
@@ -354,6 +481,53 @@ export const frontierStatusApiV1FrontierStatusGet = async (
   } as frontierStatusApiV1FrontierStatusGetResponse;
 };
 
+export type frontierClearApiV1FrontierClearPostResponse200 = {
+  data: FrontierStatusSchema;
+  status: 200;
+};
+
+export type frontierClearApiV1FrontierClearPostResponseSuccess =
+  frontierClearApiV1FrontierClearPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierClearApiV1FrontierClearPostResponse =
+  frontierClearApiV1FrontierClearPostResponseSuccess;
+
+export const getFrontierClearApiV1FrontierClearPostUrl = () => {
+  return `/api/v1/frontier/clear`;
+};
+
+/**
+ * Pause crawling and drop every queued URL (admin-only).
+ *
+ * Clears the persistent store's ``queued`` rows and purges the Kafka
+ * topic when ``kafka:`` is enabled — the topic must go too, or already
+ * published messages refill the queue on the next resume. In-flight
+ * (``active``) rows are kept, as is all history (``done``/``failed``),
+ * checkpoints, and settings. The in-memory snapshot queue is emptied
+ * so the dashboard stops showing seeds that no longer exist anywhere.
+ * Clearing is best-effort per step and always reports honestly: the
+ * response carries ``cleared_queued`` and ``kafka_purged``.
+ * @summary Frontier Clear
+ */
+export const frontierClearApiV1FrontierClearPost = async (
+  options?: RequestInit,
+): Promise<frontierClearApiV1FrontierClearPostResponse> => {
+  const res = await fetch(getFrontierClearApiV1FrontierClearPostUrl(), {
+    ...options,
+    method: 'POST',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierClearApiV1FrontierClearPostResponse['data'] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierClearApiV1FrontierClearPostResponse;
+};
+
 export type frontierPauseApiV1FrontierPausePostResponse200 = {
   data: FrontierStatusSchema;
   status: 200;
@@ -373,8 +547,7 @@ export const getFrontierPauseApiV1FrontierPausePostUrl = () => {
 /**
  * Pause crawling; the queue snapshot is preserved as-is.
  *
- * Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set (see
- * `_frontier_admin_response`); reads stay open.
+ * Admin-only (see `_frontier_admin_response`); reads stay open.
  * @summary Frontier Pause
  */
 export const frontierPauseApiV1FrontierPausePost = async (
@@ -425,8 +598,8 @@ export const getFrontierResumeApiV1FrontierResumePostUrl = () => {
 /**
  * Resume crawling, optionally replacing the queue with `seeds`.
  *
- * Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set: seed URLs
- * choose what gets crawled, so untrusted callers must not set them.
+ * Admin-only: seed URLs choose what gets crawled, so untrusted
+ * callers must not set them.
  * @summary Frontier Resume
  */
 export const frontierResumeApiV1FrontierResumePost = async (
@@ -487,6 +660,10 @@ export const getFrontierGetSettingsApiV1FrontierSettingsGetUrl = () => {
 
 /**
  * Current frontier settings (config-seeded, then PUT-overridden).
+ *
+ * PUT values persist in the frontier store, so a saved dashboard edit
+ * survives restarts and reaches the crawler workers (which read the
+ * store row, not backend memory). Stored values win over the seeds.
  * @summary Frontier Get Settings
  */
 export const frontierGetSettingsApiV1FrontierSettingsGet = async (
@@ -539,7 +716,7 @@ export const getFrontierPutSettingsApiV1FrontierSettingsPutUrl = () => {
 /**
  * Replace the frontier settings (strict body, unknown keys rejected).
  *
- * Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set.
+ * Admin-only.
  * @summary Frontier Put Settings
  */
 export const frontierPutSettingsApiV1FrontierSettingsPut = async (
@@ -659,8 +836,8 @@ export const getFrontierWorkerHeartbeatApiV1FrontierWorkersHeartbeatPostUrl = ()
 /**
  * Record one worker heartbeat and return the live worker list.
  *
- * Worker-control plane: admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN`
- * is set (same gate as pause/resume/settings). Blank worker ids are
+ * Worker-control plane: admin-only (same gate as pause/resume/settings).
+ * Blank worker ids are
  * rejected with 422 so anonymous rows can never enter the registry.
  * @summary Frontier Worker Heartbeat
  */
@@ -706,6 +883,402 @@ export const frontierWorkerHeartbeatApiV1FrontierWorkersHeartbeatPost = async (
   } as frontierWorkerHeartbeatApiV1FrontierWorkersHeartbeatPostResponse;
 };
 
+export type frontierClusterMapApiV1FrontierClusterMapGetResponse200 = {
+  data: ClusterMapResponseSchema;
+  status: 200;
+};
+
+export type frontierClusterMapApiV1FrontierClusterMapGetResponseSuccess =
+  frontierClusterMapApiV1FrontierClusterMapGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierClusterMapApiV1FrontierClusterMapGetResponse =
+  frontierClusterMapApiV1FrontierClusterMapGetResponseSuccess;
+
+export const getFrontierClusterMapApiV1FrontierClusterMapGetUrl = () => {
+  return `/api/v1/frontier/cluster-map`;
+};
+
+/**
+ * Effective Kafka reachability for workers (admin-only).
+ *
+ * File config seeds the map; a stored PUT overrides it and bumps
+ * ``config_version``, which live workers pick up without restarting.
+ * @summary Frontier Cluster Map
+ */
+export const frontierClusterMapApiV1FrontierClusterMapGet = async (
+  options?: RequestInit,
+): Promise<frontierClusterMapApiV1FrontierClusterMapGetResponse> => {
+  const res = await fetch(getFrontierClusterMapApiV1FrontierClusterMapGetUrl(), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierClusterMapApiV1FrontierClusterMapGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierClusterMapApiV1FrontierClusterMapGetResponse;
+};
+
+export type frontierPutClusterMapApiV1FrontierClusterMapPutResponse200 = {
+  data: ClusterMapResponseSchema;
+  status: 200;
+};
+
+export type frontierPutClusterMapApiV1FrontierClusterMapPutResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierPutClusterMapApiV1FrontierClusterMapPutResponseSuccess =
+  frontierPutClusterMapApiV1FrontierClusterMapPutResponse200 & {
+    headers: Headers;
+  };
+export type frontierPutClusterMapApiV1FrontierClusterMapPutResponseError =
+  frontierPutClusterMapApiV1FrontierClusterMapPutResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierPutClusterMapApiV1FrontierClusterMapPutResponse =
+  | frontierPutClusterMapApiV1FrontierClusterMapPutResponseSuccess
+  | frontierPutClusterMapApiV1FrontierClusterMapPutResponseError;
+
+export const getFrontierPutClusterMapApiV1FrontierClusterMapPutUrl = () => {
+  return `/api/v1/frontier/cluster-map`;
+};
+
+/**
+ * Replace the stored cluster map and bump its version (admin-only).
+ *
+ * Workers poll the version and recreate their Kafka clients on change,
+ * so broker rotations need no restarts. Other settings keys are
+ * preserved; only the map (plus its new version) is written.
+ * @summary Frontier Put Cluster Map
+ */
+export const frontierPutClusterMapApiV1FrontierClusterMapPut = async (
+  clusterMapSchema: ClusterMapSchema,
+  options?: RequestInit,
+): Promise<frontierPutClusterMapApiV1FrontierClusterMapPutResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierPutClusterMapApiV1FrontierClusterMapPutUrl(), {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(clusterMapSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierPutClusterMapApiV1FrontierClusterMapPutResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierPutClusterMapApiV1FrontierClusterMapPutResponse;
+};
+
+export type frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse200 = {
+  data: KafkaNodesResponseSchema;
+  status: 200;
+};
+
+export type frontierKafkaNodesApiV1FrontierKafkaNodesGetResponseSuccess =
+  frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse =
+  frontierKafkaNodesApiV1FrontierKafkaNodesGetResponseSuccess;
+
+export const getFrontierKafkaNodesApiV1FrontierKafkaNodesGetUrl = () => {
+  return `/api/v1/frontier/kafka/nodes`;
+};
+
+/**
+ * Registered Kafka broker nodes (admin-only inventory).
+ * @summary Frontier Kafka Nodes
+ */
+export const frontierKafkaNodesApiV1FrontierKafkaNodesGet = async (
+  options?: RequestInit,
+): Promise<frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse> => {
+  const res = await fetch(getFrontierKafkaNodesApiV1FrontierKafkaNodesGetUrl(), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierKafkaNodesApiV1FrontierKafkaNodesGetResponse;
+};
+
+export type frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse200 = {
+  data: KafkaNodePrepareResponseSchema;
+  status: 200;
+};
+
+export type frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponseSuccess =
+  frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponseError =
+  frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse =
+  | frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponseSuccess
+  | frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponseError;
+
+export const getFrontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostUrl = () => {
+  return `/api/v1/frontier/kafka/nodes/prepare`;
+};
+
+/**
+ * Reserve a broker node id and return its join parameters (admin-only).
+ *
+ * The operator (or provisioning script) formats the new broker with the
+ * returned cluster id, starts it against the controller quorum, then
+ * marks it joined. Ids are explicit so compose-owned 1-3 are never
+ * reallocated; duplicates are rejected with 409.
+ * @summary Frontier Kafka Node Prepare
+ */
+export const frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePost = async (
+  kafkaNodePrepareSchema: KafkaNodePrepareSchema,
+  options?: RequestInit,
+): Promise<frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(kafkaNodePrepareSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierKafkaNodePrepareApiV1FrontierKafkaNodesPreparePostResponse;
+};
+
+export type frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse200 = {
+  data: KafkaNodesResponseSchema;
+  status: 200;
+};
+
+export type frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponseSuccess =
+  frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponseError =
+  frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse =
+  | frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponseSuccess
+  | frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponseError;
+
+export const getFrontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostUrl = (
+  nodeId: number,
+) => {
+  return `/api/v1/frontier/kafka/nodes/${nodeId}/joined`;
+};
+
+/**
+ * Mark a prepared broker joined after verifying it (admin-only).
+ * @summary Frontier Kafka Node Joined
+ */
+export const frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPost = async (
+  nodeId: number,
+  kafkaNodeJoinedSchema: KafkaNodeJoinedSchema,
+  options?: RequestInit,
+): Promise<frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(
+    getFrontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostUrl(nodeId),
+    {
+      ...options,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+      body: JSON.stringify(kafkaNodeJoinedSchema),
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierKafkaNodeJoinedApiV1FrontierKafkaNodesNodeIdJoinedPostResponse;
+};
+
+export type frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse200 = {
+  data: RebalancePlanResponseSchema;
+  status: 200;
+};
+
+export type frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponseSuccess =
+  frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponseError =
+  frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse =
+  | frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponseSuccess
+  | frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponseError;
+
+export const getFrontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostUrl = () => {
+  return `/api/v1/frontier/kafka/rebalance-plan`;
+};
+
+/**
+ * Build an even-spread replica plan for new brokers (admin-only).
+ *
+ * Reads live topic layout (partition count, replication factor unless
+ * overridden) from the broker, so the driver and a reachable broker
+ * are required — otherwise 503. The returned JSON feeds
+ * ``kafka-reassign-partitions.sh``; nothing moves until the operator
+ * runs it, so existing brokers are never disturbed by planning.
+ * @summary Frontier Kafka Rebalance Plan
+ */
+export const frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPost = async (
+  rebalancePlanRequestSchema: RebalancePlanRequestSchema,
+  options?: RequestInit,
+): Promise<frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(rebalancePlanRequestSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierKafkaRebalancePlanApiV1FrontierKafkaRebalancePlanPostResponse;
+};
+
 export type adminConfigGetApiV1AdminConfigDocGetResponse200 = {
   data: AdminConfigDocResponseSchema;
   status: 200;
@@ -739,6 +1312,8 @@ export const getAdminConfigGetApiV1AdminConfigDocGetUrl = (doc: string) => {
  * Reads stay open (same rule as the frontier reads): a persisted row
  * wins with ``source: db``; otherwise the YAML-backed file section is
  * returned with ``source: file``. Unknown doc keys fail with 404.
+ * Live secret values (``api_key`` and friends) are always replaced by
+ * the ``REDACTED_SECRET`` sentinel before leaving the backend.
  * @summary Admin Config Get
  */
 export const adminConfigGetApiV1AdminConfigDocGet = async (
@@ -790,13 +1365,16 @@ export const getAdminConfigPutApiV1AdminConfigDocPutUrl = (doc: string) => {
 /**
  * Persist one config doc (strict body, validated like boot).
  *
- * Admin-only when `OPENLENS_FRONTIER_ADMIN_TOKEN` is set — reuses the
- * exact frontier gate (`_frontier_admin_response`), no second auth
+ * Admin-only — reuses the exact frontier gate
+ * (`_frontier_admin_response`), no second auth
  * scheme. The body is validated with the existing startup validators;
- * anything the boot path would reject fails with 422. The write
+ * anything the boot path would reject fails with 422. The
+ * ``REDACTED_SECRET`` sentinel is accepted for secret fields and means
+ * "keep the existing value"; a sentinel with no prior value fails with
+ * 422 instead of storing the sentinel as a credential. The write
  * replaces the row wholesale (version++); the running app's in-memory
  * config is overlaid so reads stay consistent, and the next boot picks
- * the row up over the YAML seed.
+ * the row up over the YAML seed. Responses carry the redacted body.
  * @summary Admin Config Put
  */
 export const adminConfigPutApiV1AdminConfigDocPut = async (

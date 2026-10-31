@@ -6,11 +6,12 @@
  */
 
 /**
- * Feedback acknowledgement: the pair plus its in-process count.
+ * Feedback acknowledgement: the triple plus its in-process count.
  */
 export interface FeedbackResponseSchema {
   doc_id: string;
   action: string;
   /** @minimum 1 */
   count: number;
+  reason?: string | null;
 }

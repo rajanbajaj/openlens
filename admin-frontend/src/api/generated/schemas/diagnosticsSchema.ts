@@ -4,6 +4,7 @@
  * OpenLens
  * OpenAPI spec version: 0.1.0
  */
+import type { DiagnosticsSchemaAgentTrace } from './diagnosticsSchemaAgentTrace.ts';
 import type { DiagnosticsSchemaCache } from './diagnosticsSchemaCache.ts';
 import type { DiagnosticsSchemaPluginExecutionsItem } from './diagnosticsSchemaPluginExecutionsItem.ts';
 import type { DiagnosticsSchemaProviderCostsEstimated } from './diagnosticsSchemaProviderCostsEstimated.ts';
@@ -24,4 +25,5 @@ export interface DiagnosticsSchema {
   query?: DiagnosticsSchemaQuery;
   request_id?: string;
   cache?: DiagnosticsSchemaCache;
+  agent_trace?: DiagnosticsSchemaAgentTrace;
 }

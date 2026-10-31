@@ -6,13 +6,16 @@
  */
 
 /**
- * POST /api/v1/feedback body: anonymous (doc_id, action) counts only.
+ * POST /api/v1/feedback body: anonymous counts with optional reason.
  *
  * Extra fields are rejected so no query text or identifiers can be
  * smuggled into the feedback store. `action` must name a canonical
  * feedback action (see `FEEDBACK_ACTIONS`); common hyphen/space/case
- * variants are normalized before validation. (Defined here because
- * schemas.py is owned by wave0; the integrator may relocate it.)
+ * variants are normalized before validation. `reason` is optional and
+ * limited to the closed `FEEDBACK_REASONS` taxonomy ("what was not
+ * right"); it is only accepted with negative/report actions.
+ * (Defined here because schemas.py is owned by wave0; the integrator
+ * may relocate it.)
  */
 export interface FeedbackRequestSchema {
   /**
@@ -25,4 +28,5 @@ export interface FeedbackRequestSchema {
    * @maxLength 64
    */
   action: string;
+  reason?: string | null;
 }

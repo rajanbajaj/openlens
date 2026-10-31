@@ -20,4 +20,6 @@ export interface FrontierWorkerHeartbeatSchema {
   claimed?: number;
   /** @maxLength 64 */
   status?: string;
+  /** @maxLength 64 */
+  role?: string;
 }

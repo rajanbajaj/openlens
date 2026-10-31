@@ -7,7 +7,13 @@
 
 /**
  * POST /api/v1/frontier/resume body: optional replacement seeds.
+ *
+ * `priority` applies to every seed in the call: higher values dequeue
+ * first (`ORDER BY priority DESC, depth ASC`). Omitted/`None` keeps
+ * whatever the store already has (``0`` for new rows). Negative
+ * values deprioritize below the default.
  */
 export interface FrontierResumeSchema {
   seeds?: string[];
+  priority?: number | null;
 }

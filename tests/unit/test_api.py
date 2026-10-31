@@ -335,7 +335,8 @@ def test_suggest_uses_app_state_vocabulary() -> None:
     app.state.suggest_terms = ["zebra crossing", "zebra finch"]
     resp = TestClient(app).get("/api/v1/suggest", params={"q": "zeb"})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["suggestions"] == ["zebra crossing", "zebra finch"]
+    # Minimal-extension ranking: shortest completion first.
+    assert resp.json()["suggestions"] == ["zebra finch", "zebra crossing"]
 
 
 # --- search assistance -------------------------------------------------------

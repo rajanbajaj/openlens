@@ -254,7 +254,11 @@ export function isFrontierSettingsResponse(value: unknown): value is FrontierSet
     typeof settings.respect_robots === 'boolean' &&
     typeof settings.user_agent === 'string' &&
     Array.isArray(settings.skip_domains) &&
-    settings.skip_domains.every((domain) => typeof domain === 'string')
+    settings.skip_domains.every((domain) => typeof domain === 'string') &&
+    Array.isArray(settings.allow_domains) &&
+    settings.allow_domains.every((domain) => typeof domain === 'string') &&
+    Array.isArray(settings.deny_domains) &&
+    settings.deny_domains.every((domain) => typeof domain === 'string')
   );
 }
 

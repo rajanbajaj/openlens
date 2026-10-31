@@ -170,6 +170,11 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     agent = settings.get("user_agent")
     agent = agent.strip() if isinstance(agent, str) else ""
     skip = normalize_skip_domains(settings.get("skip_domains"))
+    # Same bare-hostname list contract as ``skip_domains``: None keeps
+    # the boot configuration; a (possibly empty) list replaces it live
+    # (empty ``allow_domains`` re-opens crawling to every domain).
+    allow = normalize_skip_domains(settings.get("allow_domains"))
+    deny = normalize_skip_domains(settings.get("deny_domains"))
     return {
         "default_max_depth": (
             depth
@@ -196,6 +201,8 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
         "respect_robots": robots if isinstance(robots, bool) else None,
         "user_agent": agent if 1 <= len(agent) <= 256 else None,
         "skip_domains": skip,
+        "allow_domains": allow,
+        "deny_domains": deny,
     }
 
 
@@ -358,6 +365,17 @@ class CrawlerWorker:
             # bulk-skip support (older doubles) simply skip nothing.
             bulk = store.skip_queued_domains(list(skip)) if skip else 0
             self.last_skip_bulk_count = int(bulk or 0)
+        # Domain scope applies live like every other limit: the crawl
+        # loop reads ``crawler.allow_domains``/``deny_domains`` per URL,
+        # so a dashboard edit takes effect without restarting workers.
+        # None keeps the boot configuration; an empty allowlist re-opens
+        # crawling to every domain.
+        with contextlib.suppress(Exception):
+            if live.get("allow_domains") is not None:
+                crawler.allow_domains = list(live["allow_domains"])
+        with contextlib.suppress(Exception):
+            if live.get("deny_domains") is not None:
+                crawler.deny_domains = list(live["deny_domains"])
 
     def guarded_store(self) -> Any:
         """Frontier store view enforcing the refreshed skip list at take.
