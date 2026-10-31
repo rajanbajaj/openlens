@@ -283,6 +283,8 @@ kafka:
   group_id: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}
   publish_timeout_s: 5.0
   poll_timeout_s: 1.0
+  max_poll_interval_ms: 900000
+  max_pages_per_poll: 5
 
 # Search-result cache (caching-audit plan). `cache.backend` is the single
 # switch (`memory` | `sqlite` | `redis`, shipped default `redis` — see

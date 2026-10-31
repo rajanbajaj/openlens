@@ -48,6 +48,96 @@ def test_pause_and_resume_cycle(client: TestClient) -> None:
     assert resumed.json()["checkpoint"]["phase"] == "running"
 
 
+def _file_store(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    """File-backed frontier store with a fresh handle per open.
+
+    Mirrors production (each endpoint open is a new connection to the
+    same DB) so endpoint-driven ``close()`` calls never break assertions.
+    """
+    from openlens.api import routes as api_routes
+
+    db_path = str(tmp_path / "frontier.db")
+    seed = SqliteFrontierStore(db_path)
+    try:
+        seed.save_settings({})
+    finally:
+        seed.close()
+    monkeypatch.setattr(
+        api_routes, "open_frontier_store", lambda _config: SqliteFrontierStore(db_path)
+    )
+    return db_path
+
+
+def _row_statuses(db_path: str) -> dict[str, str]:
+    probe = SqliteFrontierStore(db_path)
+    try:
+        return {
+            row["url"]: row["status"]
+            for row in probe._conn.execute(
+                "SELECT url, status FROM frontier_queue"
+            ).fetchall()
+        }
+    finally:
+        probe.close()
+
+
+def test_pause_reaps_expired_leases_but_keeps_live_ones(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Pause returns dead workers' rows to queued; live rows stay active."""
+    db_path = _file_store(monkeypatch, tmp_path)
+    setup = SqliteFrontierStore(db_path)
+    try:
+        assert setup.enqueue("https://dead.test/a")
+        assert setup.enqueue("https://live.test/b")
+        assert setup.claim("dead-worker") is not None
+        assert setup.claim("live-worker") is not None
+        # Dead worker never heartbeats again: backdate past the TTL.
+        with setup._lock:
+            setup._conn.execute(
+                "UPDATE frontier_queue SET heartbeat_at = ?"
+                " WHERE owner = 'dead-worker'",
+                ("2000-01-01T00:00:00+00:00",),
+            )
+            setup._conn.commit()
+        assert setup.heartbeat("live-worker") == 1
+    finally:
+        setup.close()
+
+    paused = client.post("/api/v1/frontier/pause")
+    assert paused.status_code == 200
+
+    statuses = _row_statuses(db_path)
+    assert statuses["https://dead.test/a"] == "queued"
+    assert statuses["https://live.test/b"] == "active"
+
+
+def test_clear_sweeps_reaped_orphans(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Pause-then-clear empties the queue even with a dead worker's rows."""
+    db_path = _file_store(monkeypatch, tmp_path)
+    setup = SqliteFrontierStore(db_path)
+    try:
+        assert setup.enqueue("https://dead.test/a")
+        assert setup.enqueue("https://queued.test/b")
+        assert setup.claim("dead-worker") is not None
+        with setup._lock:
+            setup._conn.execute(
+                "UPDATE frontier_queue SET heartbeat_at = ?"
+                " WHERE owner = 'dead-worker'",
+                ("2000-01-01T00:00:00+00:00",),
+            )
+            setup._conn.commit()
+    finally:
+        setup.close()
+
+    cleared = client.post("/api/v1/frontier/clear")
+    assert cleared.status_code == 200
+    assert cleared.json()["cleared_queued"] == 2
+    assert _row_statuses(db_path) == {}
+
+
 def test_resume_with_seeds_replaces_queue(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/frontier/resume", json={"seeds": ["https://example.com/a", "  "]}

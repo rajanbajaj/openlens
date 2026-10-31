@@ -231,6 +231,31 @@ def test_validate_kafka_section_servers_shapes() -> None:
         validate_kafka_section({"bogus": 1})
 
 
+def test_validate_kafka_section_poll_knobs() -> None:
+    normalized = validate_kafka_section({})
+    assert normalized["max_poll_interval_ms"] == 900_000
+    assert normalized["max_pages_per_poll"] == 5
+    section = validate_kafka_section(
+        {"max_poll_interval_ms": 600_000, "max_pages_per_poll": 2}
+    )
+    assert section["max_poll_interval_ms"] == 600_000
+    assert section["max_pages_per_poll"] == 2
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_poll_interval_ms": 0})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_poll_interval_ms": -5})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_pages_per_poll": 0})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_pages_per_poll": -1})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_pages_per_poll": True})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_pages_per_poll": "many"})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_pages_per_poll": 2.5})
+
+
 def test_kafka_enabled() -> None:
     assert kafka_enabled(None) is False
     assert kafka_enabled({}) is False
@@ -616,6 +641,41 @@ def test_run_kafka_worker_respects_pause(tmp_path: Path) -> None:
     assert counts["received"] == 0
     assert fake.commits == 0
     assert hits == {}
+
+
+def test_run_kafka_worker_bounds_pages_per_poll(tmp_path: Path) -> None:
+    """One message must not trigger a max_pages-sized drain (rebalance)."""
+    db_path = str(tmp_path / "frontier.db")
+    observed: list[int] = []
+    created: list[PoliteCrawler] = []
+
+    def factory() -> PoliteCrawler:
+        crawler = _crawler_factory({})()
+        created.append(crawler)
+        original_fetch = crawler._fetch_bounded
+
+        def recording_fetch(url: str) -> Any:
+            observed.append(crawler.max_pages)
+            return original_fetch(url)
+
+        crawler._fetch_bounded = recording_fetch  # type: ignore[method-assign]
+        return crawler
+
+    fake = _FakeQueue([("https://kafka.test/a", 0)])
+    fake.max_pages_per_poll = 2  # type: ignore[attr-defined]
+    run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=factory,
+        queue=fake,
+        max_iterations=10,
+        idle_sleep_s=0.01,
+    )
+    assert observed, "expected at least one fetch"
+    assert max(observed) <= 2
+    # Full budget restored after the bounded drain (factory default).
+    assert created and created[0].max_pages == 10
 
 
 def test_run_kafka_worker_broker_down_fails_loud(tmp_path: Path) -> None:

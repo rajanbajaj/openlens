@@ -39,6 +39,13 @@ DEFAULT_TOPIC = "crawl.urls"
 DEFAULT_GROUP_ID = "crawlers"
 DEFAULT_PUBLISH_TIMEOUT_S = 5.0
 DEFAULT_POLL_TIMEOUT_S = 1.0
+#: Default max gap between polls before the broker rebalances (15 min).
+#: One consumed message can trigger a store drain, so slow pages must
+#: not look like a dead consumer.
+DEFAULT_MAX_POLL_INTERVAL_MS = 900_000
+#: Default cap on pages crawled per consumed message: keeps the
+#: poll -> process -> commit cycle frequent on slow domains.
+DEFAULT_MAX_PAGES_PER_POLL = 5
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,8 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "group_id",
         "publish_timeout_s",
         "poll_timeout_s",
+        "max_poll_interval_ms",
+        "max_pages_per_poll",
         "cluster_id",
         "controller_quorum",
     }
@@ -112,6 +121,8 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "group_id": DEFAULT_GROUP_ID,
         "publish_timeout_s": DEFAULT_PUBLISH_TIMEOUT_S,
         "poll_timeout_s": DEFAULT_POLL_TIMEOUT_S,
+        "max_poll_interval_ms": DEFAULT_MAX_POLL_INTERVAL_MS,
+        "max_pages_per_poll": DEFAULT_MAX_PAGES_PER_POLL,
         "cluster_id": "",
         "controller_quorum": [],
     }
@@ -150,6 +161,20 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
             ):
                 raise ConfigError(f"Config 'kafka.{key}' must be a positive number.")
             normalized[key] = float(value)
+    if "max_poll_interval_ms" in section:
+        value = section["max_poll_interval_ms"]
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ConfigError(
+                "Config 'kafka.max_poll_interval_ms' must be a positive number."
+            )
+        normalized["max_poll_interval_ms"] = int(value)
+    if "max_pages_per_poll" in section:
+        value = section["max_pages_per_poll"]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ConfigError(
+                "Config 'kafka.max_pages_per_poll' must be an integer >= 1."
+            )
+        normalized["max_pages_per_poll"] = value
     if "cluster_id" in section:
         value = section["cluster_id"]
         if not isinstance(value, str):
@@ -232,6 +257,8 @@ class KafkaQueue:
         group_id: str = DEFAULT_GROUP_ID,
         publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         poll_timeout_s: float = DEFAULT_POLL_TIMEOUT_S,
+        max_poll_interval_ms: int = DEFAULT_MAX_POLL_INTERVAL_MS,
+        max_pages_per_poll: int = DEFAULT_MAX_PAGES_PER_POLL,
         producer: Any | None = None,
         consumer_factory: Callable[[], Any] | None = None,
     ) -> None:
@@ -242,6 +269,8 @@ class KafkaQueue:
         self._topic = topic
         self._publish_timeout_s = publish_timeout_s
         self._poll_timeout_s = poll_timeout_s
+        self._max_poll_interval_ms = max_poll_interval_ms
+        self.max_pages_per_poll = max_pages_per_poll
         self._consumer_factory = consumer_factory
         self._consumer: Any | None = None
         self._pending_record: Any | None = None
@@ -284,6 +313,8 @@ class KafkaQueue:
             group_id=str(normalized["group_id"]),
             publish_timeout_s=float(normalized["publish_timeout_s"]),
             poll_timeout_s=float(normalized["poll_timeout_s"]),
+            max_poll_interval_ms=int(normalized["max_poll_interval_ms"]),
+            max_pages_per_poll=int(normalized["max_pages_per_poll"]),
             producer=producer,
             consumer_factory=consumer_factory,
         )
@@ -349,6 +380,9 @@ class KafkaQueue:
                         group_id=self._group_id,
                         enable_auto_commit=False,
                         auto_offset_reset="earliest",
+                        # A consumed message can trigger a multi-page store
+                        # drain; keep slow pages from looking like death.
+                        max_poll_interval_ms=self._max_poll_interval_ms,
                         key_deserializer=lambda raw: raw.decode("utf-8") if raw else "",
                         value_deserializer=lambda raw: json.loads(raw.decode("utf-8")),
                     )

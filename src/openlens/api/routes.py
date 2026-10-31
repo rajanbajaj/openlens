@@ -1020,6 +1020,11 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
     snapshot), so the dashboard flag alone never stops a worker. Best
     effort: store failures (no DB in tests/offline) never break the
     dashboard write. Returns True when the row was updated.
+
+    When pausing, expired leases are reaped first: rows claimed by dead
+    workers return to ``queued`` (rows with a live heartbeat are never
+    stolen), so a pause-then-clear actually empties the queue instead
+    of leaving orphan ``active`` rows that resume would resurrect.
     """
     try:
         store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
@@ -1028,6 +1033,11 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
             merged = dict(settings) if isinstance(settings, dict) else {}
             merged["paused"] = paused
             store.save_settings(merged)
+            if paused:
+                reap = getattr(store, "reap_expired_leases", None)
+                if callable(reap):
+                    with suppress(Exception):
+                        reap()
         finally:
             with suppress(Exception):
                 store.close()

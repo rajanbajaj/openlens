@@ -951,17 +951,41 @@ def run_kafka_worker(
                     priority=getattr(message, "priority", None),
                 )
             worker.refresh_limits()
-            stats = run_index(
-                [],
-                repository,
-                dict(indexing_config),
-                chunk_size,
-                crawler=worker.crawler,
-                frontier_store=worker.guarded_store(),
-                should_stop=worker.should_stop,
-                crawl_id=crawl_id,
-                on_link=_publish_link,
-            )
+            # Bound the drain per message: one poll must never trigger a
+            # max_pages-sized crawl, or slow pages push the gap between
+            # polls past max_poll_interval_ms and the group rebalances
+            # (CommitFailedError storm). The store keeps the remainder;
+            # later polls drain it in BFS order.
+            per_poll = getattr(kafka, "max_pages_per_poll", None)
+            if (
+                not isinstance(per_poll, int)
+                or isinstance(per_poll, bool)
+                or per_poll < 1
+            ):
+                from openlens.indexing.kafka_queue import (
+                    DEFAULT_MAX_PAGES_PER_POLL,
+                )
+
+                per_poll = DEFAULT_MAX_PAGES_PER_POLL
+            full_budget = worker.crawler.max_pages
+            worker.crawler.max_pages = min(full_budget, per_poll)
+            try:
+                stats = run_index(
+                    [],
+                    repository,
+                    dict(indexing_config),
+                    chunk_size,
+                    crawler=worker.crawler,
+                    frontier_store=worker.guarded_store(),
+                    should_stop=worker.should_stop,
+                    crawl_id=crawl_id,
+                    on_link=_publish_link,
+                )
+            finally:
+                # Restore before commit/discovery: the next message's
+                # refresh_limits re-applies the live value anyway.
+                with contextlib.suppress(Exception):
+                    worker.crawler.max_pages = full_budget
             counts["added"] += int(getattr(stats, "added", 0) or 0)
             counts["updated"] += int(getattr(stats, "updated", 0) or 0)
             kafka.commit()
