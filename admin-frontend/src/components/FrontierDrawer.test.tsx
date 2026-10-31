@@ -22,6 +22,7 @@ const SETTINGS = {
   default_max_depth: 3,
   respect_robots: true,
   user_agent: 'TestBot/1.0 (+https://example.com)',
+  skip_domains: [],
 };
 
 /** Minimal socket stand-in: the drawer only needs onopen/onmessage/close. */
@@ -204,9 +205,7 @@ describe('FrontierDrawer settings form', () => {
     );
     vi.stubGlobal('WebSocket', MockSocket);
     render(<FrontierDrawer adminToken="" />);
-    const input = (await screen.findByTestId(
-      'frontier-setting-user-agent',
-    )) as HTMLInputElement;
+    const input = (await screen.findByTestId('frontier-setting-user-agent')) as HTMLInputElement;
     expect(input.value).toBe('TestBot/1.0 (+https://example.com)');
     fireEvent.change(input, { target: { value: 'OtherBot/2.0 (+https://example.com)' } });
     fireEvent.click(screen.getByText('Save settings'));
@@ -214,5 +213,108 @@ describe('FrontierDrawer settings form', () => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
     expect(putBody).toMatchObject({ user_agent: 'OtherBot/2.0 (+https://example.com)' });
+  });
+});
+
+describe('FrontierDrawer skip domains', () => {
+  function stubFetchCapture(capture: { body: unknown }): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+        if (url.includes('/api/v1/frontier/settings') && init?.body) {
+          capture.body = JSON.parse(init.body);
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify({ settings: SETTINGS })),
+          json: () =>
+            Promise.resolve(
+              url.includes('/api/v1/frontier/settings') ? { settings: SETTINGS } : { ...STATUS },
+            ),
+        });
+      }),
+    );
+  }
+
+  it('adds, dedupes, removes, and saves skip domains', async () => {
+    MockSocket.instances = [];
+    const capture: { body: unknown } = { body: null };
+    stubFetchCapture(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const input = await screen.findByTestId('frontier-skip-input');
+    expect(screen.queryByTestId('frontier-skip-list')).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'https://Ads.Example.com/feed' } });
+    fireEvent.click(screen.getByText('Add'));
+    expect(screen.getByTestId('frontier-skip-list')).toHaveTextContent('ads.example.com');
+
+    fireEvent.change(input, { target: { value: 'ads.example.com' } });
+    fireEvent.click(screen.getByText('Add'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('already skipped');
+    });
+
+    fireEvent.click(screen.getByTestId('frontier-skip-remove-ads.example.com'));
+    expect(screen.queryByTestId('frontier-skip-list')).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: 'tracker.example' } });
+    fireEvent.click(screen.getByText('Add'));
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
+    });
+    expect(capture.body).toMatchObject({ skip_domains: ['tracker.example'] });
+  });
+
+  it('shows the skipped count in the queue header', async () => {
+    MockSocket.instances = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () =>
+            Promise.resolve(
+              JSON.stringify(
+                url.includes('/api/v1/frontier/settings')
+                  ? { settings: SETTINGS }
+                  : {
+                      ...STATUS,
+                      queue: [
+                        { url: 'https://a.example/x', depth: 0, status: 'queued', priority: 0 },
+                        { url: 'https://b.example/y', depth: 1, status: 'skipped', priority: 0 },
+                        { url: 'https://c.example/z', depth: 1, status: 'skipped', priority: 0 },
+                      ],
+                      queue_depth: 3,
+                    },
+              ),
+            ),
+          json: () =>
+            Promise.resolve(
+              url.includes('/api/v1/frontier/settings')
+                ? { settings: SETTINGS }
+                : {
+                    ...STATUS,
+                    queue: [
+                      { url: 'https://a.example/x', depth: 0, status: 'queued', priority: 0 },
+                      { url: 'https://b.example/y', depth: 1, status: 'skipped', priority: 0 },
+                      { url: 'https://c.example/z', depth: 1, status: 'skipped', priority: 0 },
+                    ],
+                    queue_depth: 3,
+                  },
+            ),
+        }),
+      ),
+    );
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByText(/2\s+skipped/)).toBeInTheDocument();
+    });
   });
 });

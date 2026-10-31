@@ -8,7 +8,7 @@ convert to/from those core shapes at the boundary.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -297,6 +297,14 @@ class FrontierSettingsSchema(BaseModel):
         description=(
             "Crawler User-Agent applied live by workers; empty/oversize "
             "values keep the previous agent."
+        ),
+    )
+    skip_domains: list[Annotated[str, Field(min_length=1, max_length=253)]] = Field(
+        default_factory=list,
+        description=(
+            "Domain skip-list applied live by workers; entries are "
+            "bare lowercase hostnames (subdomains match too); "
+            "malformed entries are ignored, never fatal."
         ),
     )
 

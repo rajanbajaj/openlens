@@ -28,6 +28,7 @@ import importlib
 import json
 import os
 import queue
+import re
 import signal
 import socket
 import sqlite3
@@ -216,6 +217,22 @@ class FrontierStore(ABC):
         removals. Returns the number evicted.
         """
         raise NotImplementedError
+
+    def skip_queued_domains(self, domains: Any) -> int:
+        """Bulk-skip ``queued`` rows whose URL host matches ``domains``.
+
+        Settings enforcement for the ``skip_domains`` list: every
+        ``queued`` row whose host equals (or is a subdomain of) a listed
+        domain moves to ``skipped`` with a ``last_error`` reason, so
+        in-flight queue URLs stop without waiting for their turn. New
+        enqueues from listed domains are still stored (never silently
+        dropped, so counts stay auditable); they are skipped at
+        claim/bulk time instead. Returns the number of rows moved.
+        Concrete default (``0``) so older/test doubles keep working;
+        the shipped SQLite and Postgres stores override it.
+        """
+        _ = domains
+        return 0
 
     @abstractmethod
     def requeue_active(self) -> int:
@@ -477,6 +494,140 @@ def normalize_priority(priority: Any) -> int | None:
     if isinstance(priority, bool) or not isinstance(priority, int):
         return None
     return priority
+
+
+#: Bare-hostname shape for one ``skip_domains`` entry (single labels like
+#: ``localhost`` allowed; each label 1-63 chars, total capped at 253 by
+#: the caller, mirroring the API schema bounds).
+_SKIP_DOMAIN_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
+)
+
+
+def normalize_skip_domain(entry: Any) -> str | None:
+    """Normalize one ``skip_domains`` entry to a bare lowercase hostname.
+
+    Strips whitespace, ``*.``/leading-dot wildcards, schemes, userinfo,
+    ports, and paths; returns None for malformed entries (non-strings,
+    empties, oversize, or non-hostnames), which callers ignore instead
+    of failing.
+    """
+    if not isinstance(entry, str):
+        return None
+    text = entry.strip().lower()
+    if not text:
+        return None
+    if "://" in text:
+        from urllib.parse import urlsplit
+
+        try:
+            text = (urlsplit(text).hostname or "").lower()
+        except ValueError:
+            return None
+    else:
+        for sep in ("/", "?", "#"):
+            text = text.split(sep)[0]
+        text = text.strip()
+        if "@" in text:
+            return None
+        if ":" in text:
+            host_part, _, port = text.partition(":")
+            if not port.isdigit():
+                return None
+            text = host_part.strip()
+    text = text.strip().lstrip(".")
+    if text.startswith("*."):
+        text = text[2:]
+    text = text.rstrip(".")
+    if not 1 <= len(text) <= 253:
+        return None
+    if not _SKIP_DOMAIN_RE.fullmatch(text):
+        return None
+    return text
+
+
+def normalize_skip_domains(domains: Any) -> list[str] | None:
+    """Validate a ``skip_domains`` setting value.
+
+    Returns the normalized (lowercase, bare-hostname, deduped) list, or
+    None when the value is missing/not-a-list. Malformed entries are
+    ignored, never fatal.
+    """
+    if domains is None:
+        return None
+    if isinstance(domains, str) or not isinstance(domains, (list, tuple)):
+        return None
+    out: list[str] = []
+    for entry in domains:
+        normalized = normalize_skip_domain(entry)
+        if normalized is not None and normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def host_matches_skip_domains(host: Any, domains: Any) -> bool:
+    """True when ``host`` equals (or is a subdomain of) a listed domain.
+
+    The single Python-side matcher behind skip enforcement (exact host
+    or any subdomain — the same semantics as the preference scorer's
+    domain match). SQL bulk-skip mirrors it with equivalent LIKE
+    patterns; do not invent a third matcher.
+    """
+    if not isinstance(host, str):
+        return False
+    candidate = host.strip().lower().rstrip(".")
+    if not candidate:
+        return False
+    entries = domains if isinstance(domains, (list, tuple)) else []
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        domain = entry.strip().lower()
+        if not domain:
+            continue
+        if candidate == domain or candidate.endswith("." + domain):
+            return True
+    return False
+
+
+def skip_url_matches(url: Any, domains: Any) -> bool:
+    """True when ``url``'s host matches the ``skip_domains`` list."""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url.strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host_matches_skip_domains(host, domains)
+
+
+def _escape_like_literal(text: str) -> str:
+    """Escape ``\\``/``%``/``_`` so a domain matches literally under LIKE."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _skip_domain_like_patterns(domain: str) -> tuple[str, ...]:
+    """LIKE patterns matching a bare domain's queued URLs.
+
+    Covers the exact host (bare, with path/query/port) and any
+    subdomain — the SQL equivalent of :func:`host_matches_skip_domains`.
+    The leading ``%://`` binds the scheme; every pattern is a bound
+    parameter (never interpolated), matched with ``ESCAPE '\\'``.
+    """
+    escaped = _escape_like_literal(domain)
+    return (
+        f"%://{escaped}",
+        f"%://{escaped}/%",
+        f"%://{escaped}?%",
+        f"%://{escaped}:%",
+        f"%://%.{escaped}",
+        f"%://%.{escaped}/%",
+        f"%://%.{escaped}?%",
+        f"%://%.{escaped}:%",
+    )
 
 
 #: Coordination columns added to ``frontier_queue`` (also applied to
@@ -928,6 +1079,40 @@ class SqliteFrontierStore(FrontierStore):
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
+
+    def skip_queued_domains(self, domains: Any) -> int:
+        """Bulk-skip ``queued`` rows from ``domains`` (exact+subdomain).
+
+        One ``UPDATE`` per normalized domain (malformed entries ignored,
+        never fatal); each moved row carries a ``last_error`` reason
+        naming its domain. Returns the total number of rows moved.
+        """
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        total = 0
+        try:
+            with self._lock, self._conn:
+                for domain in targets:
+                    patterns = _skip_domain_like_patterns(domain)
+                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+                    statement = (
+                        "UPDATE frontier_queue SET status = 'skipped',"  # noqa: S608
+                        " last_error = ? WHERE status = 'queued'"
+                        f" AND ({condition})"
+                    )
+                    cursor = self._conn.execute(
+                        statement,
+                        (f"skipped: domain {domain}", *patterns),
+                    )
+                    total += cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to skip queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
 
     def evict_oldest(self, limit: int) -> int:
         """Drop oldest queued rows past ``limit`` (oldest-first eviction)."""
@@ -1864,6 +2049,44 @@ class PostgresFrontierStore(FrontierStore):
             )
             or 0
         )
+
+    def skip_queued_domains(self, domains: Any) -> int:
+        """Bulk-skip ``queued`` rows from ``domains`` (exact+subdomain).
+
+        Postgres mirror of the SQLite implementation: one ``UPDATE``
+        per normalized domain (malformed entries ignored, never fatal)
+        with a ``last_error`` reason naming the domain. Patterns are
+        bound parameters with ``ESCAPE '\\'``; only the validated table
+        name is interpolated. Returns the total number of rows moved.
+        """
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        table = self._qualified("frontier_queue")
+        total = 0
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for domain in targets:
+                        patterns = _skip_domain_like_patterns(domain)
+                        condition = " OR ".join(
+                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
+                        )
+                        cur.execute(
+                            f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
+                            " last_error = %s WHERE status = 'queued'"
+                            f" AND ({condition})",
+                            (f"skipped: domain {domain}", *patterns),
+                        )
+                        total += cur.rowcount or 0
+                conn.commit()
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to skip queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
 
     def evict_oldest(self, limit: int) -> int:
         table = self._qualified("frontier_queue")

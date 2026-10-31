@@ -19,6 +19,12 @@ export interface FrontierSettingsSchema {
   default_max_depth?: number;
   respect_robots?: boolean;
   /**
+   * Domain skip-list applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal.
+   * @items.minLength 1
+   * @items.maxLength 253
+   */
+  skip_domains?: string[];
+  /**
    * Crawler User-Agent applied live by workers; empty/oversize values keep the previous agent.
    * @minLength 1
    * @maxLength 256

@@ -33,6 +33,7 @@ const SETTINGS: FrontierSettings = {
   default_max_depth: 3,
   respect_robots: true,
   user_agent: 'TestBot/1.0 (+https://example.com)',
+  skip_domains: [],
 };
 
 function jsonResponse(payload: unknown, status = 200): Response {

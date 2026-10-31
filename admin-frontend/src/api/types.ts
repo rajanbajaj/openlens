@@ -210,6 +210,8 @@ export interface FrontierSettings {
   default_max_depth: number;
   respect_robots: boolean;
   user_agent: string;
+  /** Domains whose queued URLs workers skip (exact host or subdomain). */
+  skip_domains: string[];
 }
 
 /** GET/PUT /api/v1/frontier/settings response body. */

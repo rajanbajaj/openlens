@@ -42,7 +42,9 @@ from openlens.storage.frontier import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     DEFAULT_LEASE_TTL_S,
     WORKER_ID_ENV,
+    normalize_skip_domains,
     resolve_worker_id,
+    skip_url_matches,
 )
 
 API_URL_ENV = "OPENLENS_API_URL"
@@ -167,6 +169,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     robots = settings.get("respect_robots")
     agent = settings.get("user_agent")
     agent = agent.strip() if isinstance(agent, str) else ""
+    skip = normalize_skip_domains(settings.get("skip_domains"))
     return {
         "default_max_depth": (
             depth
@@ -192,7 +195,60 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
         ),
         "respect_robots": robots if isinstance(robots, bool) else None,
         "user_agent": agent if 1 <= len(agent) <= 256 else None,
+        "skip_domains": skip,
     }
+
+
+#: Bound on consecutive skip-listed takes per guarded dequeue/claim: the
+#: worker marks each skipped row and takes the next one, giving up (for
+#: this pass) after this many so a queue full of listed domains cannot
+#: starve the loop.
+MAX_SKIPS_PER_CLAIM = 100
+
+
+class _SkipGuardFrontier:
+    """Transparent frontier-store view enforcing ``skip_domains`` at take.
+
+    Delegates every attribute to the wrapped store except ``dequeue``
+    and ``claim``: a taken URL whose host matches the current skip list
+    is marked skipped (never fetched) and the next row is taken instead,
+    bounded by :data:`MAX_SKIPS_PER_CLAIM`. New enqueues from listed
+    domains are still stored (never silently dropped); they settle here
+    or at bulk-skip time, so counts stay auditable.
+    """
+
+    def __init__(self, store: Any, domains_fn: Callable[[], list[str]]) -> None:
+        self._guard_store = store
+        self._guard_domains_fn = domains_fn
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._guard_store, name)
+
+    def dequeue(self) -> Any:
+        """Guarded dequeue: skip-listed URLs settle as skipped."""
+        return self._guarded(self._guard_store.dequeue)
+
+    def claim(self, worker_id: str, **kwargs: Any) -> Any:
+        """Guarded lease claim: skip-listed URLs settle as skipped."""
+        return self._guarded(lambda: self._guard_store.claim(worker_id, **kwargs))
+
+    def _guarded(self, take: Callable[[], Any]) -> Any:
+        try:
+            domains = list(self._guard_domains_fn() or [])
+        except Exception:
+            domains = []
+        if not domains:
+            return take()
+        for _ in range(MAX_SKIPS_PER_CLAIM + 1):
+            entry = take()
+            if entry is None:
+                return None
+            url = getattr(entry, "url", "")
+            if not skip_url_matches(url, domains):
+                return entry
+            with contextlib.suppress(Exception):
+                self._guard_store.mark_skipped(url)
+        return None
 
 
 @dataclass
@@ -216,6 +272,12 @@ class CrawlerWorker:
     chunk_size: int = 500
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S
     lease_ttl_s: int = DEFAULT_LEASE_TTL_S
+    #: Validated ``skip_domains`` list from the last :meth:`refresh_limits`
+    #: (normalized bare hostnames; [] when unset/invalid). Drives both
+    #: the refresh bulk-skip and the claim-time guard.
+    skip_domains: list[str] = field(default_factory=list)
+    #: Rows bulk-skipped by the last :meth:`refresh_limits` (diagnostics).
+    last_skip_bulk_count: int = 0
 
     def __post_init__(self) -> None:
         if not self.worker_id:
@@ -287,6 +349,29 @@ class CrawlerWorker:
         with contextlib.suppress(Exception):
             if live["user_agent"] is not None:
                 crawler.user_agent = live["user_agent"]
+        with contextlib.suppress(Exception):
+            skip = live.get("skip_domains") or []
+            self.skip_domains = list(skip)
+            # Bulk-skip every refresh: already-queued rows from listed
+            # domains move to 'skipped' with a reason, so the in-flight
+            # queue stops without waiting for its turn. Stores without
+            # bulk-skip support (older doubles) simply skip nothing.
+            bulk = store.skip_queued_domains(list(skip)) if skip else 0
+            self.last_skip_bulk_count = int(bulk or 0)
+
+    def guarded_store(self) -> Any:
+        """Frontier store view enforcing the refreshed skip list at take.
+
+        Wraps :attr:`frontier_store` so every ``dequeue``/``claim`` on
+        the crawl path marks skip-listed URLs skipped (never fetched)
+        and takes the next row instead. Returns the raw store when it is
+        None. The guard reads the live :attr:`skip_domains`, so a later
+        :meth:`refresh_limits` applies without rewrapping.
+        """
+        store = self.frontier_store
+        if store is None:
+            return None
+        return _SkipGuardFrontier(store, lambda: list(self.skip_domains))
 
     # -- enqueue ----------------------------------------------------------
 
@@ -371,7 +456,7 @@ class CrawlerWorker:
                 dict(self.indexing_config),
                 self.chunk_size,
                 crawler=self.crawler,
-                frontier_store=self.frontier_store,
+                frontier_store=self.guarded_store(),
                 should_stop=self.should_stop,
                 crawl_id=self.crawl_id,
             )
@@ -587,7 +672,7 @@ def run_kafka_worker(
             dict(indexing_config),
             chunk_size,
             crawler=worker.crawler,
-            frontier_store=frontier_store,
+            frontier_store=worker.guarded_store(),
             should_stop=worker.should_stop,
             crawl_id=crawl_id,
             on_link=_publish_link,
@@ -647,7 +732,7 @@ def run_kafka_worker(
                 dict(indexing_config),
                 chunk_size,
                 crawler=worker.crawler,
-                frontier_store=frontier_store,
+                frontier_store=worker.guarded_store(),
                 should_stop=worker.should_stop,
                 crawl_id=crawl_id,
                 on_link=_publish_link,

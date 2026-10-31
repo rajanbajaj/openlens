@@ -252,7 +252,9 @@ export function isFrontierSettingsResponse(value: unknown): value is FrontierSet
     typeof settings.crawl_delay_s === 'number' &&
     typeof settings.default_max_depth === 'number' &&
     typeof settings.respect_robots === 'boolean' &&
-    typeof settings.user_agent === 'string'
+    typeof settings.user_agent === 'string' &&
+    Array.isArray(settings.skip_domains) &&
+    settings.skip_domains.every((domain) => typeof domain === 'string')
   );
 }
 

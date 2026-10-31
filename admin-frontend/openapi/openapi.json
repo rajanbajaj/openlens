@@ -854,6 +854,16 @@
             "title": "Respect Robots",
             "default": true
           },
+          "skip_domains": {
+            "items": {
+              "maxLength": 253,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skip Domains",
+            "description": "Domain skip-list applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal."
+          },
           "user_agent": {
             "type": "string",
             "minLength": 1,

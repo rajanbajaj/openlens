@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS: FrontierSettings = {
   default_max_depth: 3,
   respect_robots: true,
   user_agent: 'OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)',
+  skip_domains: [],
 };
 
 /**
@@ -97,6 +98,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [settings, setSettings] = useState<FrontierSettings>(DEFAULT_SETTINGS);
   const [seeds, setSeeds] = useState('');
   const [priority, setPriority] = useState('');
+  const [skipInput, setSkipInput] = useState('');
   const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [live, setLive] = useState(false);
 
@@ -241,6 +243,36 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     }
   }
 
+  function normalizeSkipDomain(raw: string): string {
+    const withoutScheme = raw
+      .trim()
+      .toLowerCase()
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+    const host = withoutScheme.split('/')[0].replace(/^\*\./, '').split(':')[0].trim();
+    return host;
+  }
+
+  function handleAddSkipDomain() {
+    const domain = normalizeSkipDomain(skipInput);
+    if (!domain) {
+      pushToast('Enter a domain to skip.', 'error');
+      return;
+    }
+    if ((settings.skip_domains ?? []).includes(domain)) {
+      pushToast('Domain is already skipped.', 'error');
+      return;
+    }
+    setSettings({ ...settings, skip_domains: [...(settings.skip_domains ?? []), domain] });
+    setSkipInput('');
+  }
+
+  function handleRemoveSkipDomain(domain: string) {
+    setSettings({
+      ...settings,
+      skip_domains: (settings.skip_domains ?? []).filter((entry) => entry !== domain),
+    });
+  }
+
   const queue = status ? readFrontierQueue(status) : [];
   const newUrls = status ? readFrontierNewUrls(status) : [];
   const checkpoint = status?.checkpoint;
@@ -304,7 +336,13 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
               </ul>
             )}
 
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Queue ({status?.queue_depth ?? 0})</h4>
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">
+              Queue ({status?.queue_depth ?? 0}
+              {queue.filter((entry) => entry.status === 'skipped').length > 0 && (
+                <> · {queue.filter((entry) => entry.status === 'skipped').length} skipped</>
+              )}
+              )
+            </h4>
             {queue.length === 0 ? (
               <p className="my-ol-s text-ol-s">Queue is empty</p>
             ) : (
@@ -435,12 +473,45 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                   type="text"
                   maxLength={256}
                   value={settings.user_agent}
-                  onChange={(event) =>
-                    setSettings({ ...settings, user_agent: event.target.value })
-                  }
+                  onChange={(event) => setSettings({ ...settings, user_agent: event.target.value })}
                   className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                 />
               </label>
+              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Skip domains (queued URLs from these are never fetched)
+                <div className="flex gap-ol-xs">
+                  <input
+                    data-testid="frontier-skip-input"
+                    type="text"
+                    aria-label="Domain to skip"
+                    value={skipInput}
+                    onChange={(event) => setSkipInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') handleAddSkipDomain();
+                    }}
+                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                  <Button variant="secondary" onClick={handleAddSkipDomain}>
+                    Add
+                  </Button>
+                </div>
+                {(settings.skip_domains ?? []).length > 0 && (
+                  <ul data-testid="frontier-skip-list" className="flex flex-wrap gap-ol-xs">
+                    {(settings.skip_domains ?? []).map((domain) => (
+                      <li key={domain}>
+                        <Badge>{domain}</Badge>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-skip-remove-${domain}`}
+                          onClick={() => handleRemoveSkipDomain(domain)}
+                        >
+                          ×
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               <div className="mt-ol-s">
                 <Button variant="secondary" onClick={() => void handleSaveSettings()}>
                   Save settings
