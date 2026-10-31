@@ -622,6 +622,43 @@ def test_chat_fetch_via_manager_grounds_synthesis() -> None:
     assert "FULL TEXT MARKER via manager path." in model.calls[1]
 
 
+class _FailingDomainsEngine:
+    """Duck-typed engine double whose domains hook raises (backend down)."""
+
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        raise ProviderError(
+            "store unreachable",
+            provider_name="test",
+            code=ProviderError.UNAVAILABLE,
+        )
+
+
+class _HooklessEngine:
+    """Duck-typed engine double with no domains hook at all."""
+
+
+def test_chat_domains_tool_records_backend_error() -> None:
+    """A failing domains lookup still answers honestly, but the trace keeps
+    the cause (silent ``0 domains`` is undiagnosable on prod)."""
+    from openlens.retrieval.agent import _list_engine_domains
+
+    fallbacks: list[str] = []
+    assert _list_engine_domains(_FailingDomainsEngine(), fallbacks) == []
+    assert any(
+        f.startswith("domains_fallback:") and "store unreachable" in f
+        for f in fallbacks
+    )
+
+
+def test_chat_domains_tool_records_unsupported_engine() -> None:
+    """An engine without the hook records why instead of silent ``[]``."""
+    from openlens.retrieval.agent import _list_engine_domains
+
+    fallbacks: list[str] = []
+    assert _list_engine_domains(_HooklessEngine(), fallbacks) == []
+    assert any(f.startswith("domains_unsupported:") for f in fallbacks)
+
+
 def test_chat_unknown_tool_searches() -> None:
     engine, provider, _ = _engine(
         ['{"query": "q", "filters": {}, "mode": "default", "tool": "evil"}', "S [1]."],

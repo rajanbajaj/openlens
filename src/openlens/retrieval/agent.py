@@ -438,14 +438,25 @@ def _fetch_source_lines(
     return lines
 
 
-def _list_engine_domains(engine: Any) -> list[tuple[str, int]]:
-    """Read-only domains lookup (tool 3); ``[]`` when unsupported."""
+def _list_engine_domains(
+    engine: Any, fallbacks: list[str] | None = None
+) -> list[tuple[str, int]]:
+    """Read-only domains lookup (tool 3); ``[]`` when unsupported.
+
+    Failures are recorded in ``fallbacks`` (when given) instead of
+    vanishing: a backend error records ``domains_fallback: <cause>``
+    and a missing hook records ``domains_unsupported``. Never raises.
+    """
     hook = getattr(engine, "list_domains", None)
     if not callable(hook):
+        if fallbacks is not None:
+            fallbacks.append("domains_unsupported: engine has no list_domains hook")
         return []
     try:
         pairs = hook(DOMAINS_FETCH_LIMIT)
-    except Exception:
+    except Exception as exc:
+        if fallbacks is not None:
+            fallbacks.append(f"domains_fallback: {_error_detail(exc)}")
         return []
     if not isinstance(pairs, list):
         return []
@@ -800,7 +811,7 @@ def run_agent_chat(
 
     # -- step 2a: domains lookup tool (no search, one model call spent) ---
     if tool == "domains":
-        domains = _list_engine_domains(engine)
+        domains = _list_engine_domains(engine, fallbacks)
         steps.append({"kind": "domains", "detail": f"{len(domains)} domains"})
         return _done(_domains_answer(domains), [], None)
 
