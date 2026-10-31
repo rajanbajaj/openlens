@@ -39,8 +39,16 @@ jobs:
         working-directory: deploy/local
         # Release runs 3 crawl workers (Kafka consumer group shares the
         # queue; local dev stays at 1). Override with CRAWLER_SCALE in
-        # the server's release.env.
-        run: docker compose up --build -d --scale crawler=${CRAWLER_SCALE:-3}
+        # the server's release.env. The runner shell never sources that
+        # file, so read the value explicitly (validated numeric,
+        # default 3) instead of relying on environment interpolation.
+        run: |
+          SCALE="$(grep '^CRAWLER_SCALE=' /home/rajan/servers/release.env | sed 's/^[^=]*=//' | tr -d '[:space:]')"
+          case "$SCALE" in
+            ''|*[!0-9]*) SCALE=3 ;;
+          esac
+          echo "crawler scale: $SCALE"
+          docker compose up --build -d --scale "crawler=$SCALE"
 
       - name: Wait for backend health
         run: |
