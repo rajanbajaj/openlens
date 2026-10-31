@@ -66,7 +66,12 @@ DEFAULT_MAX_BYTES = 1_000_000
 DEFAULT_MAX_QUEUED_URLS = 10_000
 DEFAULT_MAX_TRACKED_DOMAINS = 1_000
 DEFAULT_ALLOWED_CONTENT_TYPES: tuple[str, ...] = ("text/html", "text/plain")
-DEFAULT_USER_AGENT = "OpenLensBot/1.0"
+#: Crawler User-Agent. Wikimedia and other bot policies require a
+#: descriptive agent with contact info; bare `Bot/1.0` identifiers get
+#: throttled or blocked (HTTP 403) regardless of robots.txt. The contact
+#: below is overridable per deployment from the frontier settings
+#: dashboard (`user_agent`); keep this default honest if you fork.
+DEFAULT_USER_AGENT = "OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)"
 
 #: No per-domain policy configured: unlimited depth, global delay only.
 DEFAULT_MAX_DEPTH: int | None = None

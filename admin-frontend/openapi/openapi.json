@@ -853,6 +853,14 @@
             "type": "boolean",
             "title": "Respect Robots",
             "default": true
+          },
+          "user_agent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "title": "User Agent",
+            "description": "Crawler User-Agent applied live by workers; empty/oversize values keep the previous agent.",
+            "default": "OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)"
           }
         },
         "additionalProperties": false,

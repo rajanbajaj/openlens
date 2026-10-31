@@ -32,6 +32,7 @@ const SETTINGS: FrontierSettings = {
   crawl_delay_s: 0.5,
   default_max_depth: 3,
   respect_robots: true,
+  user_agent: 'TestBot/1.0 (+https://example.com)',
 };
 
 function jsonResponse(payload: unknown, status = 200): Response {

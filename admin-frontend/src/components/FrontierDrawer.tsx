@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: FrontierSettings = {
   crawl_delay_s: 0.5,
   default_max_depth: 3,
   respect_robots: true,
+  user_agent: 'OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)',
 };
 
 /**
@@ -426,6 +427,19 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                   }
                 />{' '}
                 Respect robots.txt
+              </label>
+              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Crawler User-Agent
+                <input
+                  data-testid="frontier-setting-user-agent"
+                  type="text"
+                  maxLength={256}
+                  value={settings.user_agent}
+                  onChange={(event) =>
+                    setSettings({ ...settings, user_agent: event.target.value })
+                  }
+                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                />
               </label>
               <div className="mt-ol-s">
                 <Button variant="secondary" onClick={() => void handleSaveSettings()}>

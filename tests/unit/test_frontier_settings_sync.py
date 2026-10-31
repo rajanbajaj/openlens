@@ -221,3 +221,53 @@ def test_refresh_limits_fail_open_on_store_error() -> None:
 def test_refresh_limits_no_store_or_crawler_is_noop() -> None:
     worker = CrawlWorker(crawler=None, repository=None, frontier_store=None)
     worker.refresh_limits()
+
+
+def test_refresh_limits_applies_user_agent() -> None:
+    worker = _worker({"user_agent": "TestBot/1.0 (+https://example.com)"})
+    worker.refresh_limits()
+    assert worker.crawler.user_agent == "TestBot/1.0 (+https://example.com)"
+
+
+def test_refresh_limits_ignores_missing_or_invalid_user_agent() -> None:
+    from openlens.indexing.crawler import DEFAULT_USER_AGENT
+
+    worker = _worker({})
+    worker.refresh_limits()
+    assert worker.crawler.user_agent == DEFAULT_USER_AGENT
+    for bad in ("", "   ", 123, None, "x" * 257):
+        worker = _worker({"user_agent": bad})
+        worker.refresh_limits()
+        assert worker.crawler.user_agent == DEFAULT_USER_AGENT
+
+
+def test_put_settings_rejects_empty_user_agent(client: TestClient) -> None:
+    put = client.put(
+        "/api/v1/frontier/settings",
+        json={
+            "max_pages": 10,
+            "max_queued_urls": 50,
+            "crawl_delay_s": 0.5,
+            "default_max_depth": 2,
+            "respect_robots": True,
+            "user_agent": "",
+        },
+    )
+    assert put.status_code == 422, put.text
+
+
+def test_put_settings_persists_user_agent(client: TestClient) -> None:
+    agent = "TestBot/2.0 (+https://example.com/bot)"
+    put = client.put(
+        "/api/v1/frontier/settings",
+        json={
+            "max_pages": 10,
+            "max_queued_urls": 50,
+            "crawl_delay_s": 0.5,
+            "default_max_depth": 2,
+            "respect_robots": True,
+            "user_agent": agent,
+        },
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["settings"]["user_agent"] == agent

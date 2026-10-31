@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openlens.core.interfaces import SearchResponse as CoreResponse
 from openlens.core.interfaces import SearchResult as CoreResult
+from openlens.indexing.crawler import DEFAULT_USER_AGENT
 
 MAX_LIMIT = 100
 DEFAULT_LIMIT = 10
@@ -289,6 +290,15 @@ class FrontierSettingsSchema(BaseModel):
     crawl_delay_s: float = Field(default=0.5, ge=0)
     default_max_depth: int = Field(default=3, ge=0)
     respect_robots: bool = True
+    user_agent: str = Field(
+        default=DEFAULT_USER_AGENT,
+        min_length=1,
+        max_length=256,
+        description=(
+            "Crawler User-Agent applied live by workers; empty/oversize "
+            "values keep the previous agent."
+        ),
+    )
 
 
 class FrontierSettingsResponseSchema(BaseModel):

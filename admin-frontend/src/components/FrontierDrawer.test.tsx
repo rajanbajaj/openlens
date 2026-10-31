@@ -21,6 +21,7 @@ const SETTINGS = {
   crawl_delay_s: 0.5,
   default_max_depth: 3,
   respect_robots: true,
+  user_agent: 'TestBot/1.0 (+https://example.com)',
 };
 
 /** Minimal socket stand-in: the drawer only needs onopen/onmessage/close. */
@@ -172,5 +173,46 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Resumed with 1 seed(s).');
     });
+  });
+});
+
+describe('FrontierDrawer settings form', () => {
+  it('shows the loaded User-Agent and saves edits back', async () => {
+    MockSocket.instances = [];
+    let putBody: unknown = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+        if (url.includes('/api/v1/frontier/settings') && init?.body) {
+          putBody = JSON.parse(init.body);
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify({ settings: SETTINGS })),
+          json: () =>
+            Promise.resolve(
+              url.includes('/api/v1/frontier/settings')
+                ? { settings: SETTINGS }
+                : url.includes('/api/v1/frontier/workers')
+                  ? { workers: [], worker_count: 0 }
+                  : STATUS,
+            ),
+        });
+      }),
+    );
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const input = (await screen.findByTestId(
+      'frontier-setting-user-agent',
+    )) as HTMLInputElement;
+    expect(input.value).toBe('TestBot/1.0 (+https://example.com)');
+    fireEvent.change(input, { target: { value: 'OtherBot/2.0 (+https://example.com)' } });
+    fireEvent.click(screen.getByText('Save settings'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
+    });
+    expect(putBody).toMatchObject({ user_agent: 'OtherBot/2.0 (+https://example.com)' });
   });
 });

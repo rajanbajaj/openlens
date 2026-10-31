@@ -251,7 +251,8 @@ export function isFrontierSettingsResponse(value: unknown): value is FrontierSet
     typeof settings.max_queued_urls === 'number' &&
     typeof settings.crawl_delay_s === 'number' &&
     typeof settings.default_max_depth === 'number' &&
-    typeof settings.respect_robots === 'boolean'
+    typeof settings.respect_robots === 'boolean' &&
+    typeof settings.user_agent === 'string'
   );
 }
 

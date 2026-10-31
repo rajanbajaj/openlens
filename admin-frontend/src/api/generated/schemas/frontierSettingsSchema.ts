@@ -18,4 +18,10 @@ export interface FrontierSettingsSchema {
   /** @minimum 0 */
   default_max_depth?: number;
   respect_robots?: boolean;
+  /**
+   * Crawler User-Agent applied live by workers; empty/oversize values keep the previous agent.
+   * @minLength 1
+   * @maxLength 256
+   */
+  user_agent?: string;
 }

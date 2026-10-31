@@ -165,6 +165,8 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     pages = settings.get("max_pages")
     delay = settings.get("crawl_delay_s")
     robots = settings.get("respect_robots")
+    agent = settings.get("user_agent")
+    agent = agent.strip() if isinstance(agent, str) else ""
     return {
         "default_max_depth": (
             depth
@@ -189,6 +191,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "respect_robots": robots if isinstance(robots, bool) else None,
+        "user_agent": agent if 1 <= len(agent) <= 256 else None,
     }
 
 
@@ -281,6 +284,9 @@ class CrawlerWorker:
         with contextlib.suppress(Exception):
             if live["respect_robots"] is not None:
                 crawler.respect_robots = live["respect_robots"]
+        with contextlib.suppress(Exception):
+            if live["user_agent"] is not None:
+                crawler.user_agent = live["user_agent"]
 
     # -- enqueue ----------------------------------------------------------
 

@@ -209,6 +209,7 @@ export interface FrontierSettings {
   crawl_delay_s: number;
   default_max_depth: number;
   respect_robots: boolean;
+  user_agent: string;
 }
 
 /** GET/PUT /api/v1/frontier/settings response body. */
