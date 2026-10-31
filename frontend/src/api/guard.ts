@@ -334,6 +334,9 @@ export function readChatTrace(value: unknown): ChatTrace | null {
   ) {
     trace.model_calls = value['model_calls'] as number;
   }
+  if (typeof value['model'] === 'string' && value['model'] !== '') {
+    trace.model = value['model'];
+  }
   return Object.keys(trace).length > 0 ? trace : null;
 }
 

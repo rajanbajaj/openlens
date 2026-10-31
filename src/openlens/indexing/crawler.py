@@ -99,6 +99,8 @@ ALLOWED_CONFIG_KEYS = frozenset(
         "checkpoint_interval_pages",
         "max_attempts_per_url",
         "frontier_enabled",
+        "min_visible_chars",
+        "reject_soft_404",
     }
 )
 
@@ -151,6 +153,7 @@ class CrawlStats:
     skipped_depth: int = 0
     skipped_content_type: int = 0
     skipped_not_modified: int = 0
+    skipped_quality: int = 0
     aborted_bytes: int = 0
     timeouts: int = 0
     errors: int = 0
@@ -330,6 +333,64 @@ def resolve_page_title(
         if cleaned:
             return cleaned
     return url if isinstance(url, str) else ""
+
+
+#: Minimum visible-text chars for an indexable page (thin-content guard).
+DEFAULT_MIN_VISIBLE_CHARS = 200
+
+#: Soft-404 pages are short: markers only count below this length so a
+#: long legit article mentioning "page not found" never trips the gate.
+_SOFT_404_MAX_CHARS = 2000
+
+#: Error-page markers matched against title + body (case-insensitive).
+_SOFT_404_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"404\s*(page\s*)?not\s*found",
+        r"page\s*not\s*found",
+        r"page\s*(you(\s*['’]re|\s*are)?\s*looking\s*for\s*)?"
+        r"(was\s*not\s*found|does\s*not\s*exist|could\s*not\s*be\s*found|not\s*exist)",
+        r"does\s*not\s*exist",
+        r"no\s*longer\s*exists",
+        r"may\s*have\s*been\s*(removed|deleted|moved)",
+        r"error\s*404",
+    )
+)
+
+
+def classify_content_quality(
+    title: Any,
+    content: Any,
+    *,
+    min_visible_chars: int = DEFAULT_MIN_VISIBLE_CHARS,
+) -> tuple[str, str]:
+    """Gate a fetched page: ``("ok", "")`` or ``(verdict, reason)``.
+
+    ``"soft_404"``: the title/body carries error-page markers on a thin
+    page (a missing page served with HTTP 200 — status checks cannot
+    catch these). ``"thin_content"``: visible text below
+    ``min_visible_chars``. Pure function over strings; never raises.
+    """
+    text = content if isinstance(content, str) else ""
+    visible = len(" ".join(text.split()))
+    head = title if isinstance(title, str) else ""
+    if visible < _SOFT_404_MAX_CHARS:
+        haystack = f"{head}\n{text[:_SOFT_404_MAX_CHARS]}"
+        if any(pattern.search(haystack) for pattern in _SOFT_404_PATTERNS):
+            return (
+                "soft_404",
+                f"soft-404 page ({visible} chars): error markers on thin content",
+            )
+    try:
+        floor = int(min_visible_chars)
+    except (TypeError, ValueError):
+        floor = DEFAULT_MIN_VISIBLE_CHARS
+    if visible < max(0, floor):
+        return (
+            "thin_content",
+            f"thin content ({visible} chars < {max(0, floor)})",
+        )
+    return ("ok", "")
 
 
 class _LinkTitleParser(html.parser.HTMLParser):
@@ -1282,6 +1343,8 @@ class PoliteCrawler:
         self.checkpoint_interval_pages = 10
         self.max_attempts_per_url = 3
         self.frontier_enabled = True
+        self.min_visible_chars = DEFAULT_MIN_VISIBLE_CHARS
+        self.reject_soft_404 = True
         self.last_checkpoint: dict[str, Any] = {}
         self._queue_path = Path(queue_path) if queue_path else None
         self._robots_cache = _BoundedLru(DEFAULT_MAX_TRACKED_DOMAINS)
@@ -1486,6 +1549,21 @@ class PoliteCrawler:
                 f"crawler: 'frontier_enabled' must be a bool, "
                 f"got {frontier_enabled!r}. Startup validation failed."
             )
+        min_visible = config.get("min_visible_chars", DEFAULT_MIN_VISIBLE_CHARS)
+        if (
+            not isinstance(min_visible, int)
+            or isinstance(min_visible, bool)
+            or min_visible < 0
+        ):
+            raise ConfigError(
+                "crawler: 'min_visible_chars' must be a non-negative int. "
+                "Startup validation failed."
+            )
+        soft_404 = config.get("reject_soft_404", True)
+        if not isinstance(soft_404, bool):
+            raise ConfigError(
+                "crawler: 'reject_soft_404' must be a bool. Startup validation failed."
+            )
         self.timeout_s = float(timeout)
         self.crawl_delay_s = float(delay)
         self.max_pages = config.get("max_pages", DEFAULT_MAX_PAGES)
@@ -1502,6 +1580,8 @@ class PoliteCrawler:
         self.checkpoint_interval_pages = checkpoint_interval
         self.max_attempts_per_url = max_attempts
         self.frontier_enabled = frontier_enabled
+        self.min_visible_chars = min_visible
+        self.reject_soft_404 = soft_404
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
         self._politeness = _BoundedLru(self.max_tracked_domains)
 
@@ -1722,7 +1802,18 @@ class PoliteCrawler:
                         store.mark_failed(raw, "content-type skipped")
                     continue
                 stats.fetched += 1
-                documents.append(self._to_document(page))
+                doc = self._to_document(page)
+                verdict, reason = classify_content_quality(
+                    doc.title, doc.content, min_visible_chars=self.min_visible_chars
+                )
+                if verdict == "soft_404" and not self.reject_soft_404:
+                    verdict, reason = "ok", ""
+                if verdict != "ok":
+                    stats.skipped_quality += 1
+                    if store is not None:
+                        store.mark_failed(raw, reason)
+                    continue
+                documents.append(doc)
                 if store is not None:
                     store.mark_done(
                         raw,

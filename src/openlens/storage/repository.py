@@ -606,25 +606,40 @@ class DocumentRepository(DocumentStore):
         return [str(row["title"]) for row in rows if row["title"]]
 
     def search(
-        self, fts_query: str, limit: int = 10, offset: int = 0
+        self,
+        fts_query: str,
+        limit: int = 10,
+        offset: int = 0,
+        site_category: str | None = None,
     ) -> tuple[list[tuple[Document, float]], int]:
         """Full-text search; returns ((doc, score) page, total matches).
 
-        Scores use `-bm25(...)` so higher is better.
+        Scores use `-bm25(...)` so higher is better. ``site_category``
+        narrows both rows and total to one indexed category value.
         """
         if not fts_query.strip():
             return [], 0
+        category = site_category if site_category in SITE_CATEGORY_VALUES else None
         try:
             with self._lock:
-                # S608 false positive: fts_query is a bound ? parameter.
-                total_row = self._conn.execute(
-                    "SELECT COUNT(*) AS n FROM documents_fts "  # noqa: S608
-                    + "WHERE documents_fts MATCH ?",
-                    (fts_query,),
-                ).fetchone()
+                # S608 false positive: fts_query is a bound ? parameter;
+                # the narrowing fragment is a static string, never input.
+                if category is None:
+                    total_row = self._conn.execute(
+                        "SELECT COUNT(*) AS n FROM documents_fts "  # noqa: S608
+                        + "WHERE documents_fts MATCH ?",
+                        (fts_query,),
+                    ).fetchone()
+                else:
+                    total_row = self._conn.execute(
+                        "SELECT COUNT(*) AS n FROM documents_fts "  # noqa: S608
+                        + "JOIN documents d ON d.id = documents_fts.doc_id "
+                        + "WHERE documents_fts MATCH ? AND d.site_category = ?",
+                        (fts_query, category),
+                    ).fetchone()
                 total = int(total_row["n"])
                 rows = self._conn.execute(
-                    "SELECT d.id, d.title, d.content, d.url, d.metadata,"
+                    "SELECT d.id, d.title, d.content, d.url, d.metadata,"  # noqa: S608
                     " d.content_type, d.published, d.site_category,"
                     " d.site_category_confidence, d.site_category_source,"
                     " d.kids_domain_hit, d.news_domain_hit,"
@@ -632,8 +647,11 @@ class DocumentRepository(DocumentStore):
                     " FROM documents_fts"
                     " JOIN documents d ON d.id = documents_fts.doc_id"
                     " WHERE documents_fts MATCH ?"
-                    " ORDER BY score DESC LIMIT ? OFFSET ?",
-                    (fts_query, limit, offset),
+                    + (" AND d.site_category = ?" if category is not None else "")
+                    + " ORDER BY score DESC LIMIT ? OFFSET ?",
+                    (fts_query, limit, offset)
+                    if category is None
+                    else (fts_query, category, limit, offset),
                 ).fetchall()
         except sqlite3.Error as exc:
             raise ProviderError(

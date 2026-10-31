@@ -14,7 +14,12 @@ from typing import Any
 import pytest
 
 import openlens.cli as cli
-from openlens.indexing.crawler import PoliteCrawler, _FetchedPage, extract_visible_text
+from openlens.indexing.crawler import (
+    PoliteCrawler,
+    _FetchedPage,
+    classify_content_quality,
+    extract_visible_text,
+)
 from openlens.indexing.worker import CrawlerWorker, new_worker_id
 from openlens.storage.frontier import SqliteFrontierStore
 from openlens.storage.repository import DocumentRepository
@@ -37,8 +42,10 @@ def _install_fake_fetch(crawler: PoliteCrawler, hits: dict[str, int]) -> None:
                 status=404, url=url, content_type="text/plain", body=b""
             )
         links = "".join(f'<a href="{link}">x</a>' for link in _PAGES[url])
+        prose = "Informative crawlable prose about the topic. " * 20
         body = (
-            f"<html><head><title>{url}</title></head><body>{links}</body></html>"
+            f"<html><head><title>Guide for {url}</title></head>"
+            f"<body><p>{prose}</p>{links}</body></html>"
         ).encode()
         return _FetchedPage(
             status=200, url=url, content_type="text/html", body=body, headers={}
@@ -443,3 +450,98 @@ def test_to_document_falls_back_to_raw_without_visible_text() -> None:
         )
     )
     assert doc.content == raw.decode()
+
+
+# --- content validity + quality gate -------------------------------------------
+
+
+def test_classify_content_quality_soft_404() -> None:
+    title = "Development Tools | Open Library Docs"
+    body = "404 - Page Not Found /authors/ol5116752a does not exist."
+    verdict, reason = classify_content_quality(title, body)
+    assert verdict == "soft_404"
+    assert "soft-404" in reason
+
+
+def test_classify_content_quality_thin_content() -> None:
+    verdict, reason = classify_content_quality("A title", "too short")
+    assert verdict == "thin_content"
+    assert "thin content" in reason
+
+
+def test_classify_content_quality_long_article_mentioning_404_is_ok() -> None:
+    body = "This guide explains page not found handling. " * 100
+    assert classify_content_quality("Error handling guide", body) == ("ok", "")
+
+
+def test_classify_content_quality_handles_non_string_inputs() -> None:
+    assert classify_content_quality(None, None)[0] == "thin_content"
+    assert classify_content_quality("t", b"bytes")[0] == "thin_content"
+
+
+def _install_quality_fetch(crawler: PoliteCrawler) -> None:
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        if url.endswith("/missing"):
+            body = (
+                b"<html><head><title>Development Tools | Open Library "
+                b"Docs</title></head>"
+                b"<body><h1>404 - Page Not Found</h1>"
+                b"<p>/authors/ol5116752a does not exist.</p></body></html>"
+            )
+        else:
+            prose = "Informative crawlable prose about the topic. " * 20
+            body = (
+                f"<html><head><title>Guide for {url}</title></head>"
+                f"<body><p>{prose}</p></body></html>"
+            ).encode()
+        return _FetchedPage(
+            status=200, url=url, content_type="text/html", body=body, headers={}
+        )
+
+    crawler._fetch_bounded = fake_fetch  # type: ignore[method-assign]
+    crawler.respect_robots = False
+
+
+def test_crawl_skips_soft_404_and_marks_failed() -> None:
+    repo = DocumentRepository(":memory:")
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler()
+        _install_quality_fetch(crawler)
+        worker = _worker(crawler, repo, store)
+        worker.run(["https://worker.test/good", "https://worker.test/missing"])
+        assert repo.count() == 1
+        assert worker.crawler.last_stats.skipped_quality == 1
+        counts = store.counts()
+        assert counts.get("failed") == 1
+        assert counts.get("done") == 1
+        checkpoint = worker.crawler.last_checkpoint
+        assert checkpoint is not None
+        assert checkpoint["stats"]["skipped_quality"] == 1
+    finally:
+        store.close()
+        repo.close()
+
+
+def test_crawl_soft_404_opt_out_indexes_with_zero_floor() -> None:
+    repo = DocumentRepository(":memory:")
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler(reject_soft_404=False, min_visible_chars=0)
+        _install_quality_fetch(crawler)
+        worker = _worker(crawler, repo, store)
+        worker.run(["https://worker.test/missing"])
+        assert repo.count() == 1
+        assert worker.crawler.last_stats.skipped_quality == 0
+    finally:
+        store.close()
+        repo.close()
+
+
+def test_crawler_rejects_bad_quality_config() -> None:
+    with pytest.raises(Exception, match="min_visible_chars"):
+        _crawler(min_visible_chars=-1)
+    with pytest.raises(Exception, match="min_visible_chars"):
+        _crawler(min_visible_chars="200")  # type: ignore[dict-item]
+    with pytest.raises(Exception, match="reject_soft_404"):
+        _crawler(reject_soft_404="yes")  # type: ignore[dict-item]

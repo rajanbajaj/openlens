@@ -243,6 +243,7 @@ class FrontierWorkerSchema(BaseModel):
     last_seen: float = 0.0
     claimed: int = Field(default=0, ge=0)
     status: str = "alive"
+    role: str = "worker"
 
 
 class FrontierWorkerHeartbeatSchema(BaseModel):
@@ -254,6 +255,7 @@ class FrontierWorkerHeartbeatSchema(BaseModel):
     crawl_id: str = Field(default="default", max_length=256)
     claimed: int = Field(default=0, ge=0)
     status: str = Field(default="alive", max_length=64)
+    role: str = Field(default="worker", max_length=64)
 
 
 class FrontierWorkersResponseSchema(BaseModel):
@@ -278,6 +280,11 @@ class FrontierStatusSchema(BaseModel):
     # endpoints leave the defaults (nothing cleared, topic untouched).
     cleared_queued: int = Field(default=0, ge=0)
     kafka_purged: bool = False
+    # Best-effort consumer-group lag for the crawl topic (None when the
+    # broker is unreachable or Kafka is disabled); the scale signal.
+    kafka_lag_total: int | None = None
+    kafka_lag_partitions: int | None = None
+    cluster_config_version: int = Field(default=0, ge=0)
 
 
 class FrontierSettingsSchema(BaseModel):
@@ -313,6 +320,107 @@ class FrontierSettingsResponseSchema(BaseModel):
     """GET/PUT /api/v1/frontier/settings response body."""
 
     settings: FrontierSettingsSchema
+
+
+#: Settings-row keys carrying the live cluster map and node registry.
+#: They bypass ``FrontierSettingsSchema`` (which stays crawl-tuning
+#: only) and are managed by the dedicated cluster endpoints below.
+CLUSTER_MAP_SETTINGS_KEY = "cluster_map"
+KAFKA_NODES_SETTINGS_KEY = "kafka_nodes"
+
+
+class ClusterMapSchema(BaseModel):
+    """Live Kafka reachability for workers (strict PUT body)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bootstrap_servers: list[Annotated[str, Field(min_length=1, max_length=256)]] = (
+        Field(min_length=1, max_length=64)
+    )
+    topic: str = Field(min_length=1, max_length=256)
+    group_id: str = Field(min_length=1, max_length=256)
+
+
+class ClusterMapResponseSchema(BaseModel):
+    """GET/PUT /api/v1/frontier/cluster-map response body."""
+
+    bootstrap_servers: list[str] = Field(default_factory=list)
+    topic: str = "crawl.urls"
+    group_id: str = "crawlers"
+    config_version: int = Field(default=0, ge=0)
+    source: str = "file"
+
+
+class KafkaNodeSchema(BaseModel):
+    """One registered Kafka broker node (admin inventory)."""
+
+    node_id: int = Field(ge=1)
+    role: str = "broker"
+    status: str = "pending"
+    advertise_listener: str = ""
+    created_at: float = 0.0
+
+
+class KafkaNodePrepareSchema(BaseModel):
+    """POST /api/v1/frontier/kafka/nodes/prepare body (strict)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: int = Field(ge=1, le=100000)
+    advertise_listener: str = Field(min_length=1, max_length=256)
+
+
+class KafkaNodePrepareResponseSchema(BaseModel):
+    """Allocated broker identity + join parameters."""
+
+    node_id: int
+    cluster_id: str
+    controller_quorum: list[str] = Field(default_factory=list)
+    status: str = "pending"
+
+
+class KafkaNodesResponseSchema(BaseModel):
+    """GET /api/v1/frontier/kafka/nodes response body."""
+
+    nodes: list[KafkaNodeSchema] = Field(default_factory=list)
+    node_count: int = Field(default=0, ge=0)
+
+
+class KafkaNodeJoinedSchema(BaseModel):
+    """POST /api/v1/frontier/kafka/nodes/{id}/joined body (strict)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    advertise_listener: str = Field(default="", max_length=256)
+
+
+class RebalancePlanRequestSchema(BaseModel):
+    """POST /api/v1/frontier/kafka/rebalance-plan body (strict)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str = Field(default="crawl.urls", min_length=1, max_length=256)
+    broker_ids: list[Annotated[int, Field(ge=0, le=100000)]] = Field(min_length=1)
+    replication_factor: int | None = Field(default=None, ge=1)
+
+
+class RebalanceAssignmentSchema(BaseModel):
+    """One partition's planned replica set (reassign-partitions shape)."""
+
+    topic: str
+    partition: int
+    replicas: list[int]
+
+
+class RebalancePlanResponseSchema(BaseModel):
+    """Even-spread replica plan + the tool command that applies it."""
+
+    topic: str
+    partitions: int
+    replication_factor: int
+    broker_ids: list[int]
+    assignment: list[RebalanceAssignmentSchema]
+    tool_hint: str
 
 
 class FrontierResumeSchema(BaseModel):
@@ -441,6 +549,7 @@ class ChatTraceSchema(BaseModel):
     steps: list[ChatTraceStepSchema] = Field(default_factory=list)
     fallbacks: list[str] = Field(default_factory=list)
     model_calls: int = Field(default=0, ge=0)
+    model: str = ""
 
 
 class ChatResponseSchema(BaseModel):

@@ -106,6 +106,7 @@ def heartbeat_worker(
     crawl_id: str = DEFAULT_CRAWL_ID,
     claimed: int = 0,
     status: str = "alive",
+    role: str = "worker",
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record a worker heartbeat; return its stored entry (a copy)."""
@@ -116,6 +117,7 @@ def heartbeat_worker(
         "last_seen": float(now) if now is not None else time.time(),
         "claimed": max(0, int(claimed)),
         "status": (status or "alive").strip() or "alive",
+        "role": (role or "worker").strip()[:64] or "worker",
     }
     _WORKERS[resolved] = entry
     return dict(entry)

@@ -21,6 +21,7 @@ import asyncio
 import logging
 import os
 import secrets
+import time
 from typing import Any, Optional
 
 from fastapi import (
@@ -43,6 +44,18 @@ from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseS
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
 from openlens.api.schemas import FrontierWorkersResponseSchema
+from openlens.api.schemas import (
+    CLUSTER_MAP_SETTINGS_KEY,
+    KAFKA_NODES_SETTINGS_KEY,
+    ClusterMapResponseSchema,
+    ClusterMapSchema,
+    KafkaNodeJoinedSchema,
+    KafkaNodePrepareResponseSchema,
+    KafkaNodePrepareSchema,
+    KafkaNodesResponseSchema,
+    RebalancePlanRequestSchema,
+    RebalancePlanResponseSchema,
+)
 from openlens.api.schemas import (
     ChatCitationSchema,
     ChatRequestSchema,
@@ -448,6 +461,11 @@ def agent_chat(
             ],
             fallbacks=[str(entry) for entry in (trace.get("fallbacks", []) or [])],
             model_calls=int(trace.get("model_calls", 0)),
+            model=(
+                str(trace.get("model", ""))
+                if isinstance(trace.get("model", ""), str)
+                else ""
+            ),
         ),
         notice=notice if isinstance(notice, str) else None,
     )
@@ -877,8 +895,11 @@ def frontier_status(request: Request) -> FrontierStatusSchema:
     try:
         app_config = getattr(request.app.state, "config", None)
         frontier_state.seed_settings_from_config(app_config)
-        return _overlay_store_status(
-            _frontier_status_payload(), _frontier_read_store(request)
+        return _overlay_kafka_status(
+            _overlay_store_status(
+                _frontier_status_payload(), _frontier_read_store(request)
+            ),
+            app_config,
         )
     except Exception:
         return FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
@@ -894,9 +915,11 @@ FRONTIER_LIVE_INTERVAL_S = 2.0
 async def frontier_live(websocket: WebSocket) -> None:
     """Stream frontier status snapshots until the client disconnects.
 
-    Same payload as ``GET /frontier/status`` (snapshot overlaid with
+    Same queue view as ``GET /frontier/status`` (snapshot overlaid with
     store truth), pushed immediately on connect and every
-    ``FRONTIER_LIVE_INTERVAL_S`` after. The socket requires the same
+    ``FRONTIER_LIVE_INTERVAL_S`` after. The Kafka lag/version overlay
+    rides the GET only, not this 2s push cadence (a throwaway consumer
+    per push would be wasteful). The socket requires the same
     admin rights as the mutating endpoints (``X-Admin-Token`` header):
     the live worker/queue view is an admin surface and an unauthenticated
     socket can be held open to flood the server. Awaiting the
@@ -1267,6 +1290,7 @@ def frontier_worker_heartbeat(
             crawl_id=body.crawl_id,
             claimed=body.claimed,
             status=body.status,
+            role=body.role,
         )
         workers = frontier_state.list_workers()
     except Exception:
@@ -1274,6 +1298,352 @@ def frontier_worker_heartbeat(
     return FrontierWorkersResponseSchema(
         workers=workers,  # type: ignore[arg-type]
         worker_count=len(workers),
+    )
+
+
+# -- Cluster map + Kafka node registry (scale-out control plane) --------
+
+
+def _kafka_file_section(app_config: Any) -> dict[str, Any]:
+    """Validated file-config ``kafka:`` section ({} when absent)."""
+    from openlens.indexing.kafka_queue import kafka_section
+
+    try:
+        section = kafka_section(app_config if isinstance(app_config, dict) else {})
+    except Exception:
+        return {}
+    return dict(section) if isinstance(section, dict) else {}
+
+
+def _stored_cluster_map(app_config: Any) -> dict[str, Any]:
+    """Stored cluster-map overrides from the settings row ({} when none)."""
+    stored = _store_get_settings(app_config).get(CLUSTER_MAP_SETTINGS_KEY, {})
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def _cluster_map_payload(app_config: Any) -> ClusterMapResponseSchema:
+    """Effective cluster map: file defaults, stored overrides win."""
+    file_section = _kafka_file_section(app_config)
+    servers = list(file_section.get("bootstrap_servers", ["localhost:9092"]))
+    topic = str(file_section.get("topic", "crawl.urls") or "crawl.urls")
+    group = str(file_section.get("group_id", "crawlers") or "crawlers")
+    version = 0
+    source = "file"
+    stored = _stored_cluster_map(app_config)
+    if stored:
+        override = stored.get("bootstrap_servers")
+        if (
+            isinstance(override, list)
+            and override
+            and all(isinstance(s, str) and s.strip() for s in override)
+        ):
+            servers = [s.strip() for s in override]
+        for key, current in (("topic", topic), ("group_id", group)):
+            value = stored.get(key)
+            if isinstance(value, str) and value.strip():
+                if key == "topic":
+                    topic = value.strip()
+                else:
+                    group = value.strip()
+        raw_version = stored.get("config_version", 0)
+        if isinstance(raw_version, bool):
+            pass
+        elif isinstance(raw_version, int) and raw_version >= 0:
+            version = raw_version
+        source = "stored"
+    return ClusterMapResponseSchema(
+        bootstrap_servers=servers,
+        topic=topic,
+        group_id=group,
+        config_version=version,
+        source=source,
+    )
+
+
+def _kafka_nodes(app_config: Any) -> list[dict[str, Any]]:
+    """Registered Kafka nodes from the settings row ([] when none)."""
+    stored = _store_get_settings(app_config).get(KAFKA_NODES_SETTINGS_KEY, [])
+    if not isinstance(stored, list):
+        return []
+    nodes: list[dict[str, Any]] = []
+    for entry in stored:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            node_id = int(entry.get("node_id", 0))
+        except (TypeError, ValueError):
+            continue
+        if node_id < 1:
+            continue
+        nodes.append(
+            {
+                "node_id": node_id,
+                "role": str(entry.get("role", "broker") or "broker"),
+                "status": str(entry.get("status", "pending") or "pending"),
+                "advertise_listener": str(entry.get("advertise_listener", "") or ""),
+                "created_at": entry.get("created_at", 0.0),
+            }
+        )
+    nodes.sort(key=lambda node: node["node_id"])
+    return nodes
+
+
+def _save_kafka_nodes(app_config: Any, nodes: list[dict[str, Any]]) -> bool:
+    """Persist the node registry alongside the other settings keys."""
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        try:
+            current = store.get_settings()
+            merged = dict(current) if isinstance(current, dict) else {}
+            merged[KAFKA_NODES_SETTINGS_KEY] = list(nodes)
+            store.save_settings(merged)
+            return True
+        finally:
+            with suppress(Exception):
+                store.close()
+    except Exception:
+        return False
+
+
+def _overlay_kafka_status(
+    payload: FrontierStatusSchema, app_config: Any
+) -> FrontierStatusSchema:
+    """Best-effort lag + map version onto the status payload.
+
+    Never raises and never slows the dashboard when Kafka is
+    disabled: the lag probe runs only when the file config enables
+    the queue, with a short timeout; failures leave nulls.
+    """
+    try:
+        payload.cluster_config_version = _cluster_map_payload(app_config).config_version
+    except Exception:  # noqa: S110 — map failure keeps version 0
+        pass
+    try:
+        from openlens.indexing.kafka_queue import kafka_enabled, topic_group_lag
+
+        if not kafka_enabled(app_config if isinstance(app_config, dict) else None):
+            return payload
+        resolved = _cluster_map_payload(app_config)
+        lag = topic_group_lag(
+            list(resolved.bootstrap_servers),
+            resolved.topic,
+            resolved.group_id,
+            timeout_s=2.0,
+        )
+        payload.kafka_lag_total = int(lag.get("total_lag", 0))
+        payload.kafka_lag_partitions = int(lag.get("partitions", 0))
+    except Exception:  # noqa: S110 — lag probe is best-effort; nulls stay
+        pass
+    return payload
+
+
+@router.get("/frontier/cluster-map", response_model=ClusterMapResponseSchema)
+def frontier_cluster_map(request: Request) -> ClusterMapResponseSchema:
+    """Effective Kafka reachability for workers (admin-only).
+
+    File config seeds the map; a stored PUT overrides it and bumps
+    ``config_version``, which live workers pick up without restarting.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied  # type: ignore[return-value]
+    return _cluster_map_payload(getattr(request.app.state, "config", None))
+
+
+@router.put("/frontier/cluster-map", response_model=ClusterMapResponseSchema)
+def frontier_put_cluster_map(
+    body: ClusterMapSchema, request: Request
+) -> ClusterMapResponseSchema | JSONResponse:
+    """Replace the stored cluster map and bump its version (admin-only).
+
+    Workers poll the version and recreate their Kafka clients on change,
+    so broker rotations need no restarts. Other settings keys are
+    preserved; only the map (plus its new version) is written.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    app_config = getattr(request.app.state, "config", None)
+    stored = _stored_cluster_map(app_config)
+    try:
+        version = int(stored.get("config_version", 0) or 0)
+    except (TypeError, ValueError):
+        version = 0
+    merged = _store_get_settings(app_config)
+    merged[CLUSTER_MAP_SETTINGS_KEY] = {
+        "bootstrap_servers": list(body.bootstrap_servers),
+        "topic": body.topic,
+        "group_id": body.group_id,
+        "config_version": max(0, version) + 1,
+    }
+    if not _store_save_settings(app_config, merged):
+        return JSONResponse(
+            status_code=503,
+            content=error_body("unavailable", "could not persist the cluster map"),
+        )
+    return _cluster_map_payload(app_config)
+
+
+@router.get("/frontier/kafka/nodes", response_model=KafkaNodesResponseSchema)
+def frontier_kafka_nodes(request: Request) -> KafkaNodesResponseSchema | JSONResponse:
+    """Registered Kafka broker nodes (admin-only inventory)."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    nodes = _kafka_nodes(getattr(request.app.state, "config", None))
+    return KafkaNodesResponseSchema(nodes=nodes, node_count=len(nodes))  # type: ignore[arg-type]
+
+
+@router.post(
+    "/frontier/kafka/nodes/prepare",
+    response_model=KafkaNodePrepareResponseSchema,
+)
+def frontier_kafka_node_prepare(
+    body: KafkaNodePrepareSchema, request: Request
+) -> KafkaNodePrepareResponseSchema | JSONResponse:
+    """Reserve a broker node id and return its join parameters (admin-only).
+
+    The operator (or provisioning script) formats the new broker with the
+    returned cluster id, starts it against the controller quorum, then
+    marks it joined. Ids are explicit so compose-owned 1-3 are never
+    reallocated; duplicates are rejected with 409.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    app_config = getattr(request.app.state, "config", None)
+    nodes = _kafka_nodes(app_config)
+    if any(node["node_id"] == body.node_id for node in nodes):
+        return JSONResponse(
+            status_code=409,
+            content=error_body(
+                "conflict", f"kafka node {body.node_id} is already registered"
+            ),
+        )
+    nodes.append(
+        {
+            "node_id": body.node_id,
+            "role": "broker",
+            "status": "pending",
+            "advertise_listener": body.advertise_listener,
+            "created_at": time.time(),
+        }
+    )
+    if not _save_kafka_nodes(app_config, nodes):
+        return JSONResponse(
+            status_code=503,
+            content=error_body("unavailable", "could not persist the node registry"),
+        )
+    file_section = _kafka_file_section(app_config)
+    return KafkaNodePrepareResponseSchema(
+        node_id=body.node_id,
+        cluster_id=str(file_section.get("cluster_id", "") or ""),
+        controller_quorum=list(file_section.get("controller_quorum", []) or []),
+        status="pending",
+    )
+
+
+@router.post(
+    "/frontier/kafka/nodes/{node_id}/joined",
+    response_model=KafkaNodesResponseSchema,
+)
+def frontier_kafka_node_joined(
+    node_id: int, body: KafkaNodeJoinedSchema, request: Request
+) -> KafkaNodesResponseSchema | JSONResponse:
+    """Mark a prepared broker joined after verifying it (admin-only)."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    app_config = getattr(request.app.state, "config", None)
+    nodes = _kafka_nodes(app_config)
+    known = [node for node in nodes if node["node_id"] == node_id]
+    if not known:
+        return JSONResponse(
+            status_code=404,
+            content=error_body("not_found", f"kafka node {node_id} is not registered"),
+        )
+    for node in nodes:
+        if node["node_id"] == node_id:
+            node["status"] = "joined"
+            if body.advertise_listener.strip():
+                node["advertise_listener"] = body.advertise_listener.strip()
+    if not _save_kafka_nodes(app_config, nodes):
+        return JSONResponse(
+            status_code=503,
+            content=error_body("unavailable", "could not persist the node registry"),
+        )
+    return KafkaNodesResponseSchema(nodes=nodes, node_count=len(nodes))  # type: ignore[arg-type]
+
+
+@router.post(
+    "/frontier/kafka/rebalance-plan",
+    response_model=RebalancePlanResponseSchema,
+)
+def frontier_kafka_rebalance_plan(
+    body: RebalancePlanRequestSchema, request: Request
+) -> RebalancePlanResponseSchema | JSONResponse:
+    """Build an even-spread replica plan for new brokers (admin-only).
+
+    Reads live topic layout (partition count, replication factor unless
+    overridden) from the broker, so the driver and a reachable broker
+    are required — otherwise 503. The returned JSON feeds
+    ``kafka-reassign-partitions.sh``; nothing moves until the operator
+    runs it, so existing brokers are never disturbed by planning.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    app_config = getattr(request.app.state, "config", None)
+    resolved = _cluster_map_payload(app_config)
+    try:
+        from openlens.indexing.kafka_queue import (
+            describe_topic_layout,
+            plan_reassignment,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content=error_body("unavailable", f"kafka driver unavailable: {exc}"),
+        )
+    try:
+        layout = describe_topic_layout(
+            list(resolved.bootstrap_servers), body.topic, timeout_s=10.0
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content=error_body("unavailable", f"cannot read topic layout: {exc}"),
+        )
+    replication = body.replication_factor or int(layout["replication_factor"])
+    brokers = sorted(set(int(bid) for bid in body.broker_ids))
+    try:
+        assignment = plan_reassignment(
+            body.topic, int(layout["partitions"]), replication, brokers
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", f"cannot plan reassignment: {exc}"),
+        )
+    slug = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in body.topic
+    )
+    seed = (
+        resolved.bootstrap_servers[0] if resolved.bootstrap_servers else "<bootstrap>"
+    )
+    hint = (
+        "kafka-reassign-partitions.sh"
+        f" --bootstrap-server {seed}"
+        f" --reassignment-json-file /tmp/openlens-rebalance-{slug}.json"
+        " --execute"
+    )
+    return RebalancePlanResponseSchema(
+        topic=body.topic,
+        partitions=int(layout["partitions"]),
+        replication_factor=replication,
+        broker_ids=brokers,
+        assignment=assignment,  # type: ignore[arg-type]
+        tool_hint=hint,
     )
 
     # -- Admin config docs (DB-persisted, file fallback) --------------------

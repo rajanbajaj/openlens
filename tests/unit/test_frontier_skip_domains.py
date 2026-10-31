@@ -268,8 +268,10 @@ def _install_fake_fetch(crawler: PoliteCrawler, hits: dict[str, int]) -> None:
                 status=404, url=url, content_type="text/plain", body=b""
             )
         links = "".join(f'<a href="{link}">x</a>' for link in _PAGES[url])
+        prose = "Informative crawlable prose about the topic. " * 20
         body = (
-            f"<html><head><title>{url}</title></head><body>{links}</body></html>"
+            f"<html><head><title>Guide for {url}</title></head>"
+            f"<body><p>{prose}</p>{links}</body></html>"
         ).encode()
         return _FetchedPage(
             status=200, url=url, content_type="text/html", body=body, headers={}

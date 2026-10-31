@@ -403,8 +403,28 @@ def test_chat_route_probe_with_model() -> None:
         "steps",
         "fallbacks",
         "model_calls",
+        "model",
     }
     assert body["trace"]["model_calls"] == 2
+
+
+def test_chat_route_probe_reports_model() -> None:
+    """The serving-model label must survive the response schema.
+
+    Regression: ``ChatTraceSchema`` once dropped the key, so prod
+    rendered the generic fallback instead of the model name.
+    """
+    model = _ScriptedModel(
+        [
+            '{"query": "q", "filters": {}, "mode": "default"}',
+            "Summary [1].",
+        ]
+    )
+    model.model = "route-model-1"
+    client = _route_client(_RouteEngine([_hit("a")], model))
+    resp = client.post("/api/v1/agent/chat", json={"message": "q"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trace"]["model"] == "route-model-1"
 
 
 def test_chat_route_probe_model_missing_fails_closed() -> None:

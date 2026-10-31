@@ -58,7 +58,11 @@ from typing import Any
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
-from openlens.storage.repository import doc_columns
+from openlens.storage.repository import (
+    SITE_CATEGORY_VALUES,
+    doc_columns,
+    site_category_columns,
+)
 
 _PROVIDER_NAME = "custom_index"
 
@@ -90,8 +94,9 @@ def _check_table(table: str) -> str:
 
 def _doc_to_row(
     doc: Document,
-) -> tuple[str, str, str, str | None, str, str | None, str | None]:
+) -> tuple[str, str, str, str | None, str, str | None, str | None, str]:
     content_type, published = doc_columns(doc)
+    category = site_category_columns(doc)[0]
     return (
         doc.id,
         doc.title,
@@ -100,6 +105,7 @@ def _doc_to_row(
         json.dumps(doc.metadata or {}),
         content_type,
         published,
+        category,
     )
 
 
@@ -118,6 +124,9 @@ def _row_to_document(row: Mapping[str, Any]) -> Document:
     published = row.get("published") if isinstance(row, Mapping) else None
     if isinstance(published, str) and published:
         metadata.setdefault("published", published)
+    category = row.get("site_category") if isinstance(row, Mapping) else None
+    if isinstance(category, str) and category:
+        metadata.setdefault("site_category", category)
     return Document(
         id=str(row["id"]),
         title=str(row["title"]),
@@ -300,9 +309,11 @@ class MySQLDocumentStore(DocumentStore):
             " `metadata` MEDIUMTEXT NOT NULL,"
             " `content_type` TEXT NULL,"
             " `published` TEXT NULL,"
+            " `site_category` VARCHAR(16) NULL DEFAULT 'other',"
             " FULLTEXT KEY `ftx_title_content` (`title`, `content`),"
             " KEY `idx_content_type` (`content_type`(191)),"
-            " KEY `idx_published` (`published`(10))"
+            " KEY `idx_published` (`published`(10)),"
+            " KEY `idx_site_category` (`site_category`)"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         )
         with self._connection() as conn:
@@ -352,6 +363,11 @@ class MySQLDocumentStore(DocumentStore):
                 "ALTER TABLE `" + self._table + "`"  # noqa: S608
                 " ADD COLUMN `published` TEXT NULL"
             )
+        if "site_category" not in existing:
+            cur.execute(
+                "ALTER TABLE `" + self._table + "`"  # noqa: S608
+                " ADD COLUMN `site_category` VARCHAR(16) NULL DEFAULT 'other'"
+            )
         cur.execute(
             "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS"
             " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
@@ -393,13 +409,15 @@ class MySQLDocumentStore(DocumentStore):
             # Validated table name; every value is a bound %s parameter.
             sql = (
                 "INSERT INTO `" + self._table + "`"  # noqa: S608
-                " (id, title, content, url, metadata, content_type, published)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                " (id, title, content, url, metadata, content_type, published,"
+                " site_category)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON DUPLICATE KEY UPDATE title = VALUES(title),"
                 " content = VALUES(content), url = VALUES(url),"
                 " metadata = VALUES(metadata),"
                 " content_type = VALUES(content_type),"
-                " published = VALUES(published)"
+                " published = VALUES(published),"
+                " site_category = VALUES(site_category)"
             )
             with self._connection() as conn:
                 try:
@@ -536,35 +554,56 @@ class MySQLDocumentStore(DocumentStore):
         return titles
 
     def search(
-        self, fts_query: str, limit: int = 10, offset: int = 0
+        self,
+        fts_query: str,
+        limit: int = 10,
+        offset: int = 0,
+        site_category: str | None = None,
     ) -> tuple[list[tuple[Document, float]], int]:
-        """Full-text search; returns ((doc, score) page, total matches)."""
+        """Full-text search; returns ((doc, score) page, total matches).
+
+        ``site_category`` narrows rows and total to one indexed value.
+        """
         if not fts_query.strip():
             return [], 0
+        category = site_category if site_category in SITE_CATEGORY_VALUES else None
+        narrowing = " AND `site_category` = %s" if category is not None else ""
         match_against = "MATCH(title, content) AGAINST (%s IN NATURAL LANGUAGE MODE)"
-        # Validated table name; the query text and paging values below are
-        # bound %s parameters, never interpolated.
+        # Validated table name; the query text, category, and paging values
+        # below are bound %s parameters, never interpolated.
         count_sql = (
             "SELECT COUNT(*) AS n FROM `"  # noqa: S608
             + self._table
             + "` WHERE "
             + match_against
+            + narrowing
         )
         page_sql = (
             "SELECT id, title, content, url, metadata, content_type, published, "  # noqa: S608
+            "site_category, "
             + match_against
             + " AS score FROM `"
             + self._table
             + "` WHERE "
             + match_against
+            + narrowing
             + " ORDER BY score DESC LIMIT %s OFFSET %s"
         )
         with self._connection() as conn:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(count_sql, (fts_query,))
+                    if category is None:
+                        cur.execute(count_sql, (fts_query,))
+                    else:
+                        cur.execute(count_sql, (fts_query, category))
                     total = int(cur.fetchone()["n"])
-                    cur.execute(page_sql, (fts_query, fts_query, limit, offset))
+                    if category is None:
+                        cur.execute(page_sql, (fts_query, fts_query, limit, offset))
+                    else:
+                        cur.execute(
+                            page_sql,
+                            (fts_query, category, fts_query, category, limit, offset),
+                        )
                     rows = cur.fetchall()
             except Exception as exc:
                 raise ProviderError(

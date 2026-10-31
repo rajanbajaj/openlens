@@ -136,7 +136,7 @@ def test_policy_allow_true_exempts_global_allowlist_gate(
         status=200,
         url="http://example.com/",
         content_type="text/plain",
-        body=b"hello",
+        body=b"hello world of crawlable prose. " * 30,
     )
     monkeypatch.setattr(crawler, "_do_fetch", lambda url: page)
     docs = crawler.crawl(["http://example.com/"])
@@ -156,7 +156,11 @@ def test_global_deny_still_wins_over_policy_allow() -> None:
 
 def _html_page(url: str, *links: str) -> _FetchedPage:
     anchors = "".join(f'<a href="{link}">x</a>' for link in links)
-    body = f"<html><head><title>{url}</title></head><body>{anchors}</body></html>"
+    prose = "Informative crawlable prose about the topic. " * 20
+    body = (
+        f"<html><head><title>Guide for {url}</title></head>"
+        f"<body><p>{prose}</p>{anchors}</body></html>"
+    )
     return _FetchedPage(
         status=200, url=url, content_type="text/html", body=body.encode()
     )
@@ -237,11 +241,15 @@ class _BreadthHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self) -> None:
+        prose = b"Informative crawlable prose about the topic. " * 20
         body = (
-            b"<html><head><title>root</title></head><body>"
-            b'<a href="/child">child</a></body></html>'
+            b"<html><head><title>root</title></head><body><p>"
+            + prose
+            + b'</p><a href="/child">child</a></body></html>'
             if self.path == "/"
-            else b"<html><head><title>child</title></head><body>hi</body></html>"
+            else b"<html><head><title>child</title></head><body><p>"
+            + prose
+            + b"</p></body></html>"
         )
         self.send_response(200)
         self.send_header("Content-Type", "text/html")

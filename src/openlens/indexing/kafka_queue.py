@@ -96,6 +96,8 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "group_id",
         "publish_timeout_s",
         "poll_timeout_s",
+        "cluster_id",
+        "controller_quorum",
     }
     unknown = sorted(set(section) - known)
     if unknown:
@@ -110,6 +112,8 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "group_id": DEFAULT_GROUP_ID,
         "publish_timeout_s": DEFAULT_PUBLISH_TIMEOUT_S,
         "poll_timeout_s": DEFAULT_POLL_TIMEOUT_S,
+        "cluster_id": "",
+        "controller_quorum": [],
     }
     if "enabled" in section:
         normalized["enabled"] = _coerce_enabled(section["enabled"])
@@ -146,6 +150,23 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
             ):
                 raise ConfigError(f"Config 'kafka.{key}' must be a positive number.")
             normalized[key] = float(value)
+    if "cluster_id" in section:
+        value = section["cluster_id"]
+        if not isinstance(value, str):
+            raise ConfigError("Config 'kafka.cluster_id' must be a string.")
+        normalized["cluster_id"] = value.strip()
+    if "controller_quorum" in section:
+        raw = section["controller_quorum"]
+        if isinstance(raw, str):
+            servers = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, list) and all(isinstance(p, str) for p in raw):
+            servers = [part.strip() for part in raw]
+        else:
+            raise ConfigError(
+                "Config 'kafka.controller_quorum' must be a "
+                "comma-separated string or a list of strings."
+            )
+        normalized["controller_quorum"] = [part for part in servers if part]
     return normalized
 
 
@@ -440,6 +461,155 @@ def open_kafka_queue(
     return KafkaQueue.from_app_config(
         config, producer=producer, consumer_factory=consumer_factory
     )
+
+
+def topic_group_lag(
+    bootstrap_servers: list[str],
+    topic: str,
+    group_id: str,
+    timeout_s: float = 10.0,
+) -> dict[str, int]:
+    """Total unconsumed messages for one topic/group (scale signal).
+
+    Best-effort read for the admin status payload: creates a throwaway
+    consumer, compares log-end offsets to the group's commits, and
+    closes it. Raises ``ProviderError(UNAVAILABLE)`` when the driver is
+    missing or the broker fails, so callers degrade to lag-unknown.
+    """
+    if not bootstrap_servers or not topic.strip() or not group_id.strip():
+        raise _error("group lag needs bootstrap servers, a topic, and a group id.")
+    kafka, _ = _load_driver()
+    consumer = None
+    try:
+        try:
+            consumer = kafka.KafkaConsumer(
+                group_id=group_id.strip(),
+                bootstrap_servers=list(bootstrap_servers),
+                enable_auto_commit=False,
+                request_timeout_ms=max(1000, int(timeout_s * 1000)),
+            )
+        except Exception as exc:
+            raise _error(f"cannot create lag-probe consumer: {exc}") from exc
+        try:
+            partitions = consumer.partitions_for_topic(topic.strip())
+        except Exception as exc:
+            raise _error(f"cannot list partitions for '{topic}': {exc}") from exc
+        if not partitions:
+            return {"total_lag": 0, "partitions": 0}
+        assignments = [kafka.TopicPartition(topic.strip(), part) for part in partitions]
+        try:
+            ends = consumer.end_offsets(assignments)
+        except Exception as exc:
+            raise _error(f"cannot read log-end offsets for '{topic}': {exc}") from exc
+        total = 0
+        for assignment in assignments:
+            try:
+                committed = consumer.committed(assignment)
+            except Exception:
+                committed = None
+            end = ends.get(assignment) or 0
+            done = committed if isinstance(committed, int) else 0
+            total += max(0, int(end) - done)
+        return {"total_lag": total, "partitions": len(assignments)}
+    finally:
+        if consumer is not None:
+            with contextlib.suppress(Exception):
+                consumer.close(autocommit=False)
+
+
+def describe_topic_layout(
+    bootstrap_servers: list[str],
+    topic: str,
+    timeout_s: float = 10.0,
+) -> dict[str, int]:
+    """Live ``{partitions, replication_factor}`` for a topic.
+
+    Reads cluster metadata through a throwaway client (replication
+    factor from partition 0's replica set). Raises
+    ``ProviderError(UNAVAILABLE)`` when the driver is missing or the
+    broker fails, so routes degrade to 503 instead of 500.
+    """
+    if not bootstrap_servers or not topic.strip():
+        raise _error("topic layout needs bootstrap servers and a topic.")
+    _load_driver()
+    name = topic.strip()
+    try:
+        from kafka import KafkaClient  # type: ignore[import-not-found, import-untyped]
+    except ImportError as exc:
+        raise _error("Kafka driver is not installed.") from exc
+    client = None
+    try:
+        try:
+            client = KafkaClient(
+                bootstrap_servers=list(bootstrap_servers),
+                request_timeout_ms=max(1000, int(timeout_s * 1000)),
+            )
+        except Exception as exc:
+            raise _error(f"cannot connect for topic layout: {exc}") from exc
+        try:
+            if client.cluster.partitions_for_topic(name) is None:
+                future = client.cluster.request_update()
+                client.poll(future, timeout_ms=max(1000, int(timeout_s * 1000)))
+            parts = client.cluster.partitions_for_topic(name) or set()
+        except Exception as exc:
+            raise _error(f"cannot list partitions for '{name}': {exc}") from exc
+        if not parts:
+            raise _error(f"topic '{name}' has no partitions (missing?).")
+        try:
+            meta = client.cluster.partition_metadata(name, min(parts))
+            replicas = list(getattr(meta, "replicas", None) or [])
+        except Exception as exc:
+            raise _error(f"cannot read replicas for '{name}': {exc}") from exc
+        if not replicas:
+            raise _error(f"topic '{name}' reports no replicas.")
+        return {"partitions": len(parts), "replication_factor": len(replicas)}
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+
+
+def plan_reassignment(
+    topic: str,
+    partition_count: int,
+    replication_factor: int,
+    broker_ids: list[int],
+) -> list[dict[str, Any]]:
+    """Even-spread replica plan in ``kafka-reassign-partitions`` JSON shape.
+
+    Pure function (no broker contact): replica ``r`` of partition ``p``
+    lands on ``broker_ids[(p + r) % n]``. Raises ``ProviderError`` when
+    the inputs cannot form a valid assignment.
+    """
+    if not isinstance(topic, str) or not topic.strip():
+        raise _error("reassignment needs a non-empty topic.")
+    try:
+        partitions = int(partition_count)
+        replicas = int(replication_factor)
+        brokers = [int(bid) for bid in broker_ids]
+    except (TypeError, ValueError) as exc:
+        raise _error(f"invalid reassignment inputs: {exc}") from exc
+    if partitions <= 0:
+        raise _error("reassignment needs at least one partition.")
+    if replicas <= 0:
+        raise _error("reassignment needs a positive replication factor.")
+    if len(brokers) < replicas:
+        raise _error(
+            f"replication factor {replicas} exceeds {len(brokers)} target brokers."
+        )
+    if len(set(brokers)) != len(brokers):
+        raise _error("target broker ids must be distinct.")
+    name = topic.strip()
+    return [
+        {
+            "topic": name,
+            "partition": part,
+            "replicas": [
+                brokers[(part + replica) % len(brokers)] for replica in range(replicas)
+            ],
+        }
+        for part in range(partitions)
+    ]
 
 
 def purge_topic(

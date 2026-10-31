@@ -42,6 +42,28 @@ from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 #: Display bound for the per-request ``query`` provenance entry recorded in
 #: context metadata and diagnostics (added terms are already hard-capped by
 #: the expansion stage; this bounds the diagnostic rendering).
+
+#: Modes whose matches are pre-filtered inside retrieval, so totals and
+#: pages stay exact. Mirrors the provider mapping (kept local to avoid a
+#: core -> providers import); the downstream plugin stays as a net.
+_MODE_SITE_CATEGORY: dict[str, str] = {
+    "news": "news",
+    "shopping": "shopping",
+}
+
+#: Deepest fetch window the pagination fill loop may open while covering
+#: a page past post-retrieval filters. Bounds worst-case cost; pages past
+#: a heavily filtered corpus still degrade to the pre-filter total.
+_FILL_DEPTH_CAP = 2000
+
+
+def _mode_site_category(mode: Any) -> str | None:
+    """Category pre-filter for a request mode (None = no narrowing)."""
+    if isinstance(mode, str):
+        return _MODE_SITE_CATEGORY.get(mode)
+    return None
+
+
 QUERY_ENTRY_CAP = 16
 
 
@@ -580,6 +602,64 @@ class SearchEngine(Engine):
         except Exception:  # noqa: BLE001 — cache must never fail requests
             context.metadata["cache"] = {"status": BACKEND_ERROR}
 
+    def _fill_filtered_window(
+        self,
+        fetch_request: SearchRequest,
+        provider_request: SearchRequest,
+        processed: Any,
+        context: SearchContext,
+        need: int,
+        cache_key: str | None,
+    ) -> int:
+        """Fetch, filter, and rank until the page is covered; return total.
+
+        Doubling refetch (capped at ``_FILL_DEPTH_CAP``) compensates for
+        hits removed downstream. Only the first (original-depth) pass is
+        cache-stored. When providers exhaust, the filtered window is the
+        exact total; otherwise the provider-claimed count wins (never
+        below what is actually held).
+        """
+        depth = fetch_request.limit
+        exhausted = False
+        first_pass = True
+        while True:
+            raw = self._retrieve(fetch_request, context)
+            exhausted = len(raw) < fetch_request.limit
+            hits = self._merge_expansion_hits(fetch_request, context, processed, raw)
+            # Defensive: providers must init final_score to
+            # original_score, but never let a zero final_score wipe out
+            # a real provider signal.
+            for hit in hits:
+                if hit.final_score == 0.0 and hit.original_score != 0.0:
+                    hit.final_score = hit.original_score
+            context.results = list(hits)
+
+            # Mandatory-plugin failures propagate: fail closed, never leak
+            # unfiltered results.
+            context = self._pipeline.run(context)
+            context = self._ranker.run(context)
+            context = assemble_explanations(context)
+            if len(context.results) >= need or exhausted:
+                break
+            if depth >= _FILL_DEPTH_CAP:
+                break
+            depth = min(depth * 2, _FILL_DEPTH_CAP)
+            fetch_request = replace(fetch_request, offset=0, limit=depth)
+            first_pass = False
+        reported = [
+            total
+            for total in context.provider_totals.values()
+            if isinstance(total, int) and not isinstance(total, bool) and total >= 0
+        ]
+        claimed = sum(reported) if reported else len(context.results)
+        if exhausted:
+            total = len(context.results)
+        else:
+            total = max(claimed, len(context.results))
+        if first_pass and cache_key is not None and self._cache is not None:
+            self._cache_store(cache_key, context, total)
+        return total
+
     def search(self, request: SearchRequest) -> SearchResponse:
         # Agentic mode: model-guided rewrite + single-tool search. Every
         # other mode falls through byte-identical to the plain pipeline.
@@ -602,10 +682,13 @@ class SearchEngine(Engine):
         # Paging ownership: providers are queried once at the fetch depth
         # (offset=0, limit=offset+limit); the single slice below is the only
         # pagination applied, with total set to the pre-slice merged count.
+        # Category modes pre-filter inside retrieval (exact totals); the
+        # downstream mode filter stays as a safety net.
         fetch_request = replace(
             provider_request,
             offset=0,
             limit=provider_request.offset + provider_request.limit,
+            site_category=_mode_site_category(provider_request.mode),
         )
         context = SearchContext(request=provider_request)
         context.metadata["query"] = _query_entry(processed)
@@ -637,38 +720,27 @@ class SearchEngine(Engine):
                 fetch_limit=fetch_request.limit,
             )
             cache_hit = self._cache_lookup(cache_key, context)
+        # Pagination fill loop: post-retrieval filters (safety,
+        # restrictions, travel keywords) can thin the held window below
+        # the requested page. Refetch deeper (doubling, capped) until the
+        # page is covered or providers are exhausted; an exhausted corpus
+        # makes the filtered count the exact total. A cached window is
+        # reused as-is unless its claimed total exceeds what it holds
+        # (thinned downstream) while still missing the page.
+        need = provider_request.offset + provider_request.limit
         if cache_hit:
-            total = int(context.metadata.get("cache_total", len(context.results)))
+            held = len(context.results)
+            claimed_total = int(context.metadata.get("cache_total", held))
+            if held >= need or claimed_total <= held:
+                total = claimed_total
+            else:
+                total = self._fill_filtered_window(
+                    fetch_request, provider_request, processed, context, need, cache_key
+                )
         else:
-            hits = self._retrieve(fetch_request, context)
-            hits = self._merge_expansion_hits(fetch_request, context, processed, hits)
-            # Defensive: providers must init final_score to original_score, but
-            # never let a zero final_score wipe out a real provider signal.
-            for hit in hits:
-                if hit.final_score == 0.0 and hit.original_score != 0.0:
-                    hit.final_score = hit.original_score
-            context.results = list(hits)
-
-            # Mandatory-plugin failures propagate: fail closed, never leak
-            # unfiltered results.
-            context = self._pipeline.run(context)
-            context = self._ranker.run(context)
-            context = assemble_explanations(context)
-            # True pagination total: providers reporting search_with_total
-            # contribute their full match counts (summed across a
-            # federated fan-out); legacy list-only providers contribute
-            # nothing and the held window stays the total. The max() keeps
-            # expansion-merged extras countable: the total never reports
-            # fewer hits than the response actually holds.
-            reported = [
-                total
-                for total in context.provider_totals.values()
-                if isinstance(total, int) and not isinstance(total, bool) and total >= 0
-            ]
-            claimed = sum(reported) if reported else len(context.results)
-            total = max(claimed, len(context.results))
-            if cache_key is not None and self._cache is not None:
-                self._cache_store(cache_key, context, total)
+            total = self._fill_filtered_window(
+                fetch_request, provider_request, processed, context, need, cache_key
+            )
         page = context.results[
             provider_request.offset : provider_request.offset + provider_request.limit
         ]

@@ -64,9 +64,17 @@ class DocumentStore(ABC):
 
     @abstractmethod
     def search(
-        self, fts_query: str, limit: int = 10, offset: int = 0
+        self,
+        fts_query: str,
+        limit: int = 10,
+        offset: int = 0,
+        site_category: str | None = None,
     ) -> tuple[list[tuple[Document, float]], int]:
-        """Full-text search; returns ((doc, score) page, total matches)."""
+        """Full-text search; returns ((doc, score) page, total matches).
+
+        ``site_category`` narrows to one indexed category value (or no
+        narrowing when ``None``); the total reflects the narrowed set.
+        """
         raise NotImplementedError
 
     @abstractmethod

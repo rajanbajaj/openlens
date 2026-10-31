@@ -47,6 +47,25 @@ SUPPORTED_BACKENDS = ("sqlite", "mysql", "postgres")
 #: Cap on bulk document fetches per agent call (full texts are large).
 _FETCH_DOCUMENT_CAP = 10
 
+#: Modes whose results are pre-filtered inside retrieval (exact totals).
+#: Travel has no category value, so it filters downstream instead.
+MODE_SITE_CATEGORY: dict[str, str] = {
+    "news": "news",
+    "shopping": "shopping",
+}
+
+
+def _request_category(request: SearchRequest) -> str | None:
+    """Validated category pre-filter for a search request (None = all)."""
+    wanted = getattr(request, "site_category", None)
+    if isinstance(wanted, str) and wanted:
+        return wanted
+    mode = getattr(request, "mode", "")
+    if isinstance(mode, str):
+        return MODE_SITE_CATEGORY.get(mode)
+    return None
+
+
 #: Backend used when no ``storage:`` section (or no ``backend`` key) is set.
 DEFAULT_BACKEND = "sqlite"
 
@@ -317,7 +336,8 @@ class CustomIndexProvider(SearchProvider):
 
         The manager prefers this over :meth:`search` when present so the
         engine can report true pagination totals instead of the fetch
-        window size. The count is the repository match total (pre-slice);
+        window size. The count is the repository match total (pre-slice),
+        narrowed by ``request.site_category`` when set; row-level
         downstream filtering may still trim the held page.
         """
         if not request.query or not request.query.strip():
@@ -343,7 +363,10 @@ class CustomIndexProvider(SearchProvider):
         if not self._semantic_enabled or self._models is None:
             try:
                 scored, total = self._repository.search(
-                    parsed.fts_query, limit=request.limit, offset=request.offset
+                    parsed.fts_query,
+                    limit=request.limit,
+                    offset=request.offset,
+                    site_category=_request_category(request),
                 )
             except ProviderError:
                 raise
@@ -364,7 +387,10 @@ class CustomIndexProvider(SearchProvider):
         fetch_depth = request.offset + request.limit
         try:
             scored, total = self._repository.search(
-                fts_query, limit=fetch_depth, offset=0
+                fts_query,
+                limit=fetch_depth,
+                offset=0,
+                site_category=_request_category(request),
             )
         except ProviderError:
             raise

@@ -73,6 +73,7 @@ from openlens.storage.repository import (
     SITE_CATEGORY_VALUES,
     content_hash_of,
     doc_columns,
+    site_category_columns,
 )
 
 #: Category columns appended (in order) to document SELECTs for metadata
@@ -168,8 +169,9 @@ def _to_tsquery_text(fts_query: str) -> str:
 
 def _doc_to_row(
     doc: Document,
-) -> tuple[str, str, str, str | None, str, str | None, str | None, str]:
+) -> tuple[Any, ...]:
     content_type, published = doc_columns(doc)
+    category, confidence, source, kids_hit, news_hit = site_category_columns(doc)
     return (
         doc.id,
         doc.title,
@@ -179,6 +181,11 @@ def _doc_to_row(
         content_type,
         published,
         content_hash_of(doc.content),
+        category,
+        confidence,
+        source,
+        kids_hit,
+        news_hit,
     )
 
 
@@ -493,8 +500,12 @@ class PostgresDocumentStore(DocumentStore):
             sql = (
                 f"INSERT INTO {self._qualified()}"  # noqa: S608
                 " (id, title, content, url, metadata,"
-                " content_type, published, content_hash, search_tsv)"
+                " content_type, published, content_hash,"
+                " site_category, site_category_confidence,"
+                " site_category_source, kids_domain_hit, news_domain_hit,"
+                " search_tsv)"
                 " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s,"
+                " %s, %s, %s, %s, %s,"
                 " to_tsvector('english', coalesce(%s, '')"
                 " || ' ' || coalesce(%s, '')))"
                 " ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title,"
@@ -503,10 +514,31 @@ class PostgresDocumentStore(DocumentStore):
                 " content_type = EXCLUDED.content_type,"
                 " published = EXCLUDED.published,"
                 " content_hash = EXCLUDED.content_hash,"
+                " site_category = EXCLUDED.site_category,"
+                " site_category_confidence = EXCLUDED.site_category_confidence,"
+                " site_category_source = EXCLUDED.site_category_source,"
+                " kids_domain_hit = EXCLUDED.kids_domain_hit,"
+                " news_domain_hit = EXCLUDED.news_domain_hit,"
                 " search_tsv = EXCLUDED.search_tsv"
             )
             params = [
-                (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[1], r[2])
+                (
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    r[4],
+                    r[5],
+                    r[6],
+                    r[7],
+                    r[8],
+                    r[9],
+                    r[10],
+                    r[11],
+                    r[12],
+                    r[1],
+                    r[2],
+                )
                 for r in chunk
             ]
             with self._connection() as conn:
@@ -740,31 +772,47 @@ class PostgresDocumentStore(DocumentStore):
         return titles
 
     def search(
-        self, fts_query: str, limit: int = 10, offset: int = 0
+        self,
+        fts_query: str,
+        limit: int = 10,
+        offset: int = 0,
+        site_category: str | None = None,
     ) -> tuple[list[tuple[Document, float]], int]:
-        """Full-text search; returns ((doc, score) page, total matches)."""
+        """Full-text search; returns ((doc, score) page, total matches).
+
+        ``site_category`` narrows rows and total to one indexed value.
+        """
         ts_text = _to_tsquery_text(fts_query)
         if not ts_text:
             return [], 0
+        category = site_category if site_category in SITE_CATEGORY_VALUES else None
         match = "search_tsv @@ plainto_tsquery('english', %s)"
         rank = "ts_rank(search_tsv, plainto_tsquery('english', %s))"
+        narrowing = " AND site_category = %s" if category is not None else ""
         # S608 false positives below: validated identifiers; the query
-        # text and paging values are bound %s parameters.
-        count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}"  # noqa: S608
+        # text, category, and paging values are bound %s parameters.
+        count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
         page_sql = (
             f"SELECT id, title, content, url, metadata, content_type, published,"  # noqa: S608
             f" {CATEGORY_SELECT},"
             f" {rank} AS score FROM {self._qualified()}"
-            f" WHERE {match}"
+            f" WHERE {match}{narrowing}"
             " ORDER BY score DESC LIMIT %s OFFSET %s"
         )
         with self._connection() as conn:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(count_sql, (ts_text,))
+                    if category is None:
+                        cur.execute(count_sql, (ts_text,))
+                    else:
+                        cur.execute(count_sql, (ts_text, category))
                     row = cur.fetchone()
                     total = int(row[0])
-                    cur.execute(page_sql, (ts_text, ts_text, limit, offset))
+                    if category is None:
+                        cur.execute(page_sql, (ts_text, ts_text, limit, offset))
+                    else:
+                        narrowed = (ts_text, category, ts_text, category, limit, offset)
+                        cur.execute(page_sql, narrowed)
                     rows = cur.fetchall()
             except Exception as exc:
                 raise ProviderError(

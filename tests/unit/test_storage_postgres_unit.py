@@ -62,6 +62,7 @@ def _store_with_rows(rows: list[tuple[Any, ...]]) -> PostgresDocumentStore:
     store._table = "documents"
     cursor = _StubCursor(rows)
     store._connection = lambda: _StubConnectionCtx(cursor)  # type: ignore[method-assign]
+    store._stub_cursor = cursor  # type: ignore[attr-defined]
     return store
 
 
@@ -138,6 +139,40 @@ def test_search_short_rows_skip_category_backfill() -> None:
     doc = _row_to_document(row)
     assert doc.metadata["content_type"] == "text/html"
     assert "site_category" not in doc.metadata
+
+
+def _thirteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, ...]:
+    return (
+        doc_id,
+        "title",
+        "content",
+        "https://x.test/a",
+        "{}",
+        "text/html",
+        "2024-01-02",
+        category,
+        0.9,
+        "auto",
+        0,
+        1,
+        0.5,
+    )
+
+
+def test_search_narrows_by_site_category() -> None:
+    cursor_rows = [_thirteen_col_row("d1", "news"), _thirteen_col_row("d2", "other")]
+    store = _store_with_rows(cursor_rows)
+    (hit, _score) = store.search("hello", site_category="news")[0][0]
+    assert hit.id == "d1"
+    executed = store._stub_cursor.executed  # type: ignore[attr-defined]
+    assert any("AND site_category" in sql for sql in executed)
+
+
+def test_search_without_category_has_no_narrowing() -> None:
+    store = _store_with_rows([_thirteen_col_row()])
+    store.search("hello")
+    executed = store._stub_cursor.executed  # type: ignore[attr-defined]
+    assert not any("AND site_category" in sql for sql in executed)
 
 
 def test_list_domains_groups_by_host() -> None:
