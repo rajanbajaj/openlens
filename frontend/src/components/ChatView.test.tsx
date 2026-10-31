@@ -132,6 +132,20 @@ describe('ChatView send/render flow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Message must not be blank.');
     expect(fetchStub).not.toHaveBeenCalled();
   });
+
+  it('shows a generic powered-by line before any answer', () => {
+    render(<ChatView />);
+    expect(screen.getByTestId('chat-powered-by')).toHaveTextContent('Powered by AI');
+  });
+
+  it('names the serving model once the trace reports it', async () => {
+    stubChat({ ...CHAT_OK, trace: { ...CHAT_OK.trace, model: 'test-model-1' } });
+    render(<ChatView />);
+    await sendMessage('what does it cost?');
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-powered-by')).toHaveTextContent('Powered by test-model-1');
+    });
+  });
 });
 
 describe('ChatView citations', () => {

@@ -47,6 +47,15 @@ export function capTranscript(entries: ChatTranscriptEntry[]): ChatTranscriptEnt
   return entries.slice(-MAX_CHAT_HISTORY);
 }
 
+/** Latest serving-model label reported in the transcript, if any. */
+export function transcriptModel(entries: ChatTranscriptEntry[]): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const model = entries[index]?.response?.trace?.model;
+    if (typeof model === 'string' && model !== '') return model;
+  }
+  return null;
+}
+
 function isTranscriptEntry(value: unknown): value is ChatTranscriptEntry {
   if (typeof value !== 'object' || value === null) return false;
   const entry = value as Record<string, unknown>;
@@ -226,6 +235,7 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
   const [stage, setStage] = useState(0);
   const [validationError, setValidationError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const servingModel = transcriptModel(transcript);
 
   // Persist every transcript change, capped at the contract max.
   useEffect(() => {
@@ -421,6 +431,9 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
           {validationError}
         </p>
       ) : null}
+      <p data-testid="chat-powered-by" className="text-ol-s text-ol-ink-soft m-0">
+        {servingModel ? `Powered by ${servingModel}` : 'Powered by AI'}
+      </p>
     </section>
   );
 }

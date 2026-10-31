@@ -222,6 +222,9 @@ function narrowAgentTrace(value: unknown): AgentTrace | null {
   ) {
     trace.model_calls = value['model_calls'];
   }
+  if (typeof value['model'] === 'string' && value['model'] !== '') {
+    trace.model = value['model'];
+  }
   return Object.keys(trace).length > 0 ? trace : null;
 }
 

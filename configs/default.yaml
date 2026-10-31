@@ -96,6 +96,9 @@ plugins:
     config: {}
   - name: privacy-filter
     enabled: true
+  - name: mode-category-filter
+    enabled: true
+    config: {}
     config:
       # Street addresses match only config-supplied patterns (no
       # invented address grammar); email/phone/government_id use the

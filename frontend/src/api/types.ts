@@ -135,6 +135,8 @@ export interface AgentTrace {
   fallbacks?: string[];
   /** Model call count; absent when unreported. */
   model_calls?: number;
+  /** Serving-model label for attribution; absent when unreported. */
+  model?: string;
 }
 
 /** Opaque top-level response metadata; new keys degrade to absent. */

@@ -1,6 +1,8 @@
 """Agentic search mode (``mode="agent"``): model-guided rewrite + tool search.
 
-Single-tool agent built on existing blocks only:
+Tool-using agent built on existing blocks only (chat turns in
+:func:`run_agent_chat` may also answer small-talk directly, list indexed
+domains, or fetch full source texts before summarizing):
 
 * step 1 — :meth:`ModelManager.complete` with a constrained prompt that
   demands strict JSON ``{"query": str, "filters": dict, "mode": str}``;
@@ -82,6 +84,28 @@ def _error_detail(exc: BaseException) -> str:
     return f"{name}: {detail}" if detail else name
 
 
+def _model_label(model_manager: Any) -> str | None:
+    """Human attribution for the serving backend (model id, else its key).
+
+    Duck-typed: a bare provider (as used in route probes) works as well as
+    a full manager; ``None`` when nothing usable is exposed. Never raises.
+    """
+    primary = getattr(model_manager, "primary", "")
+    backend: Any = model_manager
+    get = getattr(model_manager, "get", None)
+    if callable(get) and isinstance(primary, str) and primary:
+        try:
+            backend = get(primary)
+        except Exception:  # noqa: BLE001 — a broken manager means no label
+            backend = model_manager
+    model = getattr(backend, "model", "")
+    if isinstance(model, str) and model.strip():
+        return model.strip()[:200]
+    if isinstance(primary, str) and primary.strip():
+        return primary.strip()[:200]
+    return None
+
+
 #: Request mode that routes through the agent instead of the plain pipeline.
 AGENT_MODE = "agent"
 
@@ -96,6 +120,10 @@ MAX_SUMMARY_CHARS = 500
 
 #: Notice prefix recorded in diagnostics errors when the agent degrades.
 AGENT_STATUS_PREFIX = "agent_status:"
+
+#: A grounded chat answer must carry at least one ``[n]`` citation marker;
+#: prose without one was written from general knowledge, not the sources.
+_CITATION_RE = re.compile(r"\[\d+\]")
 
 
 def build_parse_prompt(query: str) -> str:
@@ -291,6 +319,15 @@ MAX_CHAT_SNIPPET_CHARS = 500
 MAX_CHAT_ANSWER_CHARS = 2000
 MAX_CHAT_LIMIT = 10
 
+#: Bounds for source fetching (tool 2: full texts ground the summary).
+MAX_FETCH_SOURCES = 5
+MAX_FETCH_CHARS_PER_SOURCE = 1500
+MAX_ANSWER_SOURCES_CHARS = 8000
+
+#: Bounds for the domains lookup tool (tool 3: what is searchable).
+DOMAINS_FETCH_LIMIT = 100
+MAX_LISTED_DOMAINS = 20
+
 #: Honest fallback when the retrieved hits cannot answer the turn.
 UNKNOWN_ANSWER = "Unknown: I don't know the answer based on the provided sources."
 
@@ -319,6 +356,95 @@ def _normalize_chat_turns(history: Any) -> list[tuple[str, str]]:
     return turns[-MAX_CHAT_HISTORY_TURNS:]
 
 
+def _plan_tool(data: dict[str, Any]) -> str:
+    """Which agent tool the plan selects; unknown values mean search."""
+    tool = data.get("tool")
+    return tool if tool == "domains" else "search"
+
+
+def _fetch_source_lines(
+    engine: Any,
+    hits: list[Any],
+    steps: list[dict[str, Any]],
+    fallbacks: list[str],
+) -> list[str]:
+    """Build ``[n] title: text`` source lines, preferring full texts.
+
+    Fetches the top hits' stored full content (tool 2) so the summary
+    draws on more than 200-char snippets; misses degrade per-hit to the
+    snippet. Records a ``fetch`` trace step. Never raises.
+    """
+    ids = [
+        hit.id
+        for hit in hits[:MAX_FETCH_SOURCES]
+        if isinstance(getattr(hit, "id", ""), str) and hit.id
+    ]
+    docs: dict[Any, Any] = {}
+    fetch = getattr(engine, "fetch_documents", None)
+    if callable(fetch) and ids:
+        try:
+            result = fetch(ids)
+            docs = result if isinstance(result, dict) else {}
+        except Exception as exc:  # noqa: BLE001 — fetch never fails chat
+            fallbacks.append(f"fetch_fallback: {_error_detail(exc)}")
+            docs = {}
+    lines: list[str] = []
+    fetched = 0
+    for index, hit in enumerate(hits, start=1):
+        title = getattr(hit, "title", "")
+        title = title if isinstance(title, str) else ""
+        text = ""
+        if index <= MAX_FETCH_SOURCES:
+            doc = docs.get(getattr(hit, "id", None))
+            content = getattr(doc, "content", "")
+            if isinstance(content, str) and content.strip():
+                text = content
+                fetched += 1
+        if not text:
+            snippet = getattr(hit, "snippet", "")
+            text = snippet if isinstance(snippet, str) else ""
+        text = " ".join(text.split())
+        if len(text) > MAX_FETCH_CHARS_PER_SOURCE:
+            text = text[:MAX_FETCH_CHARS_PER_SOURCE].rstrip() + "..."
+        lines.append(f"[{index}] {title}: {text}")
+    steps.append({"kind": "fetch", "detail": f"fetched {fetched}/{len(ids)} sources"})
+    return lines
+
+
+def _list_engine_domains(engine: Any) -> list[tuple[str, int]]:
+    """Read-only domains lookup (tool 3); ``[]`` when unsupported."""
+    hook = getattr(engine, "list_domains", None)
+    if not callable(hook):
+        return []
+    try:
+        pairs = hook(DOMAINS_FETCH_LIMIT)
+    except Exception:
+        return []
+    if not isinstance(pairs, list):
+        return []
+    cleaned: list[tuple[str, int]] = []
+    for pair in pairs:
+        if (
+            isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and isinstance(pair[0], str)
+            and isinstance(pair[1], int)
+        ):
+            cleaned.append((pair[0], pair[1]))
+    return cleaned
+
+
+def _domains_answer(domains: list[tuple[str, int]]) -> str:
+    """Plain-language answer listing the searchable domains."""
+    if not domains:
+        return "The index has no searchable domains with URLs yet."
+    shown = domains[:MAX_LISTED_DOMAINS]
+    parts = ", ".join(f"{host} ({count} docs)" for host, count in shown)
+    rest = len(domains) - len(shown)
+    suffix = f", and {rest} more." if rest > 0 else "."
+    return f"Indexed domains ({len(domains)}): {parts}{suffix}"
+
+
 def build_chat_rewrite_prompt(message: str, history: Any) -> str:
     """Constrained rewrite prompt: transcript plus strict-JSON instruction."""
     turns = _normalize_chat_turns(history)
@@ -327,7 +453,10 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
         "Reply with ONLY a JSON object (no markdown, no extra text) with "
         'exactly these keys: "query" (string, the standalone rewritten '
         'query), "filters" (object, search filters), "mode" (string, one of '
-        '"default", "news", "shopping", "travel", "child-safe").'
+        '"default", "news", "shopping", "travel", "child-safe"), '
+        '"tool" (string, one of "search", "domains"). Set "tool" to '
+        '"domains" ONLY when the user asks which websites, domains, or '
+        'sources are searchable on this platform; otherwise use "search".'
     )
     if turns:
         lines.append("Conversation so far (oldest first):")
@@ -338,14 +467,26 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
     return "\n".join(lines)
 
 
-def build_chat_answer_prompt(message: str, history: Any, hits: list[Any]) -> str:
-    """Grounded answer prompt: cite provided sources, else admit unknown."""
+def build_chat_answer_prompt(
+    message: str,
+    history: Any,
+    hits: list[Any],
+    source_lines: list[str] | None = None,
+) -> str:
+    """Grounded answer prompt: cite provided sources, else admit unknown.
+
+    ``source_lines`` are prebuilt ``[n] title: text`` lines (full-text
+    excerpts when the fetch tool resolved them); without them the prompt
+    falls back to title plus snippet per hit.
+    """
     turns = _normalize_chat_turns(history)
     lines = [
         "Answer the last user message using ONLY the sources below.",
         "Cite every factual claim as [1], [2], and so on, matching the "
-        "source numbers. When the sources are topically relevant but do not "
-        "fully answer the question, summarize what they do say (with "
+        "source numbers. Never answer from general knowledge or explain "
+        "the topic in your own words: when the sources lack the answer, "
+        "say so instead. When the sources are topically relevant but do "
+        "not fully answer the question, summarize what they do say (with "
         "citations) and briefly note what is missing instead of refusing. "
         "Only when none of the sources is relevant at all, say plainly that "
         "they do not contain the answer instead of guessing.",
@@ -357,14 +498,18 @@ def build_chat_answer_prompt(message: str, history: Any, hits: list[Any]) -> str
     lines.append("Last user message:")
     lines.append(message)
     lines.append("Sources:")
-    for index, hit in enumerate(hits, start=1):
-        title = getattr(hit, "title", "")
-        snippet = getattr(hit, "snippet", "")
-        if not isinstance(title, str):
-            title = ""
-        if not isinstance(snippet, str):
-            snippet = ""
-        lines.append(f"[{index}] {title}: {snippet[:MAX_CHAT_SNIPPET_CHARS]}")
+    if source_lines is not None:
+        sources = "\n".join(source_lines)[:MAX_ANSWER_SOURCES_CHARS]
+        lines.append(sources)
+    else:
+        for index, hit in enumerate(hits, start=1):
+            title = getattr(hit, "title", "")
+            snippet = getattr(hit, "snippet", "")
+            if not isinstance(title, str):
+                title = ""
+            if not isinstance(snippet, str):
+                snippet = ""
+            lines.append(f"[{index}] {title}: {snippet[:MAX_CHAT_SNIPPET_CHARS]}")
     return "\n".join(lines)
 
 
@@ -444,6 +589,9 @@ def run_agent_chat(
         return _done(small_talk, [], None)
 
     model_manager = getattr(engine, "model_manager", None)
+    label = _model_label(model_manager)
+    if label is not None:
+        trace["model"] = label
     if model_manager is None:
         fallbacks.append("model_unavailable: no enabled model backend")
         notice = (
@@ -464,12 +612,13 @@ def run_agent_chat(
         return _done("", _plain_hits(), notice)
 
     try:
-        rewritten, plan_filters, plan_mode = _coerce_plan(
-            _extract_json_object(raw_plan), raw
-        )
+        plan_data = _extract_json_object(raw_plan)
+        rewritten, plan_filters, plan_mode = _coerce_plan(plan_data, raw)
+        tool = _plan_tool(plan_data)
         parsed_ok = True
     except (ValueError, json.JSONDecodeError) as exc:
         rewritten, plan_filters, plan_mode = raw, {}, DEFAULT_AGENT_MODE
+        tool = "search"
         fallbacks.append(f"parse_fallback: {type(exc).__name__}")
         parsed_ok = False
 
@@ -478,6 +627,12 @@ def run_agent_chat(
     steps.append({"kind": "rewrite", "detail": rewritten})
     if not parsed_ok:
         steps.append({"kind": "parse_fallback", "detail": "searched raw message"})
+
+    # -- step 2a: domains lookup tool (no search, one model call spent) ---
+    if tool == "domains":
+        domains = _list_engine_domains(engine)
+        steps.append({"kind": "domains", "detail": f"{len(domains)} domains"})
+        return _done(_domains_answer(domains), [], None)
 
     # -- step 2: the single tool — engine.search with validated params ----
     merged_filters = dict(plan_filters)
@@ -510,13 +665,22 @@ def run_agent_chat(
     if not hits:
         return _done(UNKNOWN_ANSWER, [], None)
 
+    # -- step 2c: fetch full source texts for the top hits -------------
+    source_lines = _fetch_source_lines(engine, hits, steps, fallbacks)
+
     # -- step 3: grounded synthesis (second and last model call) ---------
     try:
-        answer_prompt = build_chat_answer_prompt(raw, history, hits)
+        answer_prompt = build_chat_answer_prompt(raw, history, hits, source_lines)
         answer = model_manager.complete(answer_prompt)
         trace["model_calls"] += 1
         answer = answer.strip()[:MAX_CHAT_ANSWER_CHARS]
         if not answer:
+            answer = _extractive_summary(hits) or UNKNOWN_ANSWER
+        elif not _CITATION_RE.search(answer):
+            # A factual answer with no citation markers was written from
+            # general knowledge, not the sources: serve verbatim source
+            # text instead of the ungrounded prose.
+            fallbacks.append("ungrounded_answer: no citation markers")
             answer = _extractive_summary(hits) or UNKNOWN_ANSWER
     except Exception as exc:  # noqa: BLE001 — synthesis never fails search
         fallbacks.append(f"summary_fallback: {_error_detail(exc)}")

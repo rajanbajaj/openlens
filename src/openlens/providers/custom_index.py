@@ -44,6 +44,9 @@ PROVIDER_NAME = "custom_index"
 #: optional extras and lazy-import their drivers on first use.
 SUPPORTED_BACKENDS = ("sqlite", "mysql", "postgres")
 
+#: Cap on bulk document fetches per agent call (full texts are large).
+_FETCH_DOCUMENT_CAP = 10
+
 #: Backend used when no ``storage:`` section (or no ``backend`` key) is set.
 DEFAULT_BACKEND = "sqlite"
 
@@ -207,6 +210,55 @@ class CustomIndexProvider(SearchProvider):
                 terms.append(cleaned)
         terms.sort(key=str.casefold)
         return terms[:limit]
+
+    def fetch_documents(self, doc_ids: list[str]) -> dict[str, Document]:
+        """Bulk-fetch documents by id for agent grounding (read-only).
+
+        Returns only the ids the store resolves; misses and per-id
+        failures are skipped, never raised, so the agent falls back to
+        snippets. Capped to keep one chat turn bounded.
+        """
+        if not isinstance(doc_ids, list):
+            return {}
+        found: dict[str, Document] = {}
+        for doc_id in doc_ids[:_FETCH_DOCUMENT_CAP]:
+            if not isinstance(doc_id, str) or not doc_id:
+                continue
+            try:
+                doc = self._repository.get(doc_id)
+            except Exception:  # noqa: S112 — per-id misses degrade to snippets
+                continue
+            if doc is not None:
+                found[doc_id] = doc
+        return found
+
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        """(host, doc count) pairs, most-indexed first (read-only).
+
+        Best-effort like :meth:`suggest_terms`: stores without the hook
+        (or any failure) yield ``[]`` so callers degrade gracefully.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return []
+        try:
+            hook = getattr(self._repository, "list_domains", None)
+            if not callable(hook):
+                return []
+            pairs = hook(limit=limit)
+        except Exception:
+            return []
+        if not isinstance(pairs, list):
+            return []
+        cleaned: list[tuple[str, int]] = []
+        for pair in pairs[:limit]:
+            if (
+                isinstance(pair, (list, tuple))
+                and len(pair) == 2
+                and isinstance(pair[0], str)
+                and isinstance(pair[1], int)
+            ):
+                cleaned.append((pair[0], pair[1]))
+        return cleaned
 
     @property
     def semantic_enabled(self) -> bool:

@@ -329,7 +329,9 @@ def test_default_yaml_wires_ordered_filter_pack():
         for execution in context.plugin_executions
         if execution.stage == "filtering"
     ]
-    assert filtering_executions == EXPECTED_ORDER
+    # default.yaml wires mode-category-filter after the mandatory pack;
+    # the pack order itself is unchanged (it no-ops in default mode).
+    assert filtering_executions == [*EXPECTED_ORDER, "mode-category-filter"]
     assert [result.id for result in context.results] == ["keep"]
     assert context.metadata["user-restrictions-removed"] == 0
     assert context.metadata["safety-filter-removed"] == 1

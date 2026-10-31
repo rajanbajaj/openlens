@@ -13,12 +13,15 @@ import json
 import sqlite3
 import threading
 from typing import Any, Optional
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlsplit
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
 
 _PROVIDER_NAME = "custom_index"
+
+#: Max URL rows scanned when aggregating domains (bounded full scan).
+_DOMAIN_SCAN_CAP = 50000
 
 #: Bounded wait for the SQLite write lock before surfacing UNAVAILABLE.
 _BUSY_TIMEOUT_MS = 5000
@@ -520,6 +523,42 @@ class DocumentRepository(DocumentStore):
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
         return int(row["n"])
+
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        """(host, doc count) pairs, most-indexed first (read-only).
+
+        Hosts parse from stored URLs in Python (SQLite has no URL
+        parser); the scan is capped so a large index stays bounded.
+        """
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return []
+        if isinstance(limit, bool) or limit <= 0:
+            return []
+        limit = min(limit, 1000)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT url FROM documents WHERE url IS NOT NULL"  # noqa: S608
+                    f" AND url != '' LIMIT {_DOMAIN_SCAN_CAP}",
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        counts: dict[str, int] = {}
+        for row in rows:
+            try:
+                host = (urlsplit(row["url"]).hostname or "").lower()
+            except (ValueError, AttributeError):
+                continue
+            if host:
+                counts[host] = counts.get(host, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[:limit]
 
     def list_documents(self, limit: int = 500, offset: int = 0) -> list[Document]:
         """Return one page of documents in stable id order (export seam)."""

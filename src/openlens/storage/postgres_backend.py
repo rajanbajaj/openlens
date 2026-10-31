@@ -69,7 +69,63 @@ from typing import Any
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
 from openlens.storage.frontier import ordered_postgres_frontier_schema
-from openlens.storage.repository import content_hash_of, doc_columns
+from openlens.storage.repository import (
+    SITE_CATEGORY_VALUES,
+    content_hash_of,
+    doc_columns,
+)
+
+#: Category columns appended (in order) to document SELECTs for metadata
+#: backfill. Mirrors ``storage/repository.py::_row_to_document``.
+CATEGORY_SELECT = (
+    "site_category, site_category_confidence, site_category_source,"
+    " kids_domain_hit, news_domain_hit"
+)
+
+
+def _backfill_category_metadata(
+    metadata: dict[str, Any], values: Any
+) -> dict[str, Any]:
+    """Fill category gaps from promoted columns (sqlite-mapper parity).
+
+    ``values`` is the 5-tuple in ``CATEGORY_SELECT`` order; short/None
+    input backfills nothing. Only informative values land: default
+    verdicts (``'other'``, no confidence, no hits) stay out.
+    """
+    try:
+        category, confidence, source, kids_hit, news_hit = list(values)[:5]
+    except (TypeError, ValueError):
+        return metadata
+    if category in SITE_CATEGORY_VALUES:
+        current = metadata.get("site_category")
+        if current not in SITE_CATEGORY_VALUES and (
+            current is not None or category != "other"
+        ):
+            metadata["site_category"] = category
+    if (
+        isinstance(confidence, (int, float))
+        and not isinstance(confidence, bool)
+        and "site_category_confidence" not in metadata
+    ):
+        metadata["site_category_confidence"] = float(confidence)
+    if isinstance(source, str) and source and "site_category_source" not in metadata:
+        metadata["site_category_source"] = source
+    if (
+        isinstance(kids_hit, int)
+        and not isinstance(kids_hit, bool)
+        and kids_hit != 0
+        and "kids_domain_hit" not in metadata
+    ):
+        metadata["kids_domain_hit"] = kids_hit
+    if (
+        isinstance(news_hit, int)
+        and not isinstance(news_hit, bool)
+        and news_hit != 0
+        and "news_domain_hit" not in metadata
+    ):
+        metadata["news_domain_hit"] = news_hit
+    return metadata
+
 
 _PROVIDER_NAME = "custom_index"
 
@@ -146,6 +202,8 @@ def _row_to_document(row: tuple[Any, ...]) -> Document:
             metadata.setdefault("content_type", content_type)
         if isinstance(published, str) and published:
             metadata.setdefault("published", published)
+    if len(row) > 11:
+        _backfill_category_metadata(metadata, row[7:12])
     return Document(
         id=str(row[0]),
         title=str(row[1]),
@@ -356,6 +414,18 @@ class PostgresDocumentStore(DocumentStore):
         ddl_content_hash = (
             f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS content_hash TEXT"  # noqa: S608
         )
+        # Category columns predate this migration on SQLite; on Postgres
+        # they arrive here so category SELECTs work on existing databases.
+        # The indexer still carries the verdict in the metadata JSON, so
+        # NULL columns simply backfill nothing (sqlite-mapper parity).
+        ddl_category = (
+            f"ALTER TABLE {qualified}"  # noqa: S608
+            " ADD COLUMN IF NOT EXISTS site_category TEXT,"
+            " ADD COLUMN IF NOT EXISTS site_category_confidence REAL,"
+            " ADD COLUMN IF NOT EXISTS site_category_source TEXT,"
+            " ADD COLUMN IF NOT EXISTS kids_domain_hit INTEGER,"
+            " ADD COLUMN IF NOT EXISTS news_domain_hit INTEGER"
+        )
         ddl_content_hash_idx = (
             f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_content_hash"'  # noqa: S608
             f" ON {qualified} (content_hash)"
@@ -388,6 +458,7 @@ class PostgresDocumentStore(DocumentStore):
                     cur.execute(ddl_content_type)
                     cur.execute(ddl_published)
                     cur.execute(ddl_content_hash)
+                    cur.execute(ddl_category)
                     cur.execute(ddl_content_type_idx)
                     cur.execute(ddl_published_idx)
                     cur.execute(ddl_content_hash_idx)
@@ -482,7 +553,7 @@ class PostgresDocumentStore(DocumentStore):
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
                         f"SELECT id, title, content, url, metadata,"  # noqa: S608
-                        f" content_type, published"
+                        f" content_type, published, {CATEGORY_SELECT}"
                         f" FROM {self._qualified()} WHERE id = %s",
                         (doc_id,),
                     )
@@ -561,6 +632,36 @@ class PostgresDocumentStore(DocumentStore):
                 ) from exc
         return updated
 
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        """(host, doc count) pairs, most-indexed first (read-only)."""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return []
+        if isinstance(limit, bool) or limit <= 0:
+            return []
+        limit = min(limit, 1000)
+        # S608 false positives below: validated identifiers, a static
+        # regexp, and a bound limit — no user input is interpolated.
+        sql = (
+            f"SELECT lower(regexp_replace(url, '^https?://([^/:?#]+).*$', '\\1'))"  # noqa: S608
+            f" AS host, COUNT(*) AS n FROM {self._qualified()}"  # noqa: S608
+            " WHERE url LIKE 'http%'"
+            " GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT %s"
+        )
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (limit,))
+                    rows = cur.fetchall()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to list domains: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return [(str(row[0]), int(row[1])) for row in rows if row[0]]
+
     def count(self) -> int:
         with self._connection() as conn:
             try:
@@ -587,7 +688,7 @@ class PostgresDocumentStore(DocumentStore):
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
                         f"SELECT id, title, content, url, metadata,"  # noqa: S608
-                        f" content_type, published"
+                        f" content_type, published, {CATEGORY_SELECT}"
                         f" FROM {self._qualified()} ORDER BY id ASC"
                         " LIMIT %s OFFSET %s",
                         (limit, offset),
@@ -652,6 +753,7 @@ class PostgresDocumentStore(DocumentStore):
         count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}"  # noqa: S608
         page_sql = (
             f"SELECT id, title, content, url, metadata, content_type, published,"  # noqa: S608
+            f" {CATEGORY_SELECT},"
             f" {rank} AS score FROM {self._qualified()}"
             f" WHERE {match}"
             " ORDER BY score DESC LIMIT %s OFFSET %s"
@@ -670,9 +772,9 @@ class PostgresDocumentStore(DocumentStore):
                     provider_name=_PROVIDER_NAME,
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
-        # Score is the trailing column (index 7): the promoted
-        # content_type/published columns shifted it from the old spot.
-        return [(_row_to_document(r), float(r[7])) for r in rows], total
+        # Score is the trailing column (index 12): the promoted
+        # content_type/published/category columns shifted it from the old spot.
+        return [(_row_to_document(r), float(r[12])) for r in rows], total
 
     def close(self) -> None:
         with self._state_lock:

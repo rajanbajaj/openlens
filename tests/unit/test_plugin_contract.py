@@ -419,3 +419,38 @@ def test_safety_child_safe_allow_via_url_pattern():
         _hit("unlisted", url="https://other.test/a"),
     ]
     assert _filtered_ids(plugin, hits, mode="child-safe") == ["pattern"]
+
+
+def _kids_hit(hit_id: str, url: str = "https://stories.example/a") -> SearchResult:
+    return SearchResult(
+        id=hit_id,
+        title="a kids story",
+        snippet="a snippet",
+        original_score=1.0,
+        final_score=1.0,
+        url=url,
+        provider="test",
+        metadata={"site_category": "kids"},
+    )
+
+
+def test_safety_child_safe_kids_category_passes_without_allowlist():
+    plugin = SafetyFilter()
+    hits = [
+        _kids_hit("kids"),
+        _hit("plain", url="https://other.test/a"),
+    ]
+    assert _filtered_ids(plugin, hits, mode="child-safe") == ["kids"]
+
+
+def test_safety_child_safe_kids_domain_hit_passes():
+    plugin = SafetyFilter()
+    hit = _kids_hit("hit")
+    hit.metadata = {"kids_domain_hit": 1}
+    assert _filtered_ids(plugin, [hit], mode="child-safe") == ["hit"]
+
+
+def test_safety_child_safe_blocklist_still_wins_over_kids_category():
+    plugin = SafetyFilter({"blocked_domains": ["stories.example"]})
+    hits = [_kids_hit("blocked", url="https://stories.example/a")]
+    assert _filtered_ids(plugin, hits, mode="child-safe") == []

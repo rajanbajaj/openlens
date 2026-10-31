@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from openlens.storage.postgres_backend import PostgresDocumentStore
+from openlens.storage.postgres_backend import (
+    PostgresDocumentStore,
+    _row_to_document,
+)
 
 
 class _StubCursor:
@@ -73,6 +76,11 @@ def test_search_returns_trailing_score_not_content_type() -> None:
             "{}",
             "text/html",
             "2024-01-02",
+            "other",
+            None,
+            None,
+            0,
+            0,
             0.75,
         ),
     ]
@@ -84,6 +92,60 @@ def test_search_returns_trailing_score_not_content_type() -> None:
     assert score == 0.75
     assert doc.id == "d1"
     assert doc.metadata["content_type"] == "text/html"
+    # Default 'other' verdict stays out of the metadata view.
+    assert "site_category" not in doc.metadata
+
+
+def test_search_backfills_category_columns_into_metadata() -> None:
+    rows = [
+        (
+            "d1",
+            "kids story",
+            "kids story content",
+            "https://kids.test/a",
+            "{}",
+            "text/html",
+            "2024-01-02",
+            "kids",
+            0.9,
+            "auto",
+            1,
+            0,
+            0.5,
+        ),
+    ]
+    store = _store_with_rows(rows)
+    (hit, _score) = store.search("kids")[0][0]
+    assert hit.metadata["site_category"] == "kids"
+    assert hit.metadata["site_category_confidence"] == 0.9
+    assert hit.metadata["site_category_source"] == "auto"
+    assert hit.metadata["kids_domain_hit"] == 1
+    assert "news_domain_hit" not in hit.metadata
+
+
+def test_search_short_rows_skip_category_backfill() -> None:
+    """Pre-migration 8-column rows still map; categories stay absent."""
+    row = (
+        "d1",
+        "hello world",
+        "hello world content",
+        "https://x.test/a",
+        "{}",
+        "text/html",
+        "2024-01-02",
+        0.75,
+    )
+    doc = _row_to_document(row)
+    assert doc.metadata["content_type"] == "text/html"
+    assert "site_category" not in doc.metadata
+
+
+def test_list_domains_groups_by_host() -> None:
+    rows = [("example.com", 2), ("other.test", 1)]
+    store = _store_with_rows(rows)
+    assert store.list_domains() == [("example.com", 2), ("other.test", 1)]
+    assert store.list_domains(limit=0) == []
+    assert store.list_domains(limit=-3) == []
 
 
 def test_search_blank_query_returns_empty_without_io() -> None:

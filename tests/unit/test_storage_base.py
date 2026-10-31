@@ -369,3 +369,18 @@ def test_list_documents_round_trips_bodies():
         assert fetched.metadata == {"k": "v"}
     finally:
         repo.close()
+
+
+def test_list_domains_aggregates_hosts_most_first():
+    repo = DocumentRepository(":memory:")
+    try:
+        repo.add_document(_doc(doc_id="a", url="https://example.com/1"))
+        repo.add_document(_doc(doc_id="b", url="https://example.com/2"))
+        repo.add_document(_doc(doc_id="c", url="https://other.test/x"))
+        repo.add_document(_doc(doc_id="d"))
+        assert repo.list_domains() == [("example.com", 2), ("other.test", 1)]
+        assert repo.list_domains(limit=1) == [("example.com", 2)]
+        assert repo.list_domains(limit=0) == []
+        assert repo.list_domains(limit=-1) == []
+    finally:
+        repo.close()

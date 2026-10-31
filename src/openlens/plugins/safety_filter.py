@@ -268,14 +268,30 @@ class SafetyFilter(BasePlugin):
             and self._blocked_url_pattern.search(url)
         )
 
-    def _is_allowed(self, url: str, host: str) -> bool:
+    def _is_allowed(self, url: str, host: str, metadata: dict[str, Any] | None) -> bool:
         if _host_matches(host, self._allowed_exact, self._allowed_wildcards):
             return True
-        return bool(
+        if (
             url
             and self._allowed_url_pattern is not None
             and self._allowed_url_pattern.search(url)
-        )
+        ):
+            return True
+        # Positively kids-categorized hits pass default-deny without an
+        # explicit allowlist entry; block rules still win. With no allowlist
+        # configured this is what keeps child-safe from denying everything.
+        if isinstance(metadata, dict):
+            category = metadata.get("site_category")
+            if isinstance(category, str) and category.lower() == "kids":
+                return True
+            kids_hit = metadata.get("kids_domain_hit")
+            if (
+                isinstance(kids_hit, int)
+                and not isinstance(kids_hit, bool)
+                and kids_hit != 0
+            ):
+                return True
+        return False
 
     def run(self, context: SearchContext) -> SearchContext:
         if self._simulate_outage:
@@ -300,7 +316,7 @@ class SafetyFilter(BasePlugin):
             if self._is_blocked(result.title, result.snippet, url, host):
                 removed += 1
                 continue
-            if default_deny and not self._is_allowed(url, host):
+            if default_deny and not self._is_allowed(url, host, result.metadata):
                 removed += 1
                 continue
             kept.append(result)

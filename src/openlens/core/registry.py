@@ -22,6 +22,7 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "ai-understanding": "openlens.plugins.ai_understanding:AIUnderstandingPlugin",
     "ai-classification": "openlens.plugins.ai_classification:AIClassificationPlugin",
     "safety-filter": "openlens.plugins.safety_filter:SafetyFilter",
+    "mode-category-filter": "openlens.plugins.mode_category_filter:ModeCategoryFilter",
     "privacy-filter": "openlens.plugins.privacy_filter:PrivacyFilter",
     "user-restrictions": "openlens.plugins.user_restrictions:UserRestrictionsFilter",
     "trust-enricher": "openlens.plugins.trust_enricher:TrustEnricher",

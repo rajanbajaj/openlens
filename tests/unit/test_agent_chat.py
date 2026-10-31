@@ -18,6 +18,7 @@ import pytest
 from openlens.api.schemas import ChatRequestSchema
 from openlens.core.engine import SearchEngine
 from openlens.core.interfaces import (
+    Document,
     Engine,
     ProviderError,
     SearchRequest,
@@ -50,9 +51,16 @@ def _hit(doc_id: str, snippet: str = "") -> SearchResult:
 class _HitsProvider(BaseSearchProvider):
     """Canned provider that records every request it sees."""
 
-    def __init__(self, hits: list[SearchResult] | None = None) -> None:
+    def __init__(
+        self,
+        hits: list[SearchResult] | None = None,
+        docs: dict[str, str] | None = None,
+        domains: list[tuple[str, int]] | None = None,
+    ) -> None:
         super().__init__()
         self._hits = list(hits) if hits else [_hit("a"), _hit("b")]
+        self._docs = dict(docs or {})
+        self._domains = list(domains) if domains is not None else [("example.com", 2)]
         self.seen: list[SearchRequest] = []
 
     @property
@@ -63,6 +71,39 @@ class _HitsProvider(BaseSearchProvider):
         self.seen.append(request)
         if request.query == "__empty__":
             return []
+        return list(self._hits)
+
+    def fetch_documents(self, doc_ids: list[str]) -> dict[str, Document]:
+        return {
+            doc_id: Document(
+                id=doc_id,
+                title=f"title-{doc_id}",
+                content=self._docs[doc_id],
+                url=f"https://example.com/{doc_id}",
+            )
+            for doc_id in doc_ids
+            if doc_id in self._docs
+        }
+
+    def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
+        return list(self._domains[:limit])
+
+    def health_check(self) -> bool:
+        return True
+
+
+class _BareHitsProvider(BaseSearchProvider):
+    """Search-only provider: no fetch/domains hooks (graceful fallback)."""
+
+    def __init__(self, hits: list[SearchResult]) -> None:
+        super().__init__()
+        self._hits = list(hits)
+
+    @property
+    def name(self) -> str:
+        return "bare"
+
+    def search(self, request: SearchRequest) -> list[SearchResult]:
         return list(self._hits)
 
     def health_check(self) -> bool:
@@ -92,9 +133,12 @@ class _ScriptedModel(FakeModelProvider):
 
 
 def _engine(
-    model_script: list[Any] | None, hits: list[SearchResult] | None = None
+    model_script: list[Any] | None,
+    hits: list[SearchResult] | None = None,
+    docs: dict[str, str] | None = None,
+    domains: list[tuple[str, int]] | None = None,
 ) -> tuple[SearchEngine, _HitsProvider, _ScriptedModel | None]:
-    provider = _HitsProvider(hits)
+    provider = _HitsProvider(hits, docs=docs, domains=domains)
     if model_script is None:
         return SearchEngine(providers=[provider]), provider, None
     model = _ScriptedModel(model_script)
@@ -260,7 +304,9 @@ def test_chat_respects_search_and_model_budgets() -> None:
         "steps",
         "fallbacks",
         "model_calls",
+        "model",
     }
+    assert outcome["trace"]["model"] == "fake"  # primary key; fake has no model id
 
 
 # --- schemas -----------------------------------------------------------------------
@@ -424,6 +470,106 @@ def test_chat_answer_prompt_prefers_partial_summary_over_refusal() -> None:
     prompt = build_chat_answer_prompt("stock news", [], [_hit("a")]).lower()
     assert "summarize what they do say" in prompt
     assert "only when none of the sources is relevant" in prompt
+    assert "never answer from general knowledge" in prompt
+
+
+def test_chat_trace_prefers_backend_model_id() -> None:
+    engine, _, model = _engine(
+        ['{"query": "q", "filters": {}, "mode": "default"}', "Summary [1]."],
+    )
+    assert model is not None
+    model.model = "test-model-1"
+    outcome = run_agent_chat("q", [], 5, engine)
+    assert outcome["trace"]["model"] == "test-model-1"
+
+
+def test_chat_ungrounded_answer_replaced_by_extractive() -> None:
+    generic = (
+        "No, it is generally not ideal to crawl domains outside of the "
+        "current seeded URL domain."
+    )
+    engine, _, _ = _engine(
+        ['{"query": "crawl scope", "filters": {}, "mode": "default"}', generic],
+        [_hit("a", snippet="Example index snippet about crawl scope.")],
+    )
+    outcome = run_agent_chat("can it crawl other domains?", [], 5, engine)
+    assert generic not in outcome["answer"]
+    assert outcome["answer"] == "Example index snippet about crawl scope."
+    assert any(f.startswith("ungrounded_answer") for f in outcome["trace"]["fallbacks"])
+    assert outcome["trace"]["model_calls"] == 2
+
+
+# --- fetch + domains tools -------------------------------------------------------
+
+
+def test_chat_fetch_grounds_synthesis_in_full_text() -> None:
+    full = "FULL TEXT MARKER about crawl scope with details beyond any snippet."
+    engine, _, model = _engine(
+        ['{"query": "crawl scope", "filters": {}, "mode": "default"}', "Summary [1]."],
+        [_hit("a", snippet="short snippet")],
+        docs={"a": full},
+    )
+    assert model is not None
+    outcome = run_agent_chat("crawl scope?", [], 5, engine)
+    assert outcome["trace"]["model_calls"] == 2
+    assert any(s["kind"] == "fetch" for s in outcome["trace"]["steps"])
+    assert "FULL TEXT MARKER" in model.calls[1]
+    assert "short snippet" not in model.calls[1]
+
+
+def test_chat_fetch_without_hook_falls_back_to_snippets() -> None:
+    provider = _BareHitsProvider([_hit("a", snippet="bare snippet here")])
+    model = _ScriptedModel(
+        ['{"query": "q", "filters": {}, "mode": "default"}', "Summary [1]."]
+    )
+    manager = ModelManager(backends={"fake": model}, primary="fake")
+    engine = SearchEngine(providers=[provider], model_manager=manager)
+    outcome = run_agent_chat("q", [], 5, engine)
+    assert outcome["trace"]["model_calls"] == 2
+    fetch_steps = [s for s in outcome["trace"]["steps"] if s["kind"] == "fetch"]
+    assert len(fetch_steps) == 1 and "0/1" in fetch_steps[0]["detail"]
+    assert "bare snippet here" in model.calls[1]
+
+
+def test_chat_domains_tool_lists_domains() -> None:
+    engine, provider, _ = _engine(
+        [
+            '{"query": "domains", "filters": {}, "mode": "default", "tool": "domains"}',
+            "unused",
+        ],
+        domains=[("example.com", 2), ("other.test", 1)],
+    )
+    outcome = run_agent_chat("what domains can I search?", [], 5, engine)
+    assert "example.com (2 docs)" in outcome["answer"]
+    assert "other.test (1 docs)" in outcome["answer"]
+    assert outcome["results"] == []
+    assert outcome["citations"] == []
+    assert outcome["notice"] is None
+    assert outcome["trace"]["model_calls"] == 1
+    assert provider.seen == []
+    assert any(s["kind"] == "domains" for s in outcome["trace"]["steps"])
+
+
+def test_chat_unknown_tool_searches() -> None:
+    engine, provider, _ = _engine(
+        ['{"query": "q", "filters": {}, "mode": "default", "tool": "evil"}', "S [1]."],
+    )
+    outcome = run_agent_chat("q", [], 5, engine)
+    assert provider.seen  # unknown tool degrades to the search tool
+    assert outcome["trace"]["model_calls"] == 2
+
+
+def test_chat_domains_empty_index_is_honest() -> None:
+    engine, _, _ = _engine(
+        [
+            '{"query": "d", "filters": {}, "mode": "default", "tool": "domains"}',
+            "unused",
+        ],
+        domains=[],
+    )
+    outcome = run_agent_chat("what can I search?", [], 5, engine)
+    assert "no searchable domains" in outcome["answer"].lower()
+    assert outcome["notice"] is None
 
 
 def test_chat_synthesis_error_records_detail() -> None:
