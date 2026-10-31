@@ -1108,6 +1108,48 @@ def _publish_seeds(
     return _enqueue_seeds_to_store(app_config, seeds, priority)
 
 
+#: Quiesce budget for POST /frontier/clear: after pausing, in-flight
+#: page fetches (bounded by the per-message drain cap) finish and land
+#: their discovered links before the store is wiped and the topic purged.
+#: Without this, completions landing mid-clear refill the queue seconds
+#: later. Polls the live-active count; expired leases are reaped along
+#: the way so dead workers cannot stall it past the budget.
+_CLEAR_QUIESCE_TIMEOUT_S = 60.0
+_CLEAR_QUIESCE_POLL_S = 2.0
+
+
+def _quiesce_in_flight(store: Any) -> float:
+    """Wait for in-flight claims to land, bounded by the quiesce budget.
+
+    Returns seconds waited. Each poll first reaps expired leases (dead
+    workers) so only genuinely live fetches hold the gate; a live fetch
+    that outlasts the budget does not fail the clear — its links land
+    as queued rows the operator can clear again. Never raises.
+    """
+    waited = 0.0
+    deadline = time.monotonic() + max(0.0, _CLEAR_QUIESCE_TIMEOUT_S)
+    while True:
+        try:
+            reap = getattr(store, "reap_expired_leases", None)
+            if callable(reap):
+                with suppress(Exception):
+                    reap()
+            counts = store.counts() or {}
+            live = int(counts.get("active", 0) or 0)
+        except Exception:
+            return waited
+        if live <= 0:
+            return waited
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "frontier clear: quiesce timed out with %d live active URL(s)",
+                live,
+            )
+            return waited
+        time.sleep(max(0.0, _CLEAR_QUIESCE_POLL_S))
+        waited += _CLEAR_QUIESCE_POLL_S
+
+
 @router.post("/frontier/clear", response_model=FrontierStatusSchema)
 def frontier_clear(request: Request) -> FrontierStatusSchema | JSONResponse:
     """Pause crawling and drop every queued URL (admin-only).
@@ -1134,6 +1176,7 @@ def frontier_clear(request: Request) -> FrontierStatusSchema | JSONResponse:
     try:
         store = _frontier_read_store(request)
         if store is not None:
+            _quiesce_in_flight(store)
             cleared = int(store.clear_queued() or 0)
     except Exception as exc:
         logger.warning("frontier clear: store clear failed: %s", exc)

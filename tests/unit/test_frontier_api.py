@@ -112,6 +112,84 @@ def test_pause_reaps_expired_leases_but_keeps_live_ones(
     assert statuses["https://live.test/b"] == "active"
 
 
+def test_quiesce_returns_when_no_live_work() -> None:
+    from openlens.api.routes import _quiesce_in_flight
+
+    class _Store:
+        def __init__(self) -> None:
+            self.reaps = 0
+
+        def reap_expired_leases(self) -> int:
+            self.reaps += 1
+            return 0
+
+        def counts(self) -> dict[str, int]:
+            return {"active": 0, "queued": 3}
+
+    store = _Store()
+    assert _quiesce_in_flight(store) == 0.0
+    assert store.reaps == 1
+
+
+def test_quiesce_reaps_then_proceeds() -> None:
+    from openlens.api import routes as api_routes
+
+    class _Store:
+        def __init__(self) -> None:
+            self.reaps = 0
+
+        def reap_expired_leases(self) -> int:
+            self.reaps += 1
+            return 1
+
+        def counts(self) -> dict[str, int]:
+            # First poll sees the orphan; the reap clears it.
+            return {"active": 0 if self.reaps else 1, "queued": 0}
+
+    store = _Store()
+    assert api_routes._quiesce_in_flight(store) == 0.0
+    assert store.reaps == 1
+
+
+def test_quiesce_timeout_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openlens.api import routes as api_routes
+
+    class _Store:
+        def reap_expired_leases(self) -> int:
+            return 0
+
+        def counts(self) -> dict[str, int]:
+            return {"active": 2, "queued": 0}
+
+    monkeypatch.setattr(api_routes, "_CLEAR_QUIESCE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(api_routes, "_CLEAR_QUIESCE_POLL_S", 0.01)
+    waited = api_routes._quiesce_in_flight(_Store())
+    assert waited < 5.0
+
+
+def test_clear_leaves_live_actives_alone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Quiesce never steals a live fetch: bounded wait, queued still swept."""
+    from openlens.api import routes as api_routes
+
+    monkeypatch.setattr(api_routes, "_CLEAR_QUIESCE_TIMEOUT_S", 0.0)
+    db_path = _file_store(monkeypatch, tmp_path)
+    setup = SqliteFrontierStore(db_path)
+    try:
+        assert setup.enqueue("https://live.test/a")
+        assert setup.enqueue("https://queued.test/b")
+        assert setup.claim("live-worker") is not None
+        assert setup.heartbeat("live-worker") == 1
+    finally:
+        setup.close()
+
+    cleared = client.post("/api/v1/frontier/clear")
+    assert cleared.status_code == 200
+    assert cleared.json()["cleared_queued"] == 1
+    assert _row_statuses(db_path) == {"https://live.test/a": "active"}
+
+
 def test_clear_sweeps_reaped_orphans(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
