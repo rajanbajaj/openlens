@@ -99,8 +99,22 @@ good commit. Data is safe across releases: named volumes persist and
 the pipeline never passes `-v`.
 
 Crawl workers: releases run `--scale crawler=3` (default); set
-`CRAWLER_SCALE` in the server's `release.env` to change it. Local
-dev stays at 1 replica unless you pass `--scale` yourself.
+`CRAWLER_SCALE` in the server's `release.env` to change it (e.g. `6`),
+then tag or re-run the release workflow — Compose only recreates what
+changed. Local dev stays at 1 replica unless you pass `--scale`
+yourself:
+
+```sh
+docker compose -f deploy/local/docker-compose.yml up -d --scale crawler=6
+```
+
+Every replica joins the same Kafka consumer group (`crawlers`), so
+each URL goes to exactly one live worker with no extra coordination.
+Confirm the scale in the admin Workers view (one row per replica with
+its claim count). Size Postgres `max_connections` for replicas × pool
+usage (see root README "Shared-queue coordination"). Scale back down
+with the same command and a smaller number; in-flight fetches drain
+via SIGTERM handling.
 
 Ops notes:
 
