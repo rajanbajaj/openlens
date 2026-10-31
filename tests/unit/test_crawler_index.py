@@ -675,3 +675,26 @@ def test_run_index_delegates_crawl_to_incremental(
     stats2 = run_index(["http://example.com/"], repo, {"max_pages": 10})
     assert (stats2.added, stats2.updated) == (0, 0)
     assert stats2.skipped_unchanged == 2
+
+
+def test_incremental_ignores_fetch_ms_drift() -> None:
+    """Per-crawl fetch latency must not mark an unchanged page updated."""
+    repo, indexer = _make_indexer()
+    first = Document(
+        id="https://x.test/1",
+        title="T",
+        content="Informative crawlable prose about the topic. " * 20,
+        url="https://x.test/1",
+        metadata={"fetch_ms": 10.0, "outlinks": ["https://y.test/"]},
+    )
+    second = Document(
+        id="https://x.test/1",
+        title="T",
+        content="Informative crawlable prose about the topic. " * 20,
+        url="https://x.test/1",
+        metadata={"fetch_ms": 99.0, "outlinks": ["https://y.test/"]},
+    )
+    assert indexer.index_incremental([first]).added == 1
+    stats = indexer.index_incremental([second])
+    assert (stats.added, stats.updated) == (0, 0)
+    assert stats.skipped_unchanged == 1

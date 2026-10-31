@@ -136,6 +136,20 @@ class IndexStats:
         }
 
 
+#: Metadata keys excluded from incremental change detection. These are
+#: per-crawl observations (wall-clock fetch latency), not content: the
+#: value legitimately differs on every fetch, so comparing it would mark
+#: every re-crawl as an update. Fresh values still overwrite on genuine
+#: content updates (the effective document carries them).
+VOLATILE_METADATA_KEYS = frozenset({"fetch_ms"})
+
+
+def _stable_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Metadata minus volatile observation keys, for change comparison."""
+    current = metadata or {}
+    return {k: v for k, v in current.items() if k not in VOLATILE_METADATA_KEYS}
+
+
 def _with_preserved_metadata(stored: Document | None, doc: Document) -> Document:
     """Return `doc` with stored ranking-critical metadata merged in.
 
@@ -291,7 +305,8 @@ class DocumentIndexer:
                     normalize_url(stored.url) == norm
                     and content_hash_of(stored.content) == content_hash
                     and stored.title == effective.title
-                    and (stored.metadata or {}) == (effective.metadata or {})
+                    and _stable_metadata(stored.metadata)
+                    == _stable_metadata(effective.metadata)
                 ):
                     unchanged.add(doc.id)
                 else:
@@ -356,7 +371,8 @@ class DocumentIndexer:
                     normalize_url(stored.url) == norm
                     and content_hash_of(stored.content) == content_hash
                     and stored.title == effective.title
-                    and (stored.metadata or {}) == (effective.metadata or {})
+                    and _stable_metadata(stored.metadata)
+                    == _stable_metadata(effective.metadata)
                 ):
                     stats.skipped_unchanged += 1
                 else:
