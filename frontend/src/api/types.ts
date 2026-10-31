@@ -195,6 +195,50 @@ export interface FeedbackResponse {
  * and their `X-Admin-Token` mutation gate are unchanged.
  */
 
+/** One turn of chat history sent with `POST /api/v1/agent/chat`. */
+export interface ChatHistoryTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/** `POST /api/v1/agent/chat` request body. */
+export interface ChatRequest {
+  /** 1-1000 chars, must not be blank. */
+  message: string;
+  /** Prior turns, oldest first; capped at 10 turns. */
+  history: ChatHistoryTurn[];
+  /** Retrieved-hit cap (1-10); defaults to 5. */
+  limit: number;
+}
+
+/** One source-attribution chip on a chat answer (`ref` is 1-based). */
+export interface ChatCitation {
+  ref: number;
+  title: string;
+  url: string | null;
+}
+
+/**
+ * Planning trace echoed on the chat response. Mirrors {@link AgentTrace}:
+ * every field is optional at render time so partial traces degrade
+ * instead of crashing; readers keep only the fields present.
+ */
+export type ChatTrace = AgentTrace;
+
+/** `POST /api/v1/agent/chat` response body. */
+export interface ChatResponse {
+  /** Grounded answer text; empty when `notice` is set (fail-closed). */
+  answer: string;
+  /** Source-attribution chips (`ref` is 1-based). */
+  citations: ChatCitation[];
+  /** Retrieved hits backing the answer, capped by `limit`. */
+  results: SearchResult[];
+  /** Planning trace; every field optional at render. */
+  trace: ChatTrace;
+  /** Set when the model was disabled or errored; null otherwise. */
+  notice: string | null;
+}
+
 /** Machine-readable error code plus a human-readable message. */
 export interface ErrorDetail {
   code: string;

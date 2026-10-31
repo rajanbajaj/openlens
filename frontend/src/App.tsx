@@ -28,6 +28,7 @@ import {
 import { Button } from './components/ui/Button.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 import ModeSelector from './components/ModeSelector.tsx';
+import ChatView from './components/ChatView.tsx';
 import { Pagination } from './components/Pagination.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -81,6 +82,7 @@ export default function App() {
   const [announcement, setAnnouncement] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [view, setView] = useState<'search' | 'chat'>('search');
   const [savedIds, setSavedIds] = useState<string[]>(() =>
     loadSavedResults().map((entry) => entry.id),
   );
@@ -210,6 +212,14 @@ export default function App() {
     void runSearch(1, nextQuery, mode, userFilters, prefs);
   }
 
+  // AI Mode fallback: run a chat message as a standard search and
+  // return to the search tab so the results render in place.
+  function handleChatFallbackSearch(nextQuery: string) {
+    setQuery(nextQuery);
+    setView('search');
+    void runSearch(1, nextQuery, mode, userFilters, prefs);
+  }
+
   // Per-card library toggle: persist locally, then reflect saved state.
   function handleSaveResult(hit: SearchResult) {
     if (savedIds.includes(hit.id)) {
@@ -242,6 +252,31 @@ export default function App() {
   // workspace so the skeleton shows in the results column.
   const showLanding = !hasSearched && !loading;
 
+  function viewNav() {
+    return (
+      <nav aria-label="Primary" data-testid="primary-nav" className="flex items-center gap-2">
+        <Button
+          variant={view === 'search' ? 'primary' : 'ghost'}
+          data-testid="nav-search"
+          aria-label="Search tab"
+          aria-current={view === 'search' ? 'page' : undefined}
+          onClick={() => setView('search')}
+        >
+          Search
+        </Button>
+        <Button
+          variant={view === 'chat' ? 'primary' : 'ghost'}
+          data-testid="nav-chat"
+          aria-label="AI chat tab"
+          aria-current={view === 'chat' ? 'page' : undefined}
+          onClick={() => setView('chat')}
+        >
+          AI chat
+        </Button>
+      </nav>
+    );
+  }
+
   return (
     <div className="ol-shell flex min-h-screen flex-col">
       {showLanding ? (
@@ -249,14 +284,21 @@ export default function App() {
           <GlassPanel variant="hero" data-testid="search-hero">
             <h1 className="ol-brand m-0 text-2xl font-bold tracking-tight">OpenLens</h1>
             <p className="ol-brand-sub text-ol-ink-soft m-0 text-sm">Plug-and-play search</p>
-            <SearchForm
-              value={query}
-              onChange={setQuery}
-              onSubmit={submitFirstPage}
-              onSuggestSelect={handleSuggestSelect}
-              disabled={loading}
-            />
-            <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+            {viewNav()}
+            {view === 'chat' ? (
+              <ChatView onFallbackSearch={handleChatFallbackSearch} />
+            ) : (
+              <>
+                <SearchForm
+                  value={query}
+                  onChange={setQuery}
+                  onSubmit={submitFirstPage}
+                  onSuggestSelect={handleSuggestSelect}
+                  disabled={loading}
+                />
+                <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+              </>
+            )}
           </GlassPanel>
         </main>
       ) : (
@@ -272,6 +314,7 @@ export default function App() {
                 disabled={loading}
               />
               <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+              {viewNav()}
             </div>
           </GlassPanel>
           <main>
@@ -309,11 +352,14 @@ export default function App() {
                 <p aria-live="polite" data-testid="result-announcer" className="ol-sr-only sr-only">
                   {announcement}
                 </p>
-                {loading ? <LoadingState /> : null}
-                {!loading && error ? (
+                {view === 'chat' ? (
+                  <ChatView onFallbackSearch={handleChatFallbackSearch} />
+                ) : null}
+                {view === 'search' && loading ? <LoadingState /> : null}
+                {view === 'search' && !loading && error ? (
                   <ErrorState code={error.code} message={error.message} />
                 ) : null}
-                {!loading && !error && response ? (
+                {view === 'search' && !loading && !error && response ? (
                   <section aria-label="Search output">
                     {showSuggestion ? (
                       <p data-testid="mode-suggestion">

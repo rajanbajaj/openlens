@@ -9,6 +9,10 @@ import type {
   AgentTraceStep,
   AiCitation,
   CacheStatus,
+  ChatCitation,
+  ChatHistoryTurn,
+  ChatResponse,
+  ChatTrace,
   Diagnostics,
   ErrorEnvelope,
   FeedbackResponse,
@@ -248,6 +252,136 @@ export function readNextOffset(response: unknown): number | null {
  * `/api/v1/frontier/*` routes and their `X-Admin-Token` mutation gate
  * are unchanged.
  */
+
+/** One chat history turn: `{role: 'user' | 'assistant', content: string}`. */
+export function isChatHistoryTurn(value: unknown): value is ChatHistoryTurn {
+  if (!isRecord(value)) return false;
+  return (
+    (value['role'] === 'user' || value['role'] === 'assistant') &&
+    typeof value['content'] === 'string'
+  );
+}
+
+/** One chat citation: 1-based integer `ref`, string `title`, `url` or null. */
+export function isChatCitation(value: unknown): value is ChatCitation {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['ref'] === 'number' &&
+    Number.isInteger(value['ref']) &&
+    (value['ref'] as number) >= 1 &&
+    typeof value['title'] === 'string' &&
+    (typeof value['url'] === 'string' || value['url'] === null || value['url'] === undefined)
+  );
+}
+
+function normalizeChatCitation(value: unknown): ChatCitation | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value['ref'] !== 'number' ||
+    !Number.isInteger(value['ref']) ||
+    (value['ref'] as number) < 1 ||
+    typeof value['title'] !== 'string'
+  ) {
+    return null;
+  }
+  const url = value['url'];
+  return {
+    ref: value['ref'] as number,
+    title: value['title'] as string,
+    url: typeof url === 'string' ? url : null,
+  };
+}
+
+/**
+ * Chat trace (`trace` on the chat response): every field optional at
+ * render, mirroring `readAgentTrace` null-safety. Accepts any record
+ * and keeps only renderable fields; returns `{}` when nothing usable
+ * is present so the section degrades to absent.
+ */
+export function readChatTrace(value: unknown): ChatTrace | null {
+  if (!isRecord(value)) return null;
+  const trace: ChatTrace = {};
+  if (typeof value['rewritten_query'] === 'string' && value['rewritten_query'] !== '') {
+    trace.rewritten_query = value['rewritten_query'];
+  }
+  if (isRecord(value['filters'])) trace.filters = value['filters'];
+  if (Array.isArray(value['steps'])) {
+    const steps = value['steps']
+      .map((step) => {
+        if (!isRecord(step)) return null;
+        const narrowed: AgentTraceStep = {};
+        if (typeof step['kind'] === 'string' && step['kind'] !== '') narrowed.kind = step['kind'];
+        if (typeof step['detail'] === 'string' && step['detail'] !== '')
+          narrowed.detail = step['detail'];
+        return narrowed.kind !== undefined || narrowed.detail !== undefined ? narrowed : null;
+      })
+      .filter((s): s is AgentTraceStep => s !== null);
+    if (steps.length > 0) trace.steps = steps;
+  }
+  if (Array.isArray(value['fallbacks'])) {
+    const fallbacks = value['fallbacks'].filter(
+      (f): f is string => typeof f === 'string' && f !== '',
+    );
+    if (fallbacks.length > 0) trace.fallbacks = fallbacks;
+  }
+  if (
+    typeof value['model_calls'] === 'number' &&
+    Number.isInteger(value['model_calls']) &&
+    (value['model_calls'] as number) >= 0
+  ) {
+    trace.model_calls = value['model_calls'] as number;
+  }
+  return Object.keys(trace).length > 0 ? trace : null;
+}
+
+/**
+ * `POST /api/v1/agent/chat` response shape. Structural check only:
+ * `answer` must be a string, `citations`/`results` arrays narrow
+ * entry-by-entry (malformed citations drop, malformed results fail),
+ * `notice` is `string | null` (absent degrades to null), and `trace`
+ * degrades through {@link readChatTrace} so partial traces render.
+ */
+export function isChatResponse(value: unknown): value is ChatResponse {
+  if (!isRecord(value)) return false;
+  if (typeof value['answer'] !== 'string') return false;
+  if (!Array.isArray(value['citations'])) return false;
+  if (!value['citations'].every(isChatCitation)) return false;
+  if (!Array.isArray(value['results'])) return false;
+  if (!(value['results'] as unknown[]).every(isSearchResult)) return false;
+  const notice = value['notice'];
+  if (notice !== null && notice !== undefined && typeof notice !== 'string') return false;
+  const trace = value['trace'];
+  if (trace !== undefined && !isRecord(trace)) return false;
+  return true;
+}
+
+/**
+ * Narrow an unknown chat payload into a renderable {@link ChatResponse},
+ * or `null` when the shape is unusable. Never throws: malformed
+ * citations drop, a missing/null `notice` degrades to null, and a
+ * missing or empty `trace` degrades to `{}` so the trace section
+ * renders nothing.
+ */
+export function readChatResponse(value: unknown): ChatResponse | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['answer'] !== 'string') return null;
+  if (!Array.isArray(value['citations'])) return null;
+  if (!Array.isArray(value['results'])) return null;
+  const results = value['results'] as unknown[];
+  if (!results.every(isSearchResult)) return null;
+  const citations = (value['citations'] as unknown[])
+    .map(normalizeChatCitation)
+    .filter((c): c is ChatCitation => c !== null);
+  const notice = value['notice'];
+  const trace = readChatTrace(value['trace']);
+  return {
+    answer: value['answer'] as string,
+    citations,
+    results: results as ChatResponse['results'],
+    trace: trace ?? {},
+    notice: typeof notice === 'string' ? notice : null,
+  };
+}
 
 export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isRecord(value)) return false;

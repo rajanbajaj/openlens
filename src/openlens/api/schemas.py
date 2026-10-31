@@ -361,6 +361,90 @@ class AdminConfigDocResponseSchema(BaseModel):
     source: str = "file"
 
 
+class ChatHistoryTurnSchema(BaseModel):
+    """One prior chat turn (oldest first) sent with a chat request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = Field(min_length=1, max_length=16)
+    content: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("role")
+    @classmethod
+    def role_must_be_known(cls, value: str) -> str:
+        if value not in ("user", "assistant"):
+            raise ValueError("role must be 'user' or 'assistant'")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
+#: Bounds for POST /api/v1/agent/chat (see the cross-track contract).
+MAX_CHAT_MESSAGE_LENGTH = 1000
+MAX_CHAT_HISTORY_TURNS = 10
+MAX_CHAT_LIMIT = 10
+DEFAULT_CHAT_LIMIT = 5
+
+
+class ChatRequestSchema(BaseModel):
+    """POST /api/v1/agent/chat request body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=MAX_CHAT_MESSAGE_LENGTH)
+    history: list[ChatHistoryTurnSchema] = Field(
+        default_factory=list, max_length=MAX_CHAT_HISTORY_TURNS
+    )
+    limit: int = Field(default=DEFAULT_CHAT_LIMIT, ge=1, le=MAX_CHAT_LIMIT)
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must not be blank")
+        return value
+
+
+class ChatCitationSchema(BaseModel):
+    """One server-side citation: 1-based ref into the returned hits."""
+
+    ref: int = Field(ge=1)
+    title: str
+    url: Optional[str] = None
+
+
+class ChatTraceStepSchema(BaseModel):
+    """One step of the chat trace (fixed {kind, detail} shape)."""
+
+    kind: str
+    detail: str
+
+
+class ChatTraceSchema(BaseModel):
+    """Per-turn chat trace: rewrite, tool searches, fallbacks, call count."""
+
+    rewritten_query: str = ""
+    filters: dict[str, Any] = Field(default_factory=dict)
+    steps: list[ChatTraceStepSchema] = Field(default_factory=list)
+    fallbacks: list[str] = Field(default_factory=list)
+    model_calls: int = Field(default=0, ge=0)
+
+
+class ChatResponseSchema(BaseModel):
+    """POST /api/v1/agent/chat response body."""
+
+    answer: str
+    citations: list[ChatCitationSchema] = Field(default_factory=list)
+    results: list[SearchResultSchema] = Field(default_factory=list)
+    trace: ChatTraceSchema = Field(default_factory=ChatTraceSchema)
+    notice: Optional[str] = None
+
+
 class ErrorDetailSchema(BaseModel):
     """Machine-readable error code plus a human-readable message."""
 

@@ -233,3 +233,234 @@ def run_agent_search(request: SearchRequest, engine: Any) -> SearchResponse:
     response.mode = AGENT_MODE
     response.diagnostics["agent_trace"] = trace
     return response
+
+
+#: Bounds for the chat turn loop (``POST /api/v1/agent/chat``).
+MAX_CHAT_HISTORY_TURNS = 10
+MAX_CHAT_SNIPPET_CHARS = 500
+MAX_CHAT_ANSWER_CHARS = 2000
+MAX_CHAT_LIMIT = 10
+
+#: Honest fallback when the retrieved hits cannot answer the turn.
+UNKNOWN_ANSWER = "Unknown: I don't know the answer based on the provided sources."
+
+
+def _normalize_chat_turns(history: Any) -> list[tuple[str, str]]:
+    """Coerce caller turns to ``(role, content)`` pairs, bounded and clean."""
+    turns: list[tuple[str, str]] = []
+    if history is None:
+        return turns
+    try:
+        items = list(history)
+    except TypeError:
+        return turns
+    for turn in items:
+        if isinstance(turn, (tuple, list)) and len(turn) == 2:
+            role, content = turn
+        elif isinstance(turn, dict):
+            role, content = turn.get("role", ""), turn.get("content", "")
+        else:
+            role, content = getattr(turn, "role", ""), getattr(turn, "content", "")
+        if role not in ("user", "assistant"):
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        turns.append((role, content.strip()[:MAX_PLAN_QUERY_CHARS]))
+    return turns[-MAX_CHAT_HISTORY_TURNS:]
+
+
+def build_chat_rewrite_prompt(message: str, history: Any) -> str:
+    """Constrained rewrite prompt: transcript plus strict-JSON instruction."""
+    turns = _normalize_chat_turns(history)
+    lines = ["Rewrite the last user message as a standalone document search query."]
+    lines.append(
+        "Reply with ONLY a JSON object (no markdown, no extra text) with "
+        'exactly these keys: "query" (string, the standalone rewritten '
+        'query), "filters" (object, search filters), "mode" (string, one of '
+        '"default", "news", "shopping", "travel", "child-safe").'
+    )
+    if turns:
+        lines.append("Conversation so far (oldest first):")
+        for role, content in turns:
+            lines.append(f"{role}: {content}")
+    lines.append("Last user message:")
+    lines.append(message)
+    return "\n".join(lines)
+
+
+def build_chat_answer_prompt(message: str, history: Any, hits: list[Any]) -> str:
+    """Grounded answer prompt: cite provided sources, else admit unknown."""
+    turns = _normalize_chat_turns(history)
+    lines = [
+        "Answer the last user message using ONLY the sources below.",
+        "Cite every factual claim as [1], [2], and so on, matching the "
+        "source numbers. If the sources do not contain the answer, say so "
+        "plainly instead of guessing.",
+    ]
+    if turns:
+        lines.append("Conversation so far (oldest first):")
+        for role, content in turns:
+            lines.append(f"{role}: {content}")
+    lines.append("Last user message:")
+    lines.append(message)
+    lines.append("Sources:")
+    for index, hit in enumerate(hits, start=1):
+        title = getattr(hit, "title", "")
+        snippet = getattr(hit, "snippet", "")
+        if not isinstance(title, str):
+            title = ""
+        if not isinstance(snippet, str):
+            snippet = ""
+        lines.append(f"[{index}] {title}: {snippet[:MAX_CHAT_SNIPPET_CHARS]}")
+    return "\n".join(lines)
+
+
+def _chat_citations(hits: list[Any]) -> list[dict[str, Any]]:
+    """Map hits to 1-based citations server-side (never model-written)."""
+    citations: list[dict[str, Any]] = []
+    for index, hit in enumerate(hits, start=1):
+        title = getattr(hit, "title", "")
+        url = getattr(hit, "url", None)
+        citations.append(
+            {
+                "ref": index,
+                "title": title if isinstance(title, str) else "",
+                "url": url if isinstance(url, str) else None,
+            }
+        )
+    return citations
+
+
+def _empty_chat_trace(raw_query: str) -> dict[str, Any]:
+    return {
+        "rewritten_query": raw_query,
+        "filters": {},
+        "steps": [],
+        "fallbacks": [],
+        "model_calls": 0,
+    }
+
+
+def run_agent_chat(
+    message: str,
+    history: Any,
+    limit: int,
+    engine: Any,
+) -> dict[str, Any]:
+    """Run one chat turn: rewrite -> tool search -> grounded answer.
+
+    The model only ever influences ``query``/``filters``/``mode`` (via
+    :func:`_coerce_plan`) and the answer wording: ``limit`` comes from
+    the caller and the only tool is ``engine.search`` in-process.
+    Retrieval errors propagate exactly as for a plain search; only
+    model-side failures degrade (``notice`` set, ``answer`` empty,
+    plain-search hits, never raising).
+    """
+    raw = message.strip() if isinstance(message, str) else ""
+    try:
+        tight_limit = int(limit)
+    except (TypeError, ValueError):
+        tight_limit = MAX_CHAT_LIMIT
+    tight_limit = max(1, min(tight_limit, MAX_CHAT_LIMIT))
+
+    trace: dict[str, Any] = _empty_chat_trace(raw)
+    steps = trace["steps"]
+    fallbacks = trace["fallbacks"]
+
+    def _plain_hits() -> list[Any]:
+        response = engine.search(
+            SearchRequest(
+                query=raw, mode=DEFAULT_AGENT_MODE, limit=tight_limit, filters={}
+            )
+        )
+        return list(response.results[:tight_limit])
+
+    def _done(answer: str, hits: list[Any], notice: str | None) -> dict[str, Any]:
+        return {
+            "answer": answer,
+            "citations": _chat_citations(hits) if hits else [],
+            "results": hits,
+            "trace": trace,
+            "notice": notice,
+        }
+
+    model_manager = getattr(engine, "model_manager", None)
+    if model_manager is None:
+        fallbacks.append("model_unavailable: no enabled model backend")
+        notice = (
+            f"{AGENT_STATUS_PREFIX} no model backend enabled; serving standard results"
+        )
+        return _done("", _plain_hits(), notice)
+
+    # -- step 1: one constrained rewrite using the transcript -------------
+    try:
+        raw_plan = model_manager.complete(build_chat_rewrite_prompt(raw, history))
+        trace["model_calls"] += 1
+    except Exception as exc:  # noqa: BLE001 — fail closed, never 500
+        fallbacks.append(f"model_error: {type(exc).__name__}")
+        notice = (
+            f"{AGENT_STATUS_PREFIX} model unavailable "
+            f"({type(exc).__name__}); serving standard results"
+        )
+        return _done("", _plain_hits(), notice)
+
+    try:
+        rewritten, plan_filters, plan_mode = _coerce_plan(
+            _extract_json_object(raw_plan), raw
+        )
+        parsed_ok = True
+    except (ValueError, json.JSONDecodeError) as exc:
+        rewritten, plan_filters, plan_mode = raw, {}, DEFAULT_AGENT_MODE
+        fallbacks.append(f"parse_fallback: {type(exc).__name__}")
+        parsed_ok = False
+
+    trace["rewritten_query"] = rewritten
+    trace["filters"] = dict(plan_filters)
+    steps.append({"kind": "rewrite", "detail": rewritten})
+    if not parsed_ok:
+        steps.append({"kind": "parse_fallback", "detail": "searched raw message"})
+
+    # -- step 2: the single tool — engine.search with validated params ----
+    merged_filters = dict(plan_filters)
+    response = engine.search(
+        SearchRequest(
+            query=rewritten,
+            mode=plan_mode,
+            limit=tight_limit,
+            filters=merged_filters,
+        )
+    )
+    steps.append(
+        {
+            "kind": "search",
+            "detail": f"mode={plan_mode} filters={sorted(merged_filters)}",
+        }
+    )
+
+    # -- step 2b: one broadened retry when the rewrite found nothing -----
+    if not response.results:
+        fallbacks.append("broadened_retry: no hits for rewritten query")
+        steps.append({"kind": "retry", "detail": raw})
+        response = engine.search(
+            SearchRequest(
+                query=raw, mode=DEFAULT_AGENT_MODE, limit=tight_limit, filters={}
+            )
+        )
+
+    hits = list(response.results[:tight_limit])
+    if not hits:
+        return _done(UNKNOWN_ANSWER, [], None)
+
+    # -- step 3: grounded synthesis (second and last model call) ---------
+    try:
+        answer_prompt = build_chat_answer_prompt(raw, history, hits)
+        answer = model_manager.complete(answer_prompt)
+        trace["model_calls"] += 1
+        answer = answer.strip()[:MAX_CHAT_ANSWER_CHARS]
+        if not answer:
+            answer = _extractive_summary(hits) or UNKNOWN_ANSWER
+    except Exception as exc:  # noqa: BLE001 — synthesis never fails search
+        fallbacks.append(f"summary_fallback: {type(exc).__name__}")
+        answer = _extractive_summary(hits) or UNKNOWN_ANSWER
+    steps.append({"kind": "synthesize", "detail": answer[:MAX_SUMMARY_CHARS]})
+    return _done(answer, hits, None)

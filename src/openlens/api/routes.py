@@ -43,7 +43,15 @@ from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseS
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
 from openlens.api.schemas import FrontierWorkersResponseSchema
+from openlens.api.schemas import (
+    ChatCitationSchema,
+    ChatRequestSchema,
+    ChatResponseSchema,
+    ChatTraceSchema,
+    ChatTraceStepSchema,
+)
 from openlens.api.schemas import SearchRequestSchema, SearchResponseSchema
+from openlens.api.schemas import SearchResultSchema
 from openlens.api.schemas import SuggestResponseSchema
 from openlens.core.interfaces import (
     ConfigError,
@@ -69,6 +77,7 @@ from openlens.indexing.kafka_queue import (
     open_kafka_queue,
     purge_topic,
 )
+from openlens.retrieval.agent import run_agent_chat
 from openlens.retrieval.suggest import (
     complete,
     correct_spelling,
@@ -381,6 +390,66 @@ def search(
         suggestions=suggestions,
         spelling=spelling,
         related=related,
+    )
+
+
+@router.post("/agent/chat", response_model=ChatResponseSchema)
+def agent_chat(
+    body: ChatRequestSchema,
+    request: Request,
+    engine: Engine = Depends(get_engine),
+) -> ChatResponseSchema:
+    """One grounded chat turn over the search index.
+
+    Rewrites the turn with the transcript, searches via the engine as
+    the only tool, and synthesizes a cited answer. Fail-closed: a
+    missing/disabled model backend (or a model error) returns an empty
+    answer with a ``notice`` plus plain-search hits — never a 500.
+    """
+    history = [(turn.role, turn.content) for turn in body.history]
+    outcome = run_agent_chat(
+        message=body.message.strip(),
+        history=history,
+        limit=body.limit,
+        engine=engine,
+    )
+    trace = outcome["trace"] if isinstance(outcome.get("trace"), dict) else {}
+    steps = trace.get("steps") if isinstance(trace.get("steps"), list) else []
+    citations = [
+        ChatCitationSchema(
+            ref=int(item.get("ref", index + 1)),
+            title=str(item.get("title", "")),
+            url=item.get("url") if isinstance(item.get("url"), str) else None,
+        )
+        for index, item in enumerate(outcome.get("citations", []) or [])
+        if isinstance(item, dict)
+    ]
+    raw_steps = steps if isinstance(steps, list) else []
+    notice = outcome.get("notice")
+    return ChatResponseSchema(
+        answer=str(outcome.get("answer", "")),
+        citations=citations,
+        results=[
+            SearchResultSchema.from_core(hit)
+            for hit in (outcome.get("results", []) or [])
+        ],
+        trace=ChatTraceSchema(
+            rewritten_query=str(trace.get("rewritten_query", "")),
+            filters=(
+                dict(trace["filters"]) if isinstance(trace.get("filters"), dict) else {}
+            ),
+            steps=[
+                ChatTraceStepSchema(
+                    kind=str(step.get("kind", "")),
+                    detail=str(step.get("detail", "")),
+                )
+                for step in raw_steps
+                if isinstance(step, dict)
+            ],
+            fallbacks=[str(entry) for entry in (trace.get("fallbacks", []) or [])],
+            model_calls=int(trace.get("model_calls", 0)),
+        ),
+        notice=notice if isinstance(notice, str) else None,
     )
 
 
