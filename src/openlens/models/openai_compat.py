@@ -27,7 +27,7 @@ class OpenAICompatModelProvider(BaseModelProvider):
     def __init__(self) -> None:
         super().__init__()
         self.base_url: str = ""
-        self.model: str = "muse-spark-1.3"
+        self.model: str = "muse-spark-1.3-contributor"
         self.api_key: str = ""
 
     @property
@@ -43,7 +43,7 @@ class OpenAICompatModelProvider(BaseModelProvider):
                 f"non-empty URL, got {base_url!r}. Startup validation failed."
             )
         self.base_url = base_url.strip().rstrip("/")
-        model = self._config.get("model", "muse-spark-1.3")
+        model = self._config.get("model", "muse-spark-1.3-contributor")
         if not isinstance(model, str) or not model.strip():
             raise ConfigError(
                 f"Model backend '{self.name}': 'model' must be a non-empty "

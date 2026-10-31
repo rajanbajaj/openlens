@@ -135,7 +135,7 @@ def test_configure_validation() -> None:
     provider = _provider("http://127.0.0.1:9/")
     assert provider.name == "openai_compat"
     assert provider.base_url == "http://127.0.0.1:9"  # trailing slash stripped
-    assert provider.model == "muse-spark-1.3"  # default model
+    assert provider.model == "muse-spark-1.3-contributor"  # default model
 
 
 def test_complete_uses_openai_wire_shape(stub_base: str) -> None:
@@ -240,7 +240,7 @@ def test_fake_transport_complete_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     post = calls["post"]
     assert post["url"] == "http://llm.test/v1/chat/completions"
     assert post["timeout"] == 3.0
-    assert post["json"]["model"] == "muse-spark-1.3"
+    assert post["json"]["model"] == "muse-spark-1.3-contributor"
     assert post["json"]["messages"] == [
         {"role": "user", "content": "Reply with the single word: ready"}
     ]
