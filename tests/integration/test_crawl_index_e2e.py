@@ -44,11 +44,17 @@ def _loopback_server(handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServ
 N_PAGES = 3
 
 
+#: Quality-gate filler (see tests/unit/test_crawler.py PROSE): the validity
+#: floor (200 visible chars) applies to stub pages too; the unique
+#: body_word terms stay searchable on top of the shared filler.
+_FILLER = "Informative crawlable prose about the topic. " * 20
+
+
 def _page(title: str, body_word: str, links: list[str]) -> bytes:
     anchors = " ".join(f'<a href="{link}">x</a>' for link in links)
     return (
         f"<html><head><title>{title}</title></head>"
-        f"<body><p>{body_word}</p>{anchors}</body></html>"
+        f"<body><p>{body_word} {_FILLER}</p>{anchors}</body></html>"
     ).encode("utf-8")
 
 

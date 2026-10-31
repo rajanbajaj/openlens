@@ -22,6 +22,14 @@ def _loopback_server(handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServ
 
 BIG_BODY = b"x" * 200_000
 
+#: Quality-gate filler: stub pages carry real prose so the content-validity
+#: floor (200 visible chars) keeps them. Intent of each test (robots, delay,
+#: caps, domain scope) is orthogonal to content length.
+PROSE = (
+    b"<p>Informative crawlable prose about the topic. " * 5
+    + b"Informative crawlable prose about the topic.</p>"
+)
+
 
 class _StubHandler(BaseHTTPRequestHandler):
     hits: dict[str, int] = {}
@@ -40,14 +48,17 @@ class _StubHandler(BaseHTTPRequestHandler):
                 200,
                 "text/html; charset=utf-8",
                 b"<html><head><title>Page One</title></head><body>"
-                b'<a href="/page2">two</a> '
+                + PROSE
+                + b'<a href="/page2">two</a> '
                 b'<a href="/private">priv</a></body></html>',
             )
         elif path == "/page2":
             self._send(
                 200,
                 "text/html; charset=utf-8",
-                b"<html><head><title>Page Two</title></head><body>hello</body></html>",
+                b"<html><head><title>Page Two</title></head><body>"
+                + PROSE
+                + b"hello</body></html>",
             )
         elif path == "/private":
             self._send(200, "text/html", b"<html><body>secret</body></html>")

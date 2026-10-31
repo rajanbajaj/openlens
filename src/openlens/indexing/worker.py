@@ -354,7 +354,10 @@ class CrawlerWorker:
         self._stop_requested = threading.Event()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
-        self._last_discovery_at: float = 0.0
+        # Never ran: negative infinity so the first pass is never gated,
+        # even on machines booted seconds ago (a monotonic clock near zero
+        # would otherwise suppress the first discovery for a full interval).
+        self._last_discovery_at: float = float("-inf")
 
     # -- stop signals --------------------------------------------------------
 

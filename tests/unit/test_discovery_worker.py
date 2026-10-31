@@ -136,6 +136,25 @@ def test_maybe_run_discovery_gates_on_interval() -> None:
     assert gated == {"feeds_checked": 0, "new_urls": 0, "refreshed": 0}
 
 
+def test_maybe_run_discovery_first_pass_ignores_boot_time(
+    monkeypatch: Any,
+) -> None:
+    """A freshly booted machine (monotonic near zero) still runs discovery."""
+    import time as time_module
+
+    store = SqliteFrontierStore(":memory:")
+    _settings(
+        store,
+        discovery_feeds=["https://news.example/feed.xml"],
+        discovery_interval_s=3600,
+    )
+    worker = _worker(store)
+    worker.refresh_limits()
+    monkeypatch.setattr(time_module, "monotonic", lambda: 100.0)
+    calls = worker.maybe_run_discovery(http_fetch=lambda url, **kwargs: FEED_XML)
+    assert calls["feeds_checked"] == 1
+
+
 def test_refresh_limits_validates_discovery_settings() -> None:
     store = SqliteFrontierStore(":memory:")
     _settings(
