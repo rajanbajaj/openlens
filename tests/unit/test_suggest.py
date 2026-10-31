@@ -74,6 +74,15 @@ def test_correct_spelling_fixes_typo() -> None:
     assert correct_spelling("headpones", ["headphones", "charger"]) == "headphones"
 
 
+def test_correct_spelling_ignores_short_token_rewrites() -> None:
+    # Regression: "give me stock news" must not become "bike aes stock aes".
+    # Distance-2 rewrites of short tokens are almost never real corrections.
+    vocab = ["bike", "aes", "stock", "news"]
+    assert correct_spelling("give me stock news", vocab) is None
+    # Longer tokens still tolerate distance 2.
+    assert correct_spelling("pythno", ["python", "django"]) == "python"
+
+
 def test_correct_spelling_exact_match_returns_none() -> None:
     assert correct_spelling("running", ["running", "trail"]) is None
     assert correct_spelling("Running", ["running"]) is None

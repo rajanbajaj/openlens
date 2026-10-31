@@ -189,7 +189,11 @@ def correct_spelling(
         if any(key == token_folded for key, _ in unique):
             corrected.append(token)
             continue
-        fixed = _closest(token_folded, unique, max_distance)
+        # Scale the tolerance to the token length: a distance-2 rewrite
+        # of a 2-4 character token (me->aes, news->aes, give->bike) is
+        # almost never a real correction, while longer tokens tolerate 2.
+        token_ceiling = min(max_distance, max(1, len(token_folded) // 3))
+        fixed = _closest(token_folded, unique, token_ceiling)
         if fixed is None:
             corrected.append(token)
         else:

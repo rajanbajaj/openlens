@@ -1,5 +1,5 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SearchResult } from '../api/types.ts';
 import { ResultList, groupByStory } from './ResultList.tsx';
 
@@ -90,5 +90,32 @@ describe('empty results', () => {
     expect(screen.getByTestId('empty-results')).toBeInTheDocument();
     expect(screen.queryByTestId('result-count')).not.toBeInTheDocument();
     expect(screen.queryByTestId('result-card')).not.toBeInTheDocument();
+  });
+});
+
+describe('spelling hint', () => {
+  it('offers a clickable correction only when there are no results', () => {
+    const onRelatedSelect = vi.fn();
+    const { rerender } = render(
+      <ResultList results={[]} total={0} spelling="running shoes" onRelatedSelect={onRelatedSelect} />,
+    );
+    const button = screen.getByTestId('spelling-suggestion');
+    expect(button).toHaveTextContent('running shoes');
+    fireEvent.click(button);
+    expect(onRelatedSelect).toHaveBeenCalledWith('running shoes');
+    rerender(
+      <ResultList
+        results={[]}
+        total={0}
+        spelling={null}
+        onRelatedSelect={onRelatedSelect}
+      />,
+    );
+    expect(screen.queryByTestId('spelling-hint')).not.toBeInTheDocument();
+  });
+
+  it('never shows the hint alongside results', () => {
+    render(<ResultList results={[hit('a')]} total={3} spelling="running shoes" />);
+    expect(screen.queryByTestId('spelling-hint')).not.toBeInTheDocument();
   });
 });

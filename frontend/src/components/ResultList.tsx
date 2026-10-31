@@ -78,9 +78,17 @@ export function ResultList({
   const assistance =
     spelling || relatedQueries.length > 0 ? (
       <>
-        {spelling ? (
+        {spelling && total === 0 ? (
           <p data-testid="spelling-hint" className="ol-spelling-hint">
-            Showing results for &ldquo;{spelling}&rdquo;
+            No results. Did you mean{' '}
+            <Button
+              variant="ghost"
+              data-testid="spelling-suggestion"
+              onClick={() => onRelatedSelect?.(spelling)}
+            >
+              &ldquo;{spelling}&rdquo;
+            </Button>
+            ?
           </p>
         ) : null}
         {relatedQueries.length > 0 ? (

@@ -351,9 +351,15 @@ def test_search_assistance_populated() -> None:
 
 
 def test_search_spelling_correction_offered() -> None:
-    resp = make_client().post("/api/v1/search", json={"query": "runing shoes"})
+    resp = make_client(total=0).post("/api/v1/search", json={"query": "runing shoes"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["spelling"] == "running shoes"
+
+
+def test_search_spelling_suppressed_when_results_exist() -> None:
+    resp = make_client().post("/api/v1/search", json={"query": "runing shoes"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["spelling"] is None
 
 
 def test_search_assistance_absent_for_unknown_query() -> None:

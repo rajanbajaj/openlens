@@ -307,17 +307,24 @@ def _resolve_terms(request: Request | None) -> list[str]:
 
 
 def _assistance(
-    query: str, terms: list[str]
+    query: str, terms: list[str], *, total: int = 0
 ) -> tuple[list[str], Optional[str], list[str]]:
-    """Build (suggestions, spelling, related) for a query; never raises."""
+    """Build (suggestions, spelling, related) for a query; never raises.
+
+    Spelling is offered only when the query returned no results: the
+    engine always searches the original query, so hinting at a
+    correction alongside real results would mislead.
+    """
     try:
         suggestions = complete(query, terms, limit=ASSISTANCE_LIMIT)
     except Exception:
         suggestions = []
-    try:
-        spelling = correct_spelling(query, terms)
-    except Exception:
-        spelling = None
+    spelling: Optional[str] = None
+    if total == 0:
+        try:
+            spelling = correct_spelling(query, terms)
+        except Exception:
+            spelling = None
     try:
         related = related_queries(
             query,
@@ -364,7 +371,9 @@ def search(
     )
     core_response = engine.search(core_request)
     query_text = core_response.query or core_request.query
-    suggestions, spelling, related = _assistance(query_text, _resolve_terms(request))
+    suggestions, spelling, related = _assistance(
+        query_text, _resolve_terms(request), total=core_response.total
+    )
     return SearchResponseSchema.from_core(
         core_response,
         limit=body.limit,
