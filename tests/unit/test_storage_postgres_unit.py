@@ -19,6 +19,7 @@ class _StubCursor:
     def __init__(self, rows: list[tuple[Any, ...]]) -> None:
         self._rows = rows
         self.executed: list[str] = []
+        self.calls: list[tuple[str, Any]] = []
 
     def __enter__(self) -> "_StubCursor":
         return self
@@ -28,6 +29,7 @@ class _StubCursor:
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.executed.append(sql)
+        self.calls.append((sql, params))
 
     def fetchone(self) -> tuple[Any, ...] | None:
         return (len(self._rows),)
@@ -173,6 +175,21 @@ def test_search_without_category_has_no_narrowing() -> None:
     store.search("hello")
     executed = store._stub_cursor.executed  # type: ignore[attr-defined]
     assert not any("AND site_category" in sql for sql in executed)
+
+
+def test_search_category_params_match_placeholders() -> None:
+    """Every executed statement binds exactly its ``%s`` placeholders.
+
+    Regression: the narrowed page query once passed six parameters for
+    five placeholders, so news/shopping searches failed on Postgres
+    with ``provider_unavailable`` while default mode kept working.
+    """
+    store = _store_with_rows([_thirteen_col_row("d1", "news")])
+    store.search("hello", site_category="news")
+    calls = store._stub_cursor.calls  # type: ignore[attr-defined]
+    assert calls
+    for sql, params in calls:
+        assert sql.count("%s") == len(params), sql
 
 
 def test_list_domains_groups_by_host() -> None:

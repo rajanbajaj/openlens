@@ -602,7 +602,7 @@ class MySQLDocumentStore(DocumentStore):
                     else:
                         cur.execute(
                             page_sql,
-                            (fts_query, category, fts_query, category, limit, offset),
+                            (fts_query, fts_query, category, limit, offset),
                         )
                     rows = cur.fetchall()
             except Exception as exc:

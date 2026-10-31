@@ -811,7 +811,7 @@ class PostgresDocumentStore(DocumentStore):
                     if category is None:
                         cur.execute(page_sql, (ts_text, ts_text, limit, offset))
                     else:
-                        narrowed = (ts_text, category, ts_text, category, limit, offset)
+                        narrowed = (ts_text, ts_text, category, limit, offset)
                         cur.execute(page_sql, narrowed)
                     rows = cur.fetchall()
             except Exception as exc:
