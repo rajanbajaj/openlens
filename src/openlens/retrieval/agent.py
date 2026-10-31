@@ -11,7 +11,9 @@ Single-tool agent built on existing blocks only:
   recorded as a trace step (max 2 model calls total; per-call timeouts come
   from the model backend's own ``timeout_s``).
 
-Fail-closed everywhere: unparsable JSON searches the raw query, and a
+Pure small-talk ("hi", "thanks", "bye") is answered directly in
+:func:`run_agent_chat` with no search and no model call. Fail-closed
+everywhere else: unparsable JSON searches the raw query, and a
 model error (or no enabled model backend at all) serves standard results
 with an ``agent_status`` notice instead of raising. The plan output is
 validated, never trusted: the model can only influence ``query``,
@@ -26,11 +28,59 @@ it must never import crawling, queue-management, or config-gate modules.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from typing import Any
 
 from openlens.core.interfaces import SearchRequest, SearchResponse
 from openlens.ranking.profiles import get_profile
+
+#: Whole-message conversational openers with no search intent ("hi", "thanks",
+#: "bye"). Only a full-message match bypasses the pipeline, so a real query
+#: that merely starts with a greeting still searches.
+_SMALL_TALK_RE = re.compile(
+    r"^(?:hi|hello|hey|howdy|good\s?morning|good\s?afternoon|good\s?evening"
+    r"|how are you|thanks|thank\s?you|thx|bye(?:-bye)?|goodbye|good\s?night"
+    r"|see you)(?:[!.,?\s]*)$",
+    re.IGNORECASE,
+)
+
+#: Direct replies for the small-talk bypass (no search, no model call).
+_SMALL_TALK_GREETING = (
+    "Hello! Ask me a question and I'll search the index and answer with sources."
+)
+_SMALL_TALK_THANKS = (
+    "You're welcome! Ask me anything else and I'll search the index for answers."
+)
+_SMALL_TALK_FAREWELL = (
+    "Goodbye! Come back any time with a question and I'll search the index."
+)
+
+
+def _small_talk_reply(raw: str) -> str | None:
+    """Return a direct reply for pure small-talk, else ``None`` (search it)."""
+    if not _SMALL_TALK_RE.match(raw.strip()):
+        return None
+    lowered = raw.lower()
+    if "thank" in lowered or "thx" in lowered:
+        return _SMALL_TALK_THANKS
+    if (
+        "bye" in lowered
+        or "goodbye" in lowered
+        or "see you" in lowered
+        or "good night" in lowered
+        or "goodnight" in lowered
+    ):
+        return _SMALL_TALK_FAREWELL
+    return _SMALL_TALK_GREETING
+
+
+def _error_detail(exc: BaseException) -> str:
+    """One-line error identity: class name plus truncated message, if any."""
+    detail = str(exc).strip().replace("\n", " ")[:200]
+    name = type(exc).__name__
+    return f"{name}: {detail}" if detail else name
+
 
 #: Request mode that routes through the agent instead of the plain pipeline.
 AGENT_MODE = "agent"
@@ -168,10 +218,10 @@ def run_agent_search(request: SearchRequest, engine: Any) -> SearchResponse:
         raw_plan = model_manager.complete(build_parse_prompt(raw_query))
         trace["model_calls"] += 1
     except Exception as exc:  # noqa: BLE001 — fail closed, never 500
-        fallbacks.append(f"model_error: {type(exc).__name__}")
+        fallbacks.append(f"model_error: {_error_detail(exc)}")
         notice = (
             f"{AGENT_STATUS_PREFIX} model unavailable "
-            f"({type(exc).__name__}); serving standard results"
+            f"({_error_detail(exc)}); serving standard results"
         )
         return _standard_search(
             raw_query, DEFAULT_AGENT_MODE, dict(request.filters), notice
@@ -226,7 +276,7 @@ def run_agent_search(request: SearchRequest, engine: Any) -> SearchResponse:
             response.results
         )
     except Exception as exc:  # noqa: BLE001 — summary never fails search
-        fallbacks.append(f"summary_fallback: {type(exc).__name__}")
+        fallbacks.append(f"summary_fallback: {_error_detail(exc)}")
         summary = _extractive_summary(response.results)
     steps.append({"kind": "summary", "detail": summary})
 
@@ -294,8 +344,11 @@ def build_chat_answer_prompt(message: str, history: Any, hits: list[Any]) -> str
     lines = [
         "Answer the last user message using ONLY the sources below.",
         "Cite every factual claim as [1], [2], and so on, matching the "
-        "source numbers. If the sources do not contain the answer, say so "
-        "plainly instead of guessing.",
+        "source numbers. When the sources are topically relevant but do not "
+        "fully answer the question, summarize what they do say (with "
+        "citations) and briefly note what is missing instead of refusing. "
+        "Only when none of the sources is relevant at all, say plainly that "
+        "they do not contain the answer instead of guessing.",
     ]
     if turns:
         lines.append("Conversation so far (oldest first):")
@@ -384,6 +437,12 @@ def run_agent_chat(
             "notice": notice,
         }
 
+    # -- step 0: pure small-talk needs no search and no model call ----------
+    small_talk = _small_talk_reply(raw)
+    if small_talk is not None:
+        steps.append({"kind": "smalltalk", "detail": raw})
+        return _done(small_talk, [], None)
+
     model_manager = getattr(engine, "model_manager", None)
     if model_manager is None:
         fallbacks.append("model_unavailable: no enabled model backend")
@@ -397,10 +456,10 @@ def run_agent_chat(
         raw_plan = model_manager.complete(build_chat_rewrite_prompt(raw, history))
         trace["model_calls"] += 1
     except Exception as exc:  # noqa: BLE001 — fail closed, never 500
-        fallbacks.append(f"model_error: {type(exc).__name__}")
+        fallbacks.append(f"model_error: {_error_detail(exc)}")
         notice = (
             f"{AGENT_STATUS_PREFIX} model unavailable "
-            f"({type(exc).__name__}); serving standard results"
+            f"({_error_detail(exc)}); serving standard results"
         )
         return _done("", _plain_hits(), notice)
 
@@ -460,7 +519,7 @@ def run_agent_chat(
         if not answer:
             answer = _extractive_summary(hits) or UNKNOWN_ANSWER
     except Exception as exc:  # noqa: BLE001 — synthesis never fails search
-        fallbacks.append(f"summary_fallback: {type(exc).__name__}")
+        fallbacks.append(f"summary_fallback: {_error_detail(exc)}")
         answer = _extractive_summary(hits) or UNKNOWN_ANSWER
     steps.append({"kind": "synthesize", "detail": answer[:MAX_SUMMARY_CHARS]})
     return _done(answer, hits, None)
