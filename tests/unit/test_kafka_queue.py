@@ -482,7 +482,7 @@ def test_open_kafka_queue_factory() -> None:
 
 def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     db_path = str(tmp_path / "frontier.db")
-    fake = _FakeQueue([("https://kafka.test/a", 0)])
+    fake = _FakeQueue([("https://kafka.test/a", 0, 3)])
     hits: dict[str, int] = {}
     counts = run_kafka_worker(
         [],
@@ -495,8 +495,9 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     )
     assert counts["received"] == 1
     assert fake.commits == 1
-    # Seed fetched; the discovered link fanned back out to the topic...
-    assert ("https://kafka.test/b", 1, None) in fake.published
+    # Seed fetched; the discovered link fanned back out to the topic with
+    # one decay step applied to the seed's priority (3 -> 2)...
+    assert ("https://kafka.test/b", 1, 2) in fake.published
     # ...and durably recorded in the store (no refetch on redelivery).
     store = SqliteFrontierStore(db_path)
     try:
@@ -911,21 +912,26 @@ def test_pause_resume_flip_store_flag(
 
 
 def test_persistent_frontier_push_hook(tmp_path: Path) -> None:
-    seen: list[tuple[str, int]] = []
+    seen: list[tuple[str, int, int | None]] = []
     store = SqliteFrontierStore(str(tmp_path / "hook.db"))
     try:
         frontier = crawler_mod.PersistentFrontier(
-            store, 100, on_push=lambda url, depth: seen.append((url, depth))
+            store,
+            100,
+            on_push=lambda url, depth, priority: seen.append((url, depth, priority)),
         )
         frontier.push("https://example.com/a", 2)
         # Re-sighting a known URL refires nothing: the store row is the
         # durable record and any drain picks it up, so the topic would
         # otherwise carry one copy per page linking it.
         frontier.push("https://example.com/a", 2)
-        frontier.push("https://example.com/b", 1)
+        frontier.push("https://example.com/b", 1, 4)
     finally:
         store.close()
-    assert seen == [("https://example.com/a", 2), ("https://example.com/b", 1)]
+    assert seen == [
+        ("https://example.com/a", 2, None),
+        ("https://example.com/b", 1, 4),
+    ]
 
 
 def test_package_init_does_not_preimport_worker() -> None:

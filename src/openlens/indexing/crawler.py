@@ -213,6 +213,20 @@ class BoundedFrontier:
         self._path.unlink(missing_ok=True)
 
 
+def decay_child_priority(parent_priority: Any) -> int:
+    """One-step priority decay for newly discovered child URLs.
+
+    A page claimed at ``parent_priority`` re-queues its outlinks one
+    step lower (5 -> 4 -> 3 -> ...), so a fresh high-priority bulk
+    load drains a few levels deep and then merges with older rows
+    instead of starving them forever. Non-positive parents hold their
+    level; unknown (non-int) parents grant no elevation.
+    """
+    if isinstance(parent_priority, bool) or not isinstance(parent_priority, int):
+        return 0
+    return parent_priority - 1 if parent_priority > 0 else parent_priority
+
+
 class PersistentFrontier:
     """FrontierStore-backed FIFO queue with the BoundedFrontier interface.
 
@@ -228,7 +242,7 @@ class PersistentFrontier:
         self,
         store: Any,
         maxsize: int,
-        on_push: Callable[[str, int], None] | None = None,
+        on_push: Callable[[str, int, int | None], None] | None = None,
     ) -> None:
         if maxsize <= 0:
             raise ValueError("frontier maxsize must be positive")
@@ -245,8 +259,8 @@ class PersistentFrontier:
     def path(self) -> None:
         return None
 
-    def push(self, url: str, depth: int = 0) -> None:
-        is_new = self._store.enqueue(url, depth)
+    def push(self, url: str, depth: int = 0, priority: int | None = None) -> None:
+        is_new = self._store.enqueue(url, depth, priority=priority)
         if is_new and self._on_push is not None:
             # Best effort: the store row above is the durable record, so a
             # failing fan-out (e.g. Kafka down) never loses the URL.
@@ -255,7 +269,7 @@ class PersistentFrontier:
             # republishing would only grow the topic (a popular URL
             # re-fires once per page linking it).
             with contextlib.suppress(Exception):
-                self._on_push(url, depth)
+                self._on_push(url, depth, priority)
         overflow = len(self) - self._maxsize
         if overflow > 0:
             self.evicted += self._store.evict_oldest(self._maxsize)
@@ -1677,7 +1691,7 @@ class PoliteCrawler:
         should_stop: Callable[[], bool] | None = None,
         crawl_id: str = "default",
         checkpoint_interval: int | None = None,
-        on_link: Callable[[str, int], None] | None = None,
+        on_link: Callable[[str, int, int | None], None] | None = None,
     ) -> list[Document]:
         """Fetch seeds (following discovered links) into raw Documents.
 
@@ -1798,12 +1812,14 @@ class PoliteCrawler:
                     raw = entry.url
                     entry_depth = entry.depth
                     entry_attempts = entry.attempts
+                    entry_priority = getattr(entry, "priority", 0)
                 else:
                     raw = frontier.pop()
                     if raw is None:
                         break
                     entry_depth = None
                     entry_attempts = 0
+                    entry_priority = 0
                 if normalize_url(raw) in seen:
                     continue
                 seen.add(normalize_url(raw))
@@ -1916,7 +1932,11 @@ class PoliteCrawler:
                             if key not in depths or child_depth < depths[key]:
                                 depths[key] = child_depth
                             if store is not None:
-                                frontier.push(link, depths[key])
+                                frontier.push(
+                                    link,
+                                    depths[key],
+                                    decay_child_priority(entry_priority),
+                                )
                             else:
                                 frontier.push(link)
                 if store is not None and interval > 0 and attempts % interval == 0:

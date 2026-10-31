@@ -883,9 +883,9 @@ def run_kafka_worker(
         pass
     counts = {"received": 0, "added": 0, "updated": 0}
 
-    def _publish_link(url: str, depth: int) -> None:
+    def _publish_link(url: str, depth: int, priority: int | None = None) -> None:
         with contextlib.suppress(Exception):
-            kafka.publish(url, depth)
+            kafka.publish(url, depth, priority=priority)
 
     def _drain_once() -> None:
         worker.refresh_limits()

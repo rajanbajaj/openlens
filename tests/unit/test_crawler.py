@@ -171,3 +171,70 @@ def test_invalid_config_values_rejected() -> None:
         crawler.configure({"timeout_s": -1})
     with pytest.raises(ConfigError):
         crawler.configure({"max_pages": 0})
+
+
+def test_decay_child_priority_steps() -> None:
+    from openlens.indexing.crawler import decay_child_priority
+
+    assert decay_child_priority(5) == 4
+    assert decay_child_priority(1) == 0
+    assert decay_child_priority(0) == 0
+    # Deprioritized rows stay deprioritized; unknown parents get no boost.
+    assert decay_child_priority(-3) == -3
+    assert decay_child_priority(None) == 0
+
+
+def test_persistent_frontier_push_forwards_priority() -> None:
+    from openlens.indexing.crawler import PersistentFrontier
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        seen: list[tuple[str, int, int | None]] = []
+        frontier = PersistentFrontier(
+            store, 100, on_push=lambda u, d, p: seen.append((u, d, p))
+        )
+        frontier.push("https://example.com/a", 1, 4)
+        assert store.pending(limit=10)[0].priority == 4
+        assert seen == [("https://example.com/a", 1, 4)]
+    finally:
+        store.close()
+
+
+def test_discovered_links_inherit_decayed_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openlens.indexing.crawler import _FetchedPage
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        seed = "https://example.com/seed"
+        assert store.enqueue(seed, 0, priority=5) is True
+        crawler = _crawler(max_pages=1, respect_robots=False)
+        prose = "<p>Informative crawlable prose about the topic. </p>" * 12
+        body = (
+            "<html><head><title>Seed</title></head><body>"
+            + prose
+            + '<a href="https://example.com/child">child</a></body></html>'
+        ).encode("utf-8")
+        page = _FetchedPage(
+            status=200,
+            url=seed,
+            content_type="text/html",
+            body=body,
+            headers={},
+        )
+        monkeypatch.setattr(crawler, "_fetch_bounded", lambda url: page)
+        published: list[tuple[str, int, int | None]] = []
+        docs = crawler.crawl(
+            [seed],
+            frontier_store=store,
+            on_link=lambda u, d, p: published.append((u, d, p)),
+        )
+        assert len(docs) == 1
+        by_url = {entry.url: entry.priority for entry in store.pending(limit=10)}
+        assert by_url["https://example.com/child"] == 4
+        assert ("https://example.com/child", 1, 4) in published
+    finally:
+        store.close()
