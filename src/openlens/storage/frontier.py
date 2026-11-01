@@ -330,6 +330,23 @@ class FrontierStore(ABC):
         """
         return False
 
+    def reseed_many(self, urls: Iterable[str]) -> int:
+        """Revive terminal rows in bulk; returns the revived count.
+
+        Bulk form of :meth:`reseed` for dashboard Resume with a pasted
+        seed list: one statement instead of one UPDATE per seed. The
+        default loops :meth:`reseed` (correct everywhere); backends
+        override with a chunked single-UPDATE lookup.
+        """
+        revived = 0
+        for url in urls or []:
+            ok = False
+            with contextlib.suppress(Exception):
+                ok = bool(self.reseed(url))
+            if ok:
+                revived += 1
+        return revived
+
     # -- user-requested crawl URLs (concrete defaults) -------------------
     # Shipped stores persist these in ``crawl_requests``; the concrete
     # defaults below keep older/test doubles instantiable. ``submit``
@@ -1025,6 +1042,48 @@ def _request_from_row(row: Any) -> dict[str, Any]:
         "created_at": _iso(_get("created_at")),
         "decided_at": _iso(_get("decided_at")),
     }
+
+
+def _pending_branch_sql(
+    table: str, param: str, status: str, extra_cols: str = "", tiebreak: str = ""
+) -> str:
+    """One index-probed page branch over a single queue status.
+
+    ``WHERE status IN (...) ORDER BY ... LIMIT n`` scans the whole backlog
+    once the queued set grows (planners correctly prefer a seq scan past
+    ~25% selectivity), so each branch probes one status with an equality
+    + full ORDER BY + LIMIT — a pure index walk. ``extra_cols`` carries
+    the merge sort keys (e.g. ``discovered_at``) that are not part of the
+    entry; ``tiebreak`` (e.g. SQLite's ``, rowid ASC``) keeps each
+    backend's existing tie order.
+    """
+    cols = (
+        "url, depth, status, parent_url, attempts,"
+        f" last_error, etag, last_modified, priority{extra_cols}"
+    )
+    order = f"priority DESC, depth ASC, discovered_at ASC{tiebreak}"
+    # `status` is one of the two internal literals passed by pending();
+    # never caller input (same static-SQL convention as the module's
+    # other queries).
+    return (
+        f"SELECT {cols} FROM {table} WHERE status = '{status}'"  # noqa: S608
+        f" ORDER BY {order} LIMIT {param}"
+    )
+
+
+def _merge_pending(
+    pages: list[list[tuple[tuple[Any, ...], FrontierEntry]]],
+    limit: int,
+    offset: int,
+) -> list[FrontierEntry]:
+    """Merge per-status branch pages into one global page.
+
+    Each branch holds its status's top ``limit + offset`` rows; a row
+    inside the global top ``limit + offset`` is inside its own status's
+    top ``limit + offset``, so slicing the merged sort is exact.
+    """
+    merged = sorted((item for page in pages for item in page), key=lambda item: item[0])
+    return [entry for _, entry in merged[offset : offset + limit]]
 
 
 def _entry_from_row(row: Any) -> FrontierEntry:
@@ -1826,18 +1885,72 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def reseed_many(self, urls: Iterable[str]) -> int:
+        norms: list[str] = []
+        for url in urls or []:
+            try:
+                norm = normalize_frontier_url(url)
+            except (AttributeError, ValueError):
+                continue
+            if norm not in norms:
+                norms.append(norm)
+        if not norms:
+            return 0
+        try:
+            revived = 0
+            with self._lock, self._conn:
+                for start in range(0, len(norms), 500):
+                    chunk = norms[start : start + 500]
+                    marks = ",".join("?" for _ in chunk)
+                    cursor = self._conn.execute(
+                        "UPDATE frontier_queue SET status = 'queued',"  # noqa: S608
+                        " attempts = 0, last_error = NULL"
+                        f" WHERE url IN ({marks})"
+                        " AND status IN ('failed', 'skipped', 'done')",
+                        tuple(chunk),
+                    )
+                    revived += cursor.rowcount or 0
+                return revived
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to reseed frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        want = capped + skipped
         try:
             with self._lock:
-                rows = self._conn.execute(
-                    "SELECT url, depth, status, parent_url, attempts,"
-                    " last_error, etag, last_modified, priority FROM frontier_queue"
-                    " WHERE status IN ('queued', 'active')"
-                    " ORDER BY priority DESC, depth ASC, discovered_at ASC, rowid ASC"
-                    " LIMIT ? OFFSET ?",
-                    (max(0, limit), max(0, offset)),
-                ).fetchall()
-                return [_entry_from_row(row) for row in rows]
+                pages: list[list[tuple[tuple[Any, ...], FrontierEntry]]] = []
+                for status in ("queued", "active"):
+                    rows = self._conn.execute(
+                        _pending_branch_sql(
+                            "frontier_queue",
+                            "?",
+                            status,
+                            extra_cols=", discovered_at, rowid",
+                            tiebreak=", rowid ASC",
+                        ),
+                        (want,),
+                    ).fetchall()
+                    pages.append(
+                        [
+                            (
+                                (
+                                    -(row["priority"] or 0),
+                                    row["depth"] or 0,
+                                    row["discovered_at"],
+                                    row["rowid"],
+                                ),
+                                _entry_from_row(row),
+                            )
+                            for row in rows
+                        ]
+                    )
+                return _merge_pending(pages, capped, skipped)
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to list pending frontier URLs: {exc}",
@@ -3001,8 +3114,47 @@ class PostgresFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def reseed_many(self, urls: Iterable[str]) -> int:
+        table = self._qualified("frontier_queue")
+        norms: list[str] = []
+        for url in urls or []:
+            try:
+                norm = normalize_frontier_url(url)
+            except (AttributeError, ValueError):
+                continue
+            if norm not in norms:
+                norms.append(norm)
+        if not norms:
+            return 0
+        try:
+            revived = 0
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for start in range(0, len(norms), 500):
+                        chunk = norms[start : start + 500]
+                        marks = ",".join(["%s"] * len(chunk))
+                        cur.execute(
+                            f"UPDATE {table} SET status = 'queued',"  # noqa: S608
+                            " attempts = 0, last_error = NULL"
+                            f" WHERE url IN ({marks})"
+                            " AND status IN ('failed', 'skipped', 'done')",
+                            tuple(chunk),
+                        )
+                        revived += cur.rowcount or 0
+                conn.commit()
+                return revived
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to reseed frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         table = self._qualified("frontier_queue")
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        want = capped + skipped
         cols = (
             "url",
             "depth",
@@ -3013,23 +3165,36 @@ class PostgresFrontierStore(FrontierStore):
             "etag",
             "last_modified",
             "priority",
+            "discovered_at",
         )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        f"SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
-                        f" last_error, etag, last_modified, priority FROM {table}"
-                        " WHERE status IN ('queued', 'active')"
-                        " ORDER BY priority DESC, depth ASC, discovered_at ASC"
-                        " LIMIT %s OFFSET %s",
-                        (max(0, limit), max(0, offset)),
-                    )
-                    entries = [
-                        _entry_from_row(dict(zip(cols, row))) for row in cur.fetchall()
-                    ]
+                    pages: list[list[tuple[tuple[Any, ...], FrontierEntry]]] = []
+                    for status in ("queued", "active"):
+                        cur.execute(
+                            _pending_branch_sql(  # noqa: S608
+                                table, "%s", status, extra_cols=", discovered_at"
+                            ),
+                            (want,),
+                        )
+                        branch: list[tuple[tuple[Any, ...], FrontierEntry]] = []
+                        for row in cur.fetchall():
+                            record = dict(zip(cols, row))
+                            entry = _entry_from_row(record)
+                            branch.append(
+                                (
+                                    (
+                                        -(entry.priority or 0),
+                                        entry.depth or 0,
+                                        record["discovered_at"],
+                                    ),
+                                    entry,
+                                )
+                            )
+                        pages.append(branch)
                 conn.commit()
-                return entries
+                return _merge_pending(pages, capped, skipped)
         except Exception as exc:
             raise ProviderError(
                 f"failed to list pending frontier URLs: {exc}",
@@ -3038,17 +3203,27 @@ class PostgresFrontierStore(FrontierStore):
             ) from exc
 
     def counts(self) -> dict[str, int]:
+        # One indexed COUNT per known status instead of a GROUP BY full
+        # scan: past ~25% queued selectivity the planner seq-scans the
+        # whole backlog for every dashboard poll, WS push, and drain
+        # size check. Exact because writers only emit _VALID_STATUSES;
+        # zero classes are omitted, matching the GROUP BY shape.
         table = self._qualified("frontier_queue")
         out: dict[str, int] = {"total": 0}
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        f"SELECT status, COUNT(*) FROM {table} GROUP BY status"  # noqa: S608
-                    )
-                    for status, n in cur.fetchall():
-                        out[str(status)] = int(n)
-                        out["total"] += int(n)
+                    for status in sorted(_VALID_STATUSES):
+                        cur.execute(
+                            f"SELECT COUNT(*) FROM {table}"  # noqa: S608
+                            " WHERE status = %s",
+                            (status,),
+                        )
+                        row = cur.fetchone()
+                        n = int(row[0]) if row else 0
+                        if n:
+                            out[status] = n
+                            out["total"] += n
                 conn.commit()
                 return out
         except Exception as exc:

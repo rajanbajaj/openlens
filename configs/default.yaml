@@ -307,6 +307,34 @@ kafka:
   # max_poll_interval_ms; see DEFAULT_MAX_PAGES_PER_POLL.
   max_pages_per_poll: 25
 
+# Server-side analytics pipeline: API publishes fire-and-forget events to
+# the `analytics.events` Kafka topic, `analytics-worker` batch-inserts
+# them into the analytics store, and retention purges old rows. The store
+# backend is the single switch (`sqlite` | `clickhouse`, shipped default
+# `sqlite` so offline/tests boot with no services — compose overrides to
+# `clickhouse`). ClickHouse is a separate database on purpose: analytics
+# append volume must never contend with search reads or frontier writes.
+# Event names and prop keys are a closed allowlist (see
+# `src/openlens/analytics/events.py`); raw query text is never stored.
+analytics:
+  enabled: ${OPENLENS_ANALYTICS_ENABLED:-true}
+  topic: ${OPENLENS_ANALYTICS_TOPIC:-analytics.events}
+  group_id: ${OPENLENS_ANALYTICS_GROUP_ID:-analytics}
+  batch_size: ${OPENLENS_ANALYTICS_BATCH_SIZE:-100}
+  flush_interval_s: ${OPENLENS_ANALYTICS_FLUSH_INTERVAL_S:-5.0}
+  retention_days: ${OPENLENS_ANALYTICS_RETENTION_DAYS:-90}
+  retention_check_s: 3600.0
+  store:
+    backend: ${OPENLENS_ANALYTICS_BACKEND:-sqlite}
+    sqlite:
+      db_path: ${OPENLENS_ANALYTICS_SQLITE_PATH:-:memory:}
+    clickhouse:
+      host: ${OPENLENS_CLICKHOUSE_HOST:-localhost}
+      port: ${OPENLENS_CLICKHOUSE_PORT:-8123}
+      database: ${OPENLENS_CLICKHOUSE_DB:-openlens_analytics}
+      user: ${OPENLENS_CLICKHOUSE_USER:-default}
+      password: ${OPENLENS_CLICKHOUSE_PASSWORD:-}
+
 # Search-result cache (caching-audit plan). `cache.backend` is the single
 # switch (`memory` | `sqlite` | `redis`, shipped default `redis` — see
 # `deploy/local/docker-compose.yml`); `enabled: false` turns caching off.

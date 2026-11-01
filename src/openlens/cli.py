@@ -149,6 +149,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     worker_cmd.set_defaults(func=_cmd_crawl_worker)
 
+    analytics_cmd = commands.add_parser(
+        "analytics-worker",
+        help="Consume analytics.events into the analytics database.",
+    )
+    analytics_cmd.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Store flush threshold in events (positive integer).",
+    )
+    analytics_cmd.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Bound the consume loop (tests/one-shot runs); default unbounded.",
+    )
+    analytics_cmd.set_defaults(func=_cmd_analytics_worker)
+
     cache_cmd = commands.add_parser("cache", help="Manage the search-result cache.")
     cache_sub = cache_cmd.add_subparsers(dest="cache_command", required=True)
     purge_sub = cache_sub.add_parser(
@@ -342,6 +360,45 @@ def _cmd_crawl_worker(args: argparse.Namespace) -> int:
         f"crawl-worker done: added={stats.added} "
         f"updated={stats.updated} skipped_unchanged={stats.skipped_unchanged} "
         f"skipped_duplicates={stats.skipped_duplicates}"
+    )
+    return 0
+
+
+def _cmd_analytics_worker(args: argparse.Namespace) -> int:
+    """Consume the analytics topic into the analytics database."""
+    from openlens.analytics.worker import run_analytics_worker
+
+    batch_size = getattr(args, "batch_size", 100)
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size < 1
+    ):
+        print("error: --batch-size must be a positive integer", file=sys.stderr)
+        return FAILURE_EXIT
+    try:
+        config = load_effective_config()
+    except Exception as exc:
+        print(f"error: cannot load config: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    if not config:
+        print("error: no config found", file=sys.stderr)
+        return FAILURE_EXIT
+    max_iterations = getattr(args, "max_iterations", None)
+    try:
+        section = dict(config.get("analytics", {}) or {})
+        section["batch_size"] = batch_size
+        counts = run_analytics_worker(
+            dict(config, analytics=section),
+            max_iterations=max_iterations,
+        )
+    except Exception as exc:
+        print(f"error: analytics-worker failed: {exc}", file=sys.stderr)
+        return FAILURE_EXIT
+    print(
+        "analytics-worker done: "
+        f"received={counts['received']} stored={counts['stored']} "
+        f"dropped={counts['dropped']} purged={counts['purged']}"
     )
     return 0
 

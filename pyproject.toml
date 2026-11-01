@@ -26,6 +26,9 @@ dependencies = [
 # lazy-imported, so unconfigured backends add no import-time cost.
 mysql = ["pymysql>=1.1"]
 kafka = ["kafka-python-ng>=2.1.0"]
+# ClickHouse analytics store (HTTP driver, no system deps). Lazy-imported
+# like kafka, so unconfigured backends add no import-time cost.
+analytics = ["clickhouse-connect>=0.8.0"]
 
 [build-system]
 requires = ["hatchling"]

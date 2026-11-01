@@ -456,6 +456,7 @@ def search(
     )
     core_response = engine.search(core_request)
     query_text = core_response.query or core_request.query
+    _publish_search_served(request, query_text, core_request.mode, core_response.total)
     suggestions, spelling, related = _assistance(
         query_text,
         _resolve_terms(request),
@@ -651,6 +652,14 @@ class FeedbackSummarySchema(BaseModel):
     top_docs: list[FeedbackDocSummarySchema]
 
 
+class AnalyticsCountsSchema(BaseModel):
+    """Admin analytics overview: durable per-name counts over a window."""
+
+    days: int = Field(ge=1)
+    total: int = Field(ge=0)
+    by_name: dict[str, int]
+
+
 @router.post(
     "/feedback",
     response_model=FeedbackResponseSchema,
@@ -669,6 +678,7 @@ def feedback(body: FeedbackRequestSchema, request: Request) -> FeedbackResponseS
     key = (body.doc_id.strip(), body.action.strip(), body.reason or "")
     count = _FEEDBACK_COUNTS.get(key, 0) + 1
     _FEEDBACK_COUNTS[key] = count
+    _publish_feedback_event(request, key[0], key[1], body.reason)
     engine = getattr(request.app.state, "engine", None)
     for candidate in (engine, getattr(engine, "_inner", None)):
         hook = getattr(candidate, "record_feedback", None)
@@ -739,6 +749,53 @@ def admin_feedback_summary(request: Request) -> FeedbackSummarySchema | JSONResp
     )
 
 
+@router.get("/admin/analytics/counts", response_model=AnalyticsCountsSchema)
+def admin_analytics_counts(
+    request: Request, days: int = 30
+) -> AnalyticsCountsSchema | JSONResponse:
+    """Admin-only durable analytics counts (same gate as config mutations).
+
+    Reads the separate analytics database over the trailing ``days``
+    window. Fail-closed auth, fail-open store: an unreachable analytics
+    database reports 503 instead of breaking the admin screen.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    window = days if isinstance(days, int) and days >= 1 else 30
+    window = min(window, 365)
+    try:
+        from openlens.analytics.store import open_analytics_store
+
+        app_config = getattr(request.app.state, "config", None)
+        section: dict[str, Any] = {}
+        if isinstance(app_config, dict):
+            raw = app_config.get("analytics", {})
+            if isinstance(raw, Mapping):
+                section = dict(raw.get("store", {}))
+        store = open_analytics_store(section)
+    except Exception as exc:
+        logger.warning("analytics counts: store unavailable: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    try:
+        by_name = store.counts_by_name(window) or {}
+    except Exception as exc:
+        logger.warning("analytics counts: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    finally:
+        with suppress(Exception):
+            store.close()
+    return AnalyticsCountsSchema(
+        days=window, total=sum(by_name.values()), by_name=by_name
+    )
+
+
 class SavedPrefsSchema(BaseModel):
     """PUT /api/v1/prefs body: one named preference set.
 
@@ -798,6 +855,55 @@ def save_prefs(body: SavedPrefsSchema) -> SavedPrefsResponseSchema:
         )
     _SAVED_PREFS[body.name] = dict(body.filters)
     return SavedPrefsResponseSchema(name=body.name, filters=dict(body.filters))
+
+
+def _analytics_queue(request: Request) -> Any | None:
+    """Cached analytics producer for this app (fail-open None).
+
+    Fire-and-forget publishing must never slow a search or fail it, so a
+    sick broker degrades to a dropped event, never a 500.
+    """
+    state = getattr(request.app, "state", None)
+    if state is None:
+        return None
+    queue = getattr(state, "_analytics_queue", None)
+    if queue is None:
+        try:
+            from openlens.analytics.events import AnalyticsQueue
+
+            app_config = getattr(state, "config", None)
+            queue = AnalyticsQueue.from_app_config(
+                app_config if isinstance(app_config, dict) else {}
+            )
+        except Exception:
+            return None
+        with suppress(Exception):
+            state._analytics_queue = queue
+    return queue
+
+
+def _publish_search_served(request: Request, query: str, mode: str, total: int) -> None:
+    """Best-effort ``search.served`` event (raw text never leaves)."""
+    queue = _analytics_queue(request)
+    if queue is None:
+        return
+    with suppress(Exception):
+        from openlens.analytics.events import served_event
+
+        queue.publish_event(served_event(query, mode, total))
+
+
+def _publish_feedback_event(
+    request: Request, doc_id: str, action: str, reason: str | None
+) -> None:
+    """Best-effort ``search.feedback`` event mirroring the tally."""
+    queue = _analytics_queue(request)
+    if queue is None:
+        return
+    with suppress(Exception):
+        from openlens.analytics.events import feedback_event
+
+        queue.publish_event(feedback_event(doc_id, action, reason))
 
 
 def _frontier_read_store(request: Request | WebSocket) -> Any | None:
@@ -1227,8 +1333,14 @@ def _publish_seeds(
         try:
             queue = open_kafka_queue(app_config)
             try:
-                for seed in seeds:
-                    queue.publish(seed, 0, priority=priority)
+                batched = getattr(queue, "publish_many", None)
+                if callable(batched):
+                    # One broker flush for the whole paste instead of one
+                    # round trip per seed.
+                    batched([(seed, 0, priority) for seed in seeds])
+                else:
+                    for seed in seeds:
+                        queue.publish(seed, 0, priority=priority)
             finally:
                 with suppress(Exception):
                     queue.close()
@@ -1380,9 +1492,14 @@ def frontier_resume(
         try:
             store = _frontier_read_store(request)
             if store is not None:
-                for seed in seeds:
+                bulk = getattr(store, "reseed_many", None)
+                if callable(bulk):
                     with suppress(Exception):
-                        store.reseed(seed)
+                        bulk(seeds)
+                else:
+                    for seed in seeds:
+                        with suppress(Exception):
+                            store.reseed(seed)
         except Exception as exc:
             logger.warning("frontier resume: store reseed failed: %s", exc)
     _store_set_paused(app_config, False)

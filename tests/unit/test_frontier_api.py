@@ -19,6 +19,18 @@ def _allow_open_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ALLOW_OPEN_ADMIN_ENV, "true")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_frontier_snapshot() -> None:
+    """Reset the shared in-memory snapshot after each test.
+
+    Several tests resume with seeds or append stale seeds; without a
+    teardown reset, file execution order leaks them into other tests'
+    status views (queue_depth off by the leak).
+    """
+    yield
+    frontier_state.reset_frontier_state()
+
+
 @pytest.fixture()
 def client() -> TestClient:
     frontier_state.reset_frontier_state()
@@ -387,6 +399,110 @@ def test_status_overlay_uses_single_bulk_terminal_check(tmp_path) -> None:
         assert urls["https://example.com/seed-unknown"].status == "queued"
         assert "https://example.com/seed-two" not in urls
         assert store.single_lookups == 0
+    finally:
+        store.close()
+
+
+def test_pending_branch_sql_probes_single_status() -> None:
+    """Each paging branch probes one status: equality + order + limit.
+
+    Regression: ``WHERE status IN (...) ORDER BY ... LIMIT n`` seq-scans
+    the whole backlog past ~25% queued selectivity (4.5 s measured on
+    prod); single-status branches are pure index walks, merged in Python
+    (SQLite rejects compound selects as derived tables).
+    """
+    from openlens.storage.frontier import _merge_pending, _pending_branch_sql
+
+    pg = _pending_branch_sql('"public".frontier_queue', "%s", "queued")
+    assert pg.count("%s") == 1
+    assert "WHERE status = 'queued'" in pg
+    assert "ORDER BY priority DESC, depth ASC, discovered_at ASC" in pg
+    assert "UNION" not in pg
+    lite = _pending_branch_sql("frontier_queue", "?", "active", tiebreak=", rowid ASC")
+    assert lite.count("?") == 1
+    assert "WHERE status = 'active'" in lite
+    assert "rowid ASC" in lite
+    # Merge favors higher priority, then shallower depth, then older row.
+    assert _merge_pending([], 10, 0) == []
+    pages: list[list[tuple[tuple[object, ...], str]]] = [
+        [[(0, 0, "2026-01-02"), "queued-second"]],
+        [[(-7, 0, "2026-01-01"), "active-first"]],
+    ]
+    assert _merge_pending(pages, 10, 0) == ["active-first", "queued-second"]
+    assert _merge_pending(pages, 10, 1) == ["queued-second"]
+
+
+def test_pending_union_matches_legacy_ordering(tmp_path) -> None:
+    """Branch-merge paging returns the same global order, incl. offsets."""
+    store = SqliteFrontierStore(str(tmp_path / "page.db"))
+    try:
+        assert store.enqueue("https://example.com/top", 0, priority=7) is True
+        assert store.enqueue("https://example.com/mid-shallow", 0, priority=5) is True
+        assert store.enqueue("https://example.com/mid-deep", 1, priority=5) is True
+        assert store.enqueue("https://example.com/low", 0, priority=0) is True
+        claimed = store.claim("worker-1")
+        assert claimed is not None and claimed.url == "https://example.com/top"
+        first = [e.url for e in store.pending(limit=2)]
+        assert first == [
+            "https://example.com/top",
+            "https://example.com/mid-shallow",
+        ]
+        rest = [e.url for e in store.pending(limit=10, offset=1)]
+        assert rest == [
+            "https://example.com/mid-shallow",
+            "https://example.com/mid-deep",
+            "https://example.com/low",
+        ]
+        assert [e.url for e in store.pending(limit=10)] == [
+            "https://example.com/top",
+            *rest,
+        ]
+    finally:
+        store.close()
+
+
+def test_reseed_many_revives_only_terminal(tmp_path) -> None:
+    """Bulk reseed revives terminal rows, skips queued/unknown/garbage."""
+    store = SqliteFrontierStore(str(tmp_path / "reseedmany.db"))
+    try:
+        assert store.enqueue("https://example.com/a") is True
+        assert store.enqueue("https://example.com/b") is True
+        assert store.enqueue("https://example.com/c") is True
+        store.mark_failed("https://example.com/a", "boom")
+        store.mark_done("https://example.com/b")
+        revived = store.reseed_many(
+            [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c",
+                "https://example.com/nope",
+                "not a url",
+            ]
+        )
+        assert revived == 2
+        assert store.status_of("https://example.com/a") == "queued"
+        assert store.status_of("https://example.com/b") == "queued"
+        assert store.status_of("https://example.com/c") == "queued"
+        assert store.reseed_many([]) == 0
+    finally:
+        store.close()
+
+
+def test_counts_covers_every_status_plus_total(tmp_path) -> None:
+    """counts() contract both backends share: per-status keys + total."""
+    store = SqliteFrontierStore(str(tmp_path / "counts.db"))
+    try:
+        assert store.enqueue("https://example.com/a") is True
+        assert store.enqueue("https://example.com/b") is True
+        assert store.enqueue("https://example.com/c") is True
+        store.mark_failed("https://example.com/a", "boom")
+        store.mark_done("https://example.com/b")
+        assert store.counts() == {
+            "total": 3,
+            "queued": 1,
+            "failed": 1,
+            "done": 1,
+        }
     finally:
         store.close()
 
