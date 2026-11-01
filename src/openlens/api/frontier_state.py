@@ -132,6 +132,58 @@ def sanitize_discovery_summary(value: Any, *, now: float) -> dict[str, Any] | No
         return None
 
 
+def sanitize_stats_summary(value: Any, *, now: float) -> dict[str, Any] | None:
+    """Validate cumulative intake counters; None when missing/malformed.
+
+    Accepts the ``{"at", "pages", "tokens", "errors"}`` heartbeat
+    fragment: counts coerce to non-negative ints, ``at`` coerces to a
+    unix-epoch float (defaulting to ``now``). Never raises: anything
+    unusable degrades to None.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        summary: dict[str, Any] = {}
+        for key in ("pages", "tokens", "errors"):
+            try:
+                summary[key] = max(0, int(value.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                summary[key] = 0
+        raw_at = value.get("at", now)
+        try:
+            summary["at"] = float(raw_at) if raw_at is not None else float(now)
+        except (TypeError, ValueError):
+            summary["at"] = float(now)
+        return summary
+    except Exception:
+        return None
+
+
+def _throughput_rates(
+    current: dict[str, Any] | None, previous: dict[str, Any] | None
+) -> tuple[float | None, float | None]:
+    """Per-minute pages/tokens rates between two cumulative samples.
+
+    None when samples are missing, out of order, or share a timestamp:
+    callers surface cumulative totals instead of a misleading zero.
+    """
+    try:
+        if not isinstance(current, dict) or not isinstance(previous, dict):
+            return None, None
+        dt = float(current.get("at", 0.0)) - float(previous.get("at", 0.0))
+        if dt <= 0:
+            return None, None
+        pages = (
+            (int(current.get("pages", 0)) - int(previous.get("pages", 0))) / dt * 60.0
+        )
+        tokens = (
+            (int(current.get("tokens", 0)) - int(previous.get("tokens", 0))) / dt * 60.0
+        )
+        return max(0.0, pages), max(0.0, tokens)
+    except (TypeError, ValueError):
+        return None, None
+
+
 def heartbeat_worker(
     worker_id: str | None = None,
     *,
@@ -140,11 +192,39 @@ def heartbeat_worker(
     status: str = "alive",
     role: str = "worker",
     discovery: Any = None,
+    stats: Any = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record a worker heartbeat; return its stored entry (a copy)."""
     resolved = resolve_worker_id(worker_id)
     moment = float(now) if now is not None else time.time()
+    latest = sanitize_stats_summary(stats, now=moment)
+    # Keep the previous cumulative sample for rate computation: only
+    # shift forward on a newer timestamp so reordered/delayed beats
+    # never invert the rate.
+    previous_entry = _WORKERS.get(resolved)
+    previous_stats = (
+        previous_entry.get("stats") if isinstance(previous_entry, dict) else None
+    )
+    if not isinstance(previous_stats, dict):
+        previous_stats = (
+            previous_entry.get("stats_prev")
+            if isinstance(previous_entry, dict)
+            else None
+        )
+    stats_prev: dict[str, Any] | None = None
+    if latest is None:
+        # A stat-less beat carries no new sample: keep the last known
+        # one as the baseline for the next sample instead of dropping
+        # rate history for one missed fragment.
+        if isinstance(previous_stats, dict):
+            stats_prev = dict(previous_stats)
+    elif isinstance(previous_stats, dict):
+        try:
+            if float(latest.get("at", 0.0)) > float(previous_stats.get("at", 0.0)):
+                stats_prev = dict(previous_stats)
+        except (TypeError, ValueError):
+            stats_prev = None
     entry = {
         "worker_id": resolved,
         "crawl_id": crawl_id.strip() or DEFAULT_CRAWL_ID,
@@ -153,12 +233,18 @@ def heartbeat_worker(
         "status": (status or "alive").strip() or "alive",
         "role": (role or "worker").strip()[:64] or "worker",
         "discovery": sanitize_discovery_summary(discovery, now=moment),
+        "stats": latest,
+        "stats_prev": stats_prev,
     }
     _WORKERS[resolved] = entry
     stored = dict(entry)
     fragment = stored.get("discovery")
     if isinstance(fragment, dict):
         stored["discovery"] = dict(fragment)
+    summary = stored.get("stats")
+    if isinstance(summary, dict):
+        stored["stats"] = dict(summary)
+    stored.pop("stats_prev", None)
     return stored
 
 
@@ -179,6 +265,16 @@ def list_workers(
         fragment = copied.get("discovery")
         if isinstance(fragment, dict):
             copied["discovery"] = dict(fragment)
+        summary = copied.get("stats")
+        if isinstance(summary, dict):
+            copied["stats"] = dict(summary)
+        baseline = copied.pop("stats_prev", None)
+        pages_per_min, tokens_per_min = _throughput_rates(
+            copied.get("stats") if isinstance(copied.get("stats"), dict) else None,
+            baseline if isinstance(baseline, dict) else None,
+        )
+        copied["pages_per_min"] = pages_per_min
+        copied["tokens_per_min"] = tokens_per_min
         live.append(copied)
     live.sort(key=lambda item: float(item["last_seen"]), reverse=True)
     return live

@@ -80,6 +80,33 @@ def _heartbeat_discovery_fragment(
     return fragment
 
 
+def _heartbeat_stats_fragment(
+    stats: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Sanitize cumulative intake counters for the heartbeat (never raises).
+
+    Same fail-open contract as the discovery fragment: malformed values
+    degrade to zeros rather than breaking the heartbeat.
+    """
+    if stats is None or not isinstance(stats, Mapping):
+        return None
+    try:
+        items = dict(stats)
+    except Exception:
+        return None
+    fragment: dict[str, Any] = {}
+    for key in ("pages", "tokens", "errors"):
+        try:
+            fragment[key] = max(0, int(items.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            fragment[key] = 0
+    try:
+        fragment["at"] = float(items.get("at", time.time()))
+    except (TypeError, ValueError):
+        fragment["at"] = time.time()
+    return fragment
+
+
 def heartbeat_once(
     api_url: str,
     worker_id: str,
@@ -90,13 +117,16 @@ def heartbeat_once(
     admin_token: str = "",
     timeout_s: float = 10.0,
     discovery: Mapping[str, Any] | None = None,
+    stats: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """POST one heartbeat; return the decoded worker list payload.
 
     ``discovery`` carries the worker's last discovery summary
-    (``feeds_checked``/``new_urls``/``refreshed``); a unix-epoch ``at``
-    timestamp is stamped when the caller omits it. Malformed values
-    degrade to zeros rather than breaking the heartbeat.
+    (``feeds_checked``/``new_urls``/``refreshed``); ``stats`` carries
+    cumulative intake counters (``pages``/``tokens``/``errors``). A
+    unix-epoch ``at`` timestamp is stamped when the caller omits it.
+    Malformed values degrade to zeros rather than breaking the
+    heartbeat.
     """
     url = api_url.rstrip("/") + "/api/v1/frontier/workers/heartbeat"
     scheme = urllib.parse.urlparse(url).scheme.lower()
@@ -111,6 +141,9 @@ def heartbeat_once(
     fragment = _heartbeat_discovery_fragment(discovery)
     if fragment is not None:
         body["discovery"] = fragment
+    stats_fragment = _heartbeat_stats_fragment(stats)
+    if stats_fragment is not None:
+        body["stats"] = stats_fragment
     payload = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
     if admin_token.strip():
@@ -383,6 +416,11 @@ class CrawlerWorker:
     discovery_interval_s: int = _DEFAULT_DISCOVERY_INTERVAL_S
     #: Last :meth:`run_discovery_pass` outcome (diagnostics).
     last_discovery: dict[str, int] = field(default_factory=dict)
+    #: Cumulative intake counters since worker start (diagnostics, sent
+    #: with each heartbeat so the admin screen can show throughput).
+    cumulative_pages: int = 0
+    cumulative_tokens: int = 0
+    cumulative_errors: int = 0
 
     def __post_init__(self) -> None:
         if not self.worker_id:
@@ -390,10 +428,39 @@ class CrawlerWorker:
         self._stop_requested = threading.Event()
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
+        # Last-seen crawler counters keyed by object identity: crawl()
+        # installs a fresh CrawlStats per pass, so a new object means
+        # fresh counters (accumulate in full) while a mutated object
+        # means forward movement (accumulate the delta).
+        self._last_crawl_snapshot: tuple[int, tuple[int, int, int]] | None = None
         # Never ran: negative infinity so the first pass is never gated,
         # even on machines booted seconds ago (a monotonic clock near zero
         # would otherwise suppress the first discovery for a full interval).
         self._last_discovery_at: float = float("-inf")
+
+    def _sync_crawl_stats(self) -> None:
+        """Fold the crawler's latest pass counters into the cumulative
+        intake totals. Never raises; unknown shapes degrade to zero."""
+        try:
+            stats = getattr(self.crawler, "last_stats", None)
+            current = (
+                max(0, int(getattr(stats, "fetched", 0) or 0)),
+                max(0, int(getattr(stats, "words_indexed", 0) or 0)),
+                max(0, int(getattr(stats, "errors", 0) or 0))
+                + max(0, int(getattr(stats, "timeouts", 0) or 0)),
+            )
+        except (TypeError, ValueError):
+            return
+        previous = self._last_crawl_snapshot
+        if previous is None or previous[0] != id(stats):
+            gained: tuple[int, int, int] = current
+        else:
+            deltas = [max(0, new - old) for new, old in zip(current, previous[1])]
+            gained = (deltas[0], deltas[1], deltas[2])
+        self.cumulative_pages += gained[0]
+        self.cumulative_tokens += gained[1]
+        self.cumulative_errors += gained[2]
+        self._last_crawl_snapshot = (id(stats), current)
 
     # -- stop signals --------------------------------------------------------
 
@@ -1003,6 +1070,7 @@ def run_kafka_worker(
         _flush_links()
         counts["added"] += int(getattr(drain_stats, "added", 0) or 0)
         counts["updated"] += int(getattr(drain_stats, "updated", 0) or 0)
+        worker._sync_crawl_stats()
 
     # Dashboard reporting (fail-open): the Kafka consumer itself owns its
     # API heartbeat so `claimed` carries the rows this replica actually
@@ -1033,6 +1101,17 @@ def run_kafka_worker(
         # No completed pass yet: omit rather than report a zeroed summary
         # that would mask an older replica's real numbers in the aggregate.
         discovery = dict(worker.last_discovery) if worker.last_discovery else None
+        stats: dict[str, int] | None = None
+        if (
+            worker.cumulative_pages > 0
+            or worker.cumulative_tokens > 0
+            or worker.cumulative_errors > 0
+        ):
+            stats = {
+                "pages": worker.cumulative_pages,
+                "tokens": worker.cumulative_tokens,
+                "errors": worker.cumulative_errors,
+            }
         with contextlib.suppress(Exception):
             heartbeat_once(
                 api_url,
@@ -1042,6 +1121,7 @@ def run_kafka_worker(
                 admin_token=admin_token,
                 timeout_s=2.0,
                 discovery=discovery,
+                stats=stats,
             )
 
     # Startup banner + first beat BEFORE any drain: the initial
@@ -1145,6 +1225,7 @@ def run_kafka_worker(
                     worker.crawler.max_pages = full_budget
             counts["added"] += int(getattr(stats, "added", 0) or 0)
             counts["updated"] += int(getattr(stats, "updated", 0) or 0)
+            worker._sync_crawl_stats()
             _flush_links()
             kafka.commit()
             with contextlib.suppress(Exception):

@@ -1934,6 +1934,36 @@
         "title": "FrontierSettingsSchema",
         "description": "Frontier crawl settings (strict: unknown keys rejected)."
       },
+      "FrontierStatsSchema": {
+        "properties": {
+          "at": {
+            "type": "number",
+            "title": "At",
+            "default": 0.0
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Pages",
+            "default": 0
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Tokens",
+            "default": 0
+          },
+          "errors": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Errors",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierStatsSchema",
+        "description": "Cumulative crawler intake counters from one worker heartbeat."
+      },
       "FrontierStatusSchema": {
         "properties": {
           "paused": {
@@ -2061,6 +2091,9 @@
           },
           "discovery": {
             "title": "Discovery"
+          },
+          "stats": {
+            "title": "Stats"
           }
         },
         "additionalProperties": false,
@@ -2112,6 +2145,38 @@
                 "type": "null"
               }
             ]
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrontierStatsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pages_per_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pages Per Min"
+          },
+          "tokens_per_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Per Min"
           }
         },
         "type": "object",

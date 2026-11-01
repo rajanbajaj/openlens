@@ -172,6 +172,14 @@ export interface FrontierNewUrl {
   status: string;
 }
 
+/** Cumulative crawler intake counters from one worker heartbeat. */
+export interface FrontierStats {
+  at: number;
+  pages: number;
+  tokens: number;
+  errors: number;
+}
+
 /** One crawler worker recently heard from by the API replica. */
 export interface FrontierWorker {
   worker_id: string;
@@ -179,6 +187,9 @@ export interface FrontierWorker {
   last_seen: number;
   claimed: number;
   status: string;
+  stats?: FrontierStats | null;
+  pages_per_min?: number | null;
+  tokens_per_min?: number | null;
 }
 
 /** GET /api/v1/frontier/workers response body. */

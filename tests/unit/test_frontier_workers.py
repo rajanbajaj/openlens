@@ -215,3 +215,66 @@ def test_two_api_heartbeats_coexist_without_collision(
     assert not errors
     body = client.get("/api/v1/frontier/workers").json()
     assert body["worker_count"] == 4
+
+
+# --- crawler throughput diagnostics ----------------------------------------
+
+
+def test_heartbeat_stats_produce_throughput_rates() -> None:
+    frontier_state.reset_frontier_state()
+    frontier_state.heartbeat_worker(
+        "w-stats",
+        stats={"at": 1000.0, "pages": 10, "tokens": 500, "errors": 1},
+        now=1000.0,
+    )
+    (first,) = frontier_state.list_workers(now=1000.0)
+    assert first["stats"] == {"at": 1000.0, "pages": 10, "tokens": 500, "errors": 1}
+    # A single sample carries totals but no rate yet.
+    assert first["pages_per_min"] is None
+    assert first["tokens_per_min"] is None
+    frontier_state.heartbeat_worker(
+        "w-stats",
+        stats={"at": 1060.0, "pages": 22, "tokens": 1100, "errors": 1},
+        now=1060.0,
+    )
+    (second,) = frontier_state.list_workers(now=1060.0)
+    assert second["pages_per_min"] == pytest.approx(12.0)
+    assert second["tokens_per_min"] == pytest.approx(600.0)
+    assert "stats_prev" not in second
+
+
+def test_heartbeat_malformed_stats_degrade_to_null() -> None:
+    frontier_state.reset_frontier_state()
+    frontier_state.heartbeat_worker("w-bad", stats={"pages": "many"}, now=1000.0)
+    (entry,) = frontier_state.list_workers(now=1000.0)
+    assert entry["stats"] == {"at": 1000.0, "pages": 0, "tokens": 0, "errors": 0}
+    frontier_state.heartbeat_worker("w-none", stats="nope", now=1000.0)
+    (other,) = [
+        item
+        for item in frontier_state.list_workers(now=1000.0)
+        if item["worker_id"] == "w-none"
+    ]
+    assert other["stats"] is None
+    assert other["pages_per_min"] is None
+
+
+def test_stateless_beat_keeps_rate_baseline() -> None:
+    frontier_state.reset_frontier_state()
+    frontier_state.heartbeat_worker(
+        "w-gap",
+        stats={"at": 1000.0, "pages": 10, "tokens": 100, "errors": 0},
+        now=1000.0,
+    )
+    # A beat without stats must not wipe the baseline for the next sample.
+    frontier_state.heartbeat_worker("w-gap", now=1030.0)
+    (mid,) = frontier_state.list_workers(now=1030.0)
+    assert mid["stats"] is None
+    assert mid["pages_per_min"] is None
+    frontier_state.heartbeat_worker(
+        "w-gap",
+        stats={"at": 1060.0, "pages": 22, "tokens": 220, "errors": 0},
+        now=1060.0,
+    )
+    (last,) = frontier_state.list_workers(now=1060.0)
+    assert last["pages_per_min"] == pytest.approx(12.0)
+    assert last["tokens_per_min"] == pytest.approx(120.0)

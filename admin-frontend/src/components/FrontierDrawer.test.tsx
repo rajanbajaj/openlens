@@ -492,3 +492,46 @@ describe('FrontierDrawer crawl-request review', () => {
     });
   });
 });
+
+describe('FrontierDrawer worker throughput', () => {
+  it('renders cluster and per-worker throughput from stats fragments', async () => {
+    MockSocket.instances = [];
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers'))
+        return {
+          workers: [
+            {
+              worker_id: 'w-1',
+              crawl_id: 'default',
+              last_seen: 60,
+              claimed: 2,
+              status: 'alive',
+              stats: { at: 60, pages: 22, tokens: 1100, errors: 0 },
+              pages_per_min: 12,
+              tokens_per_min: 600,
+            },
+            {
+              worker_id: 'w-2',
+              crawl_id: 'default',
+              last_seen: 60,
+              claimed: 0,
+              status: 'alive',
+            },
+          ],
+          worker_count: 2,
+        };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="secret" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-throughput')).toHaveTextContent('12/min');
+    });
+    expect(screen.getByTestId('frontier-throughput')).toHaveTextContent('22 pages');
+    // Per-worker line carries rates and cumulative totals; the stat-less
+    // worker renders its base row without throughput.
+    expect(screen.getByTestId('frontier-workers')).toHaveTextContent('1100 tokens total');
+    expect(screen.getByTestId('frontier-workers')).toHaveTextContent('w-2');
+  });
+});

@@ -43,6 +43,7 @@ export * from './frontierQueueEntrySchema.ts';
 export * from './frontierResumeSchema.ts';
 export * from './frontierSettingsResponseSchema.ts';
 export * from './frontierSettingsSchema.ts';
+export * from './frontierStatsSchema.ts';
 export * from './frontierStatusSchema.ts';
 export * from './frontierWorkerHeartbeatSchema.ts';
 export * from './frontierWorkerSchema.ts';

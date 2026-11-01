@@ -29,6 +29,28 @@ import type {
 } from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
+/** Format a per-minute rate; em dash when the worker has no sample yet. */
+function formatRate(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)}/min`;
+}
+
+/** Sum helper that skips missing rates. */
+function sumRates(
+  workers: FrontierWorker[],
+  key: 'pages_per_min' | 'tokens_per_min',
+): number | null {
+  let total = 0;
+  let seen = false;
+  for (const worker of workers) {
+    const value = worker[key];
+    if (typeof value === 'number' && !Number.isNaN(value)) {
+      total += value;
+      seen = true;
+    }
+  }
+  return seen ? total : null;
+}
 import { Card } from './ui/Card.tsx';
 import { Drawer } from './ui/Drawer.tsx';
 import { GlassPanel } from './ui/GlassPanel.tsx';
@@ -444,17 +466,36 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
             {workers.length === 0 ? (
               <p className="my-ol-s text-ol-s">No workers heartbeating</p>
             ) : (
-              <ul
-                data-testid="frontier-workers"
-                className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-              >
-                {workers.map((worker) => (
-                  <li key={worker.worker_id} className="break-all">
-                    <Badge>{worker.status}</Badge> {worker.worker_id} · {worker.claimed} claimed ·
-                    crawl {worker.crawl_id}
-                  </li>
-                ))}
-              </ul>
+              <>
+                {workers.some((worker) => worker.stats) && (
+                  <p data-testid="frontier-throughput" className="my-ol-s text-ol-s">
+                    Throughput: {formatRate(sumRates(workers, 'pages_per_min'))} pages ·{' '}
+                    {formatRate(sumRates(workers, 'tokens_per_min'))} tokens ·{' '}
+                    {workers.reduce((sum, worker) => sum + (worker.stats?.pages ?? 0), 0)} pages ·{' '}
+                    {workers.reduce((sum, worker) => sum + (worker.stats?.tokens ?? 0), 0)} tokens
+                    total
+                  </p>
+                )}
+                <ul
+                  data-testid="frontier-workers"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {workers.map((worker) => (
+                    <li key={worker.worker_id} className="break-all">
+                      <Badge>{worker.status}</Badge> {worker.worker_id} · {worker.claimed} claimed ·
+                      crawl {worker.crawl_id}
+                      {worker.stats ? (
+                        <>
+                          {' '}
+                          · {formatRate(worker.pages_per_min)} pages,{' '}
+                          {formatRate(worker.tokens_per_min)} tokens · {worker.stats.pages} pages ·{' '}
+                          {worker.stats.tokens} tokens total
+                        </>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
 
             <h4 className="mt-ol-m mb-ol-s text-ol-m">

@@ -357,6 +357,15 @@ class FrontierDiscoverySchema(BaseModel):
     refreshed: int = Field(default=0, ge=0)
 
 
+class FrontierStatsSchema(BaseModel):
+    """Cumulative crawler intake counters from one worker heartbeat."""
+
+    at: float = 0.0
+    pages: int = Field(default=0, ge=0)
+    tokens: int = Field(default=0, ge=0)
+    errors: int = Field(default=0, ge=0)
+
+
 class FrontierWorkerSchema(BaseModel):
     """One crawler worker recently heard from by this API replica."""
 
@@ -367,6 +376,9 @@ class FrontierWorkerSchema(BaseModel):
     status: str = "alive"
     role: str = "worker"
     discovery: Optional[FrontierDiscoverySchema] = None
+    stats: Optional[FrontierStatsSchema] = None
+    pages_per_min: Optional[float] = None
+    tokens_per_min: Optional[float] = None
 
 
 class FrontierWorkerHeartbeatSchema(BaseModel):
@@ -384,6 +396,9 @@ class FrontierWorkerHeartbeatSchema(BaseModel):
     # to null instead of failing the heartbeat with 422; the route
     # sanitizes before storing.
     discovery: Any = None
+    # Optional cumulative intake counters (``{"at", "pages", "tokens",
+    # ``errors"}``). Same free-form contract as discovery.
+    stats: Any = None
 
 
 class FrontierWorkersResponseSchema(BaseModel):

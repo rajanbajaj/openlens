@@ -1633,6 +1633,7 @@ def frontier_worker_heartbeat(
             status=body.status,
             role=body.role,
             discovery=body.discovery,
+            stats=body.stats,
         )
         workers = frontier_state.list_workers()
     except Exception:

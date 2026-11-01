@@ -5,6 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { FrontierDiscoverySchema } from './frontierDiscoverySchema.ts';
+import type { FrontierStatsSchema } from './frontierStatsSchema.ts';
 
 /**
  * One crawler worker recently heard from by this API replica.
@@ -18,4 +19,7 @@ export interface FrontierWorkerSchema {
   status?: string;
   role?: string;
   discovery?: FrontierDiscoverySchema | null;
+  stats?: FrontierStatsSchema | null;
+  pages_per_min?: number | null;
+  tokens_per_min?: number | null;
 }

@@ -59,6 +59,19 @@ While scaling, watch PG CPU/IO and `pg_stat_activity` wait events —
 every page costs upserts plus index maintenance, and search latency
 (`custom_index` provider time) degrades if the DB saturates.
 
+## Worker throughput diagnostics
+
+Each heartbeat carries cumulative intake counters (`pages`, `tokens`,
+`errors` with an `at` timestamp); the API keeps the last two samples
+per worker and serves per-worker `pages_per_min` / `tokens_per_min`
+plus the totals in `GET /api/v1/frontier/workers` and the status
+payload. The admin Workers section shows a cluster aggregate
+(rate + cumulative totals) and a per-worker breakdown. Tokens are
+whitespace-separated words of extracted indexable text — the same
+unit the indexer stores. Rates are null until two samples arrive;
+stat-less beats from older workers neither break the registry nor
+reset the baseline.
+
 ## Ops checklist
 
 - Size Postgres `max_connections` for ~10 per process × workers.

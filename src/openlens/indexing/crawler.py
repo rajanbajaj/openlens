@@ -274,6 +274,11 @@ class CrawlStats:
     timeouts: int = 0
     errors: int = 0
     evicted: int = 0
+    #: Whitespace-separated words of extracted indexable text on fetched
+    #: pages (the crawler's working definition of processed tokens).
+    #: Counted per successfully fetched page, before the quality gate,
+    #: so it measures intake throughput even when pages are rejected.
+    words_indexed: int = 0
 
 
 class BoundedFrontier:
@@ -2238,6 +2243,8 @@ class PoliteCrawler:
                     continue
                 stats.fetched += 1
                 doc = self._to_document(page)
+                with contextlib.suppress(Exception):
+                    stats.words_indexed += len(doc.content.split())
                 verdict, reason = classify_content_quality(
                     doc.title, doc.content, min_visible_chars=self.min_visible_chars
                 )

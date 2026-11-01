@@ -593,3 +593,60 @@ def test_crawler_rejects_bad_quality_config() -> None:
         _crawler(min_visible_chars="200")  # type: ignore[dict-item]
     with pytest.raises(Exception, match="reject_soft_404"):
         _crawler(reject_soft_404="yes")  # type: ignore[dict-item]
+
+
+def test_sync_crawl_stats_accumulates_fresh_passes() -> None:
+    """Each crawl() pass installs fresh counters: accumulate them whole."""
+    from openlens.indexing.crawler import CrawlStats
+
+    worker = CrawlerWorker()
+    assert (worker.cumulative_pages, worker.cumulative_tokens) == (0, 0)
+    first = CrawlStats()
+    first.fetched = 4
+    first.words_indexed = 400
+    first.errors = 1
+    worker.crawler = type("C", (), {"last_stats": first})()
+    worker._sync_crawl_stats()
+    second = CrawlStats()
+    second.fetched = 6
+    second.words_indexed = 100
+    second.timeouts = 2
+    worker.crawler = type("C", (), {"last_stats": second})()
+    worker._sync_crawl_stats()
+    assert worker.cumulative_pages == 10
+    assert worker.cumulative_tokens == 500
+    assert worker.cumulative_errors == 3
+
+
+def test_sync_crawl_stats_accumulates_mutated_object_delta() -> None:
+    """A mutated-in-place stats object contributes only forward movement."""
+    from openlens.indexing.crawler import CrawlStats
+
+    worker = CrawlerWorker()
+    stats = CrawlStats()
+    stats.fetched = 5
+    stats.words_indexed = 50
+    worker.crawler = type("C", (), {"last_stats": stats})()
+    worker._sync_crawl_stats()
+    stats.fetched = 8
+    stats.words_indexed = 70
+    worker._sync_crawl_stats()
+    assert (worker.cumulative_pages, worker.cumulative_tokens) == (8, 70)
+
+
+def test_sync_crawl_stats_never_raises() -> None:
+    worker = CrawlerWorker()
+    worker.crawler = None
+    worker._sync_crawl_stats()
+    assert (worker.cumulative_pages, worker.cumulative_tokens) == (0, 0)
+
+
+def test_crawl_counts_indexed_words_per_fetched_page() -> None:
+    """words_indexed tracks extracted text (throughput tokens source)."""
+    crawler = _crawler()
+    hits: dict[str, int] = {}
+    _install_fake_fetch(crawler, hits)
+    docs = crawler.crawl(["https://worker.test/a"])
+    assert docs, "fake site must yield documents"
+    assert isinstance(crawler.last_stats.words_indexed, int)
+    assert crawler.last_stats.words_indexed > 0
