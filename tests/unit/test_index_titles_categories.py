@@ -257,6 +257,7 @@ NEW_DOMAINS: dict[str, frozenset[str]] = {
     "health_allow": frozenset({"health.example"}),
     "government_allow": frozenset({"gov.example", "gov.in"}),
     "travel_allow": frozenset({"travel.example"}),
+    "events_allow": frozenset({"events.example"}),
     "forums_allow": frozenset({"forum.example"}),
     "social_block": frozenset({"social.example"}),
     "gambling_block": frozenset({"bets.example"}),
@@ -273,6 +274,7 @@ def test_new_allow_lists_default_their_category() -> None:
         "https://portal.gov.example/service": "government",
         "https://agency.gov.in/notice": "government",
         "https://travel.example/flights": "travel",
+        "https://events.example/concert": "events",
         "https://forum.example/t/1": "forums",
     }
     for url, category in cases.items():
@@ -316,6 +318,28 @@ def test_travel_domain_beats_article_news_signal() -> None:
         has_article=True,
     )
     assert verdict["site_category"] == "travel"
+
+
+def test_events_domain_hits_tag_events() -> None:
+    verdict = classify_site_category(
+        "https://events.example/concert",
+        {},
+        domains=NEW_DOMAINS,
+    )
+    assert (
+        verdict["site_category"],
+        verdict["site_category_confidence"],
+    ) == ("events", 1.0)
+
+
+def test_events_domain_beats_article_news_signal() -> None:
+    verdict = classify_site_category(
+        "https://events.example/festival",
+        {"author": "A", "published": "2024-01-01"},
+        domains=NEW_DOMAINS,
+        has_article=True,
+    )
+    assert verdict["site_category"] == "events"
 
 
 def test_kids_fail_closed() -> None:
@@ -368,6 +392,7 @@ def test_category_domains_yaml_loads() -> None:
         "health_allow",
         "government_allow",
         "travel_allow",
+        "events_allow",
         "forums_allow",
     }
     assert "amazon.com" in domains["shopping_allow"]

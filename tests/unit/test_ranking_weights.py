@@ -169,7 +169,7 @@ def test_pinned_weights_for_all_modes() -> None:
         get_profile("child-safe").freshness_weight,
         get_profile("child-safe").preference_weight,
     ) == (1.0, 0.0, 0.0)
-    for mode in ("shopping", "travel"):
+    for mode in ("shopping", "travel", "events"):
         profile = get_profile(mode)
         assert (
             profile.trust_weight,

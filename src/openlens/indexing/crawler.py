@@ -743,6 +743,7 @@ SITE_CATEGORIES: tuple[str, ...] = (
     "health",
     "government",
     "travel",
+    "events",
     "forums",
     "social",
     "gambling",
@@ -764,6 +765,7 @@ _CATEGORY_DOMAIN_KEYS: tuple[str, ...] = (
     "health_allow",
     "government_allow",
     "travel_allow",
+    "events_allow",
     "forums_allow",
 )
 
@@ -877,7 +879,7 @@ def classify_site_category(
     Evaluates every candidate and keeps the highest confidence
     (tie-break: kids > shopping > news > gambling > social >
     video > reference > tech > finance > health > government >
-    travel > forums):
+    travel > events > forums):
 
     - kids: fail-closed — ``kids_allow`` domain hit AND not blocked
       (``content_safety == "adult"`` or an ``adult``/``social``/
@@ -893,8 +895,8 @@ def classify_site_category(
       label the page ``social``/``gambling`` -> 1.0 (and veto kids).
       ``adult_block`` only vetoes (no ``adult`` value exists).
     - allow categories: ``video``/``reference``/``tech``/``finance``/
-      ``health``/``government``/``travel``/``forums`` domain hits
-      default the page to that category -> 1.0.
+      ``health``/``government``/``travel``/``events``/``forums`` domain
+      hits default the page to that category -> 1.0.
     - otherwise -> ("other", 1.0).
 
     Always returns all five keys: ``site_category``,
@@ -926,6 +928,7 @@ def classify_site_category(
             "health",
             "government",
             "travel",
+            "events",
             "forums",
         )
     }
@@ -979,7 +982,7 @@ def classify_site_category(
 
     # Highest confidence wins; ties break kids > shopping > news >
     # gambling > social > video > reference > tech > finance > health >
-    # government > travel > forums.
+    # government > travel > events > forums.
     order = {
         "kids": 0,
         "shopping": 1,
@@ -993,7 +996,8 @@ def classify_site_category(
         "health": 9,
         "government": 10,
         "travel": 11,
-        "forums": 12,
+        "events": 12,
+        "forums": 13,
     }
     best: tuple[str, float] | None = None
     for category, confidence in candidates:

@@ -93,7 +93,8 @@ class SearchRequest:
     offset: int = 0
     filters: dict[str, Any] = field(default_factory=dict)
     provider_prefs: ProviderPrefs = field(default_factory=ProviderPrefs)
-    #: Optional indexed category pre-filter (``"news"`` / ``"shopping"``).
+    #: Optional indexed category pre-filter (``"news"`` / ``"shopping"`` /
+    #: ``"travel"`` / ``"events"``).
     #: Applied inside retrieval so totals stay exact; row-level safety
     #: filters still run downstream in the pipeline.
     site_category: str | None = None

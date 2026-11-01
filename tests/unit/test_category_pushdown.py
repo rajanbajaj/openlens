@@ -79,6 +79,41 @@ def test_provider_explicit_category_beats_mode() -> None:
     assert total == 30
 
 
+def test_provider_events_mode_prefilter_is_exact() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    provider._repository.add_documents([_doc("e1", "events"), _doc("o1", "other")])
+    request = SearchRequest(query="python", mode="events", limit=10, offset=0)
+    hits, total = provider.search_with_total(request)
+    assert total == 1
+    assert [h.id for h in hits] == ["e1"]
+    assert hits[0].metadata.get("site_category") == "events"
+
+
+def test_provider_events_explicit_category_beats_mode() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    provider._repository.add_documents([_doc("e1", "events"), _doc("o1", "other")])
+    request = SearchRequest(
+        query="python", mode="events", limit=10, offset=0, site_category="other"
+    )
+    _, total = provider.search_with_total(request)
+    assert total == 1
+
+
+def test_engine_events_mode_total_matches_results() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    docs = [_doc(f"e{i}", "events") for i in range(3)]
+    docs += [_doc(f"o{i}", "other") for i in range(5)]
+    provider._repository.add_documents(docs)
+    engine = SearchEngine(providers=[provider], plugins=[])
+    response = engine.search(SearchRequest(query="python", mode="events", limit=10))
+    assert response.total == 3
+    assert len(response.results) == 3
+    assert all(r.metadata.get("site_category") == "events" for r in response.results)
+
+
 def test_engine_news_mode_total_matches_results() -> None:
     engine = SearchEngine(providers=[_provider()], plugins=[])
     response = engine.search(SearchRequest(query="python", mode="news", limit=10))

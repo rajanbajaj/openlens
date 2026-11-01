@@ -90,6 +90,7 @@ SITE_CATEGORY_VALUES: tuple[str, ...] = (
     "health",
     "government",
     "travel",
+    "events",
     "forums",
     "social",
     "gambling",

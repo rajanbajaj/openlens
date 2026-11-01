@@ -51,6 +51,7 @@ _MODE_SITE_CATEGORY: dict[str, str] = {
     "news": "news",
     "shopping": "shopping",
     "travel": "travel",
+    "events": "events",
 }
 
 #: Deepest fetch window the pagination fill loop may open while covering

@@ -149,7 +149,7 @@ def build_parse_prompt(query: str) -> str:
         "Reply with ONLY a JSON object (no markdown, no extra text) with "
         'exactly these keys: "query" (string, the rewritten query), '
         '"filters" (object, search filters), "mode" (string, one of '
-        '"default", "news", "shopping", "travel", "child-safe").\n'
+        '"default", "news", "shopping", "travel", "events", "child-safe").\n'
         "User query:\n"
         f"{query}"
     )
@@ -398,7 +398,7 @@ def _capabilities_answer() -> str:
     """Canned tool card: what the assistant itself can do (no search)."""
     return (
         "I can search this platform's index (including news, shopping, "
-        "travel, and child-safe modes); pull the full text of the top "
+        "travel, events, and child-safe modes); pull the full text of the top "
         "results and summarize them with cited sources; and list which "
         "domains are indexed here. I answer only from indexed sources — "
         "if the index lacks it, I'll say so. Ask me a question to begin."
@@ -1276,7 +1276,7 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
         "Reply with ONLY a JSON object (no markdown, no extra text) with "
         'exactly these keys: "query" (string, the standalone rewritten '
         'query), "filters" (object, search filters), "mode" (string, one of '
-        '"default", "news", "shopping", "travel", "child-safe"), '
+        '"default", "news", "shopping", "travel", "events", "child-safe"), '
         '"tool" (string, one of "search", "domains", "capabilities", '
         '"compare", "prices", "trust", "safety", "calculate"). Set "tool" '
         'to "domains" ONLY when the user asks which websites, domains, or '

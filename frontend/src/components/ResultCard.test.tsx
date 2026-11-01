@@ -298,6 +298,29 @@ describe('ResultCard verticals', () => {
     expect(screen.queryByTestId('result-attributes')).not.toBeInTheDocument();
   });
 
+  it('foregrounds location and date for events mode', () => {
+    const eventsResult: SearchResult = {
+      ...TRAVEL_RESULT,
+      id: 'e1',
+      title: 'Harbor Jazz Festival',
+      snippet: 'Three days by the bay',
+      provider: 'events_index',
+      metadata: { location: 'Lisbon', published: '2026-11-15', facilities: [] },
+    };
+    render(<ResultCard result={eventsResult} mode="events" />);
+    const vertical = screen.getByTestId('result-vertical-events');
+    expect(vertical).toHaveTextContent('Lisbon');
+    expect(vertical).toHaveTextContent('2026-11-15');
+    // Default readers keep their hooks and placement.
+    expect(screen.getByTestId('result-attributes')).toBeInTheDocument();
+    expect(screen.getByTestId('result-snippet')).toBeInTheDocument();
+  });
+
+  it('renders no vertical line when events fields are absent', () => {
+    render(<ResultCard result={{ ...TRAVEL_RESULT, metadata: {} }} mode="events" />);
+    expect(screen.queryByTestId('result-vertical-events')).not.toBeInTheDocument();
+  });
+
   it('renders no vertical line when shopping has no price', () => {
     const noPrice: SearchResult = {
       ...RICH_RESULT,
@@ -314,6 +337,7 @@ describe('ResultCard verticals', () => {
       expect(screen.queryByTestId('result-vertical-news')).not.toBeInTheDocument();
       expect(screen.queryByTestId('result-vertical-shopping')).not.toBeInTheDocument();
       expect(screen.queryByTestId('result-vertical-travel')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('result-vertical-events')).not.toBeInTheDocument();
       expect(screen.getByTestId('result-attributes')).toHaveTextContent('199.99 USD');
     },
   );

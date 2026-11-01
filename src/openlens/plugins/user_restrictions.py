@@ -180,6 +180,7 @@ SITE_CATEGORY_VALUES: frozenset[str] = frozenset(
         "health",
         "government",
         "travel",
+        "events",
         "forums",
         "social",
         "gambling",

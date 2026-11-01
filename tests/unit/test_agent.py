@@ -24,6 +24,7 @@ from openlens.providers.base import BaseSearchProvider
 from openlens.retrieval.agent import (
     MAX_TOOL_CALLS,
     UNTRUSTED_DATA_NOTICE,
+    _coerce_plan,
     dispatch_tool,
     run_agent_search,
     tool_calculator,
@@ -174,9 +175,17 @@ def test_agent_missing_backend_serves_standard_results() -> None:
 def test_agent_non_agent_modes_never_call_model() -> None:
     engine, _, model = _engine(['{"query": "x", "filters": {}, "mode": "news"}'])
     assert model is not None
-    for mode in ("default", "news", "shopping", "travel", "child-safe"):
+    for mode in ("default", "news", "shopping", "travel", "events", "child-safe"):
         engine.search(SearchRequest(query="dogs", mode=mode))
     assert model.calls == []
+
+
+def test_agent_plan_events_mode_passes_through() -> None:
+    query, _, mode = _coerce_plan(
+        {"query": "concerts near me", "filters": {}, "mode": "events"}, "raw q"
+    )
+    assert query == "concerts near me"
+    assert mode == "events"
 
 
 def test_agent_prompt_injection_cannot_alter_tool_shape() -> None:

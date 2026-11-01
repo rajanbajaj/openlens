@@ -269,4 +269,7 @@ def test_shopping_and_travel_sponsored_weight_matches_news():
     assert BUILTIN_PROFILES["travel"].sponsored_weight == (
         BUILTIN_PROFILES["news"].sponsored_weight
     )
+    assert BUILTIN_PROFILES["events"].sponsored_weight == (
+        BUILTIN_PROFILES["news"].sponsored_weight
+    )
     assert BUILTIN_PROFILES["shopping"].sponsored_weight == 1.0

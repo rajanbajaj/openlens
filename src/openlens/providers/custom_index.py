@@ -54,6 +54,7 @@ MODE_SITE_CATEGORY: dict[str, str] = {
     "news": "news",
     "shopping": "shopping",
     "travel": "travel",
+    "events": "events",
 }
 
 

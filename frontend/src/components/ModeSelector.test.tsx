@@ -15,7 +15,15 @@ describe('ModeSelector', () => {
     const values = Array.from(select.querySelectorAll('option')).map(
       (option) => (option as HTMLOptionElement).value,
     );
-    expect(values).toEqual(['default', 'child-safe', 'news', 'shopping', 'travel', 'agent']);
+    expect(values).toEqual([
+      'default',
+      'child-safe',
+      'news',
+      'shopping',
+      'travel',
+      'events',
+      'agent',
+    ]);
   });
 
   it('forwards the agent selection to the parent re-search path', () => {
@@ -24,6 +32,14 @@ describe('ModeSelector', () => {
 
     fireEvent.change(screen.getByLabelText(/search mode/i), { target: { value: 'agent' } });
     expect(onChange).toHaveBeenCalledWith('agent');
+  });
+
+  it('forwards the events selection to the parent re-search path', () => {
+    const onChange = vi.fn();
+    render(<ModeSelector mode="default" onChange={onChange} />);
+
+    fireEvent.change(screen.getByLabelText(/search mode/i), { target: { value: 'events' } });
+    expect(onChange).toHaveBeenCalledWith('events');
   });
 
   it('ignores unknown selections instead of calling onChange', () => {

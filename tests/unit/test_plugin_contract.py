@@ -394,7 +394,7 @@ def test_safety_allowlist_child_safe_unlisted_excluded_listed_passes():
 def test_safety_allowlist_inert_outside_child_safe():
     plugin = SafetyFilter({"allowed_domains": ["kids.example"]})
     hits = [_hit("unlisted", url="https://other.test/story")]
-    for mode in ("default", "news", "shopping", "travel"):
+    for mode in ("default", "news", "shopping", "travel", "events"):
         assert _filtered_ids(plugin, list(hits), mode=mode) == ["unlisted"]
 
 

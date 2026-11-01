@@ -46,7 +46,7 @@ function formatPrice(price: number | null, currency: string | null): string | nu
 }
 
 interface VerticalHighlight {
-  kind: 'news' | 'shopping' | 'travel';
+  kind: 'news' | 'shopping' | 'travel' | 'events';
   text: string;
 }
 
@@ -54,8 +54,9 @@ interface VerticalHighlight {
  * Mode-specific prominence line built only from fields the backend
  * already returns (via the shared enrichment readers — no new data).
  * News foregrounds date + source, shopping foregrounds price,
- * travel foregrounds location + facilities. Unknown modes (including
- * "default" and "child-safe") return null so the default layout is kept.
+ * travel foregrounds location + facilities, events foregrounds
+ * location + date. Unknown modes (including "default" and
+ * "child-safe") return null so the default layout is kept.
  */
 function verticalHighlight(result: SearchResult, mode: string): VerticalHighlight | null {
   const commerce = resultCommerce(result.metadata);
@@ -77,6 +78,13 @@ function verticalHighlight(result: SearchResult, mode: string): VerticalHighligh
     if (parts.length === 0) return null;
     return { kind: 'travel', text: parts.join(' · ') };
   }
+  if (mode === 'events') {
+    const parts: string[] = [];
+    if (commerce.location) parts.push(commerce.location);
+    if (commerce.published) parts.push(commerce.published);
+    if (parts.length === 0) return null;
+    return { kind: 'events', text: parts.join(' · ') };
+  }
   return null;
 }
 
@@ -88,7 +96,7 @@ function verticalHighlight(result: SearchResult, mode: string): VerticalHighligh
  * labelled AI block (rendered only when the backend produced one), and
  * reasons/warnings disclosures — trust warnings visually distinct.
  *
- * News/shopping/travel modes add one prominent vertical line regrouping
+ * News/shopping/travel/events modes add one prominent vertical line regrouping
  * the same readers (date/source, price, location/facilities); every
  * other line keeps its `data-testid` and default placement.
  */

@@ -60,25 +60,25 @@ def _ctx(
 
 
 def test_diversity_weight_present_in_every_mode() -> None:
-    for mode in ("default", "child-safe", "news", "shopping", "travel"):
+    for mode in ("default", "child-safe", "news", "shopping", "travel", "events"):
         assert get_profile(mode).diversity_weight == pytest.approx(0.25)
 
 
 def test_perspective_weight_only_in_news() -> None:
     assert get_profile("news").perspective_weight == pytest.approx(1.0)
-    for mode in ("default", "child-safe", "shopping", "travel"):
+    for mode in ("default", "child-safe", "shopping", "travel", "events"):
         assert get_profile(mode).perspective_weight == pytest.approx(0.0)
 
 
-def test_commerce_weight_only_in_shopping_and_travel() -> None:
-    for mode in ("shopping", "travel"):
+def test_commerce_weight_only_in_shopping_travel_and_events() -> None:
+    for mode in ("shopping", "travel", "events"):
         assert get_profile(mode).commerce_weight == pytest.approx(1.5)
     for mode in ("default", "child-safe", "news"):
         assert get_profile(mode).commerce_weight == pytest.approx(0.0)
 
 
 def test_authority_and_performance_weights_in_every_mode() -> None:
-    for mode in ("default", "child-safe", "news", "shopping", "travel"):
+    for mode in ("default", "child-safe", "news", "shopping", "travel", "events"):
         assert get_profile(mode).authority_weight == pytest.approx(0.5)
         assert get_profile(mode).performance_weight == pytest.approx(0.25)
 
@@ -139,7 +139,7 @@ def test_yaml_and_builtins_carry_identical_rerank_weights() -> None:
 
 
 def test_absent_rerank_signals_keep_existing_orderings() -> None:
-    for mode in ("default", "child-safe", "news", "shopping", "travel"):
+    for mode in ("default", "child-safe", "news", "shopping", "travel", "events"):
         ranker = Ranker()
         profile = get_profile(mode)
         first = _hit("first", "Alpha", original=2.0)
@@ -220,7 +220,7 @@ def test_diversity_signal_demotes_repeat_domain() -> None:
     first.metadata["signals"] = {"diversity": 1.0}
     repeat = _hit("repeat", "Alpha", original=1.0)
     repeat.metadata["signals"] = {"diversity": 0.5}
-    for mode in ("default", "child-safe", "news", "shopping", "travel"):
+    for mode in ("default", "child-safe", "news", "shopping", "travel", "events"):
         profile = get_profile(mode)
         assert ranker.composite(profile, first) > ranker.composite(profile, repeat)
 

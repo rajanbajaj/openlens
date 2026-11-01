@@ -129,6 +129,23 @@ BUILTIN_PROFILES: dict[str, RankingProfile] = {
         authority_weight=0.5,
         performance_weight=0.25,
     ),
+    "events": RankingProfile(
+        name="events",
+        description="Boosts hits mentioning event-oriented keywords.",
+        keyword_boost=0.5,
+        keywords=("concert", "tickets", "festival", "conference", "show"),
+        trust_weight=0.25,
+        freshness_weight=0.0,
+        preference_weight=1.0,
+        diversity_weight=0.25,
+        commerce_weight=1.5,
+        safety_weight=0.5,
+        privacy_weight=0.25,
+        fairness_weight=0.25,
+        sponsored_weight=1.0,
+        authority_weight=0.5,
+        performance_weight=0.25,
+    ),
 }
 
 

@@ -7,7 +7,8 @@
  */
 
 /** Supported search modes (plan contract; backend validates non-blank). */
-export type SearchMode = 'default' | 'child-safe' | 'news' | 'shopping' | 'travel' | 'agent';
+export type SearchMode =
+  'default' | 'child-safe' | 'news' | 'shopping' | 'travel' | 'events' | 'agent';
 
 /** Per-query provider preferences for federated selection (T13). */
 export interface ProviderPrefs {

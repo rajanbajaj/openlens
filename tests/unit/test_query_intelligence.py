@@ -239,7 +239,7 @@ def test_explicit_mode_passthrough(
 ) -> None:
     """100% explicit-mode passthrough: explicit mode wins, suggestion kept."""
     processor = QueryProcessor.from_config({})
-    for explicit in ("news", "child-safe", "shopping", "travel"):
+    for explicit in ("news", "child-safe", "shopping", "travel", "events"):
         result = processor.process(raw, mode=explicit)
         assert result.effective_mode == explicit
         assert result.suggested_mode == INTENT_TO_MODE[intent]

@@ -8,6 +8,7 @@ export const SEARCH_MODES: SearchMode[] = [
   'news',
   'shopping',
   'travel',
+  'events',
   'agent',
 ];
 
@@ -28,7 +29,7 @@ function isSearchMode(value: string): value is SearchMode {
 
 /**
  * Mode selector for the search request (`default`, `child-safe`,
- * `news`, `shopping`, `travel`, `agent`). Controlled by the parent, which
+ * `news`, `shopping`, `travel`, `events`, `agent`). Controlled by the parent, which
  * forwards the selection as `mode` in the request body; the parent
  * re-runs page 1 on every change, so `agent` needs no special path.
  * Mounted once per page — either in the empty-state hero or in the

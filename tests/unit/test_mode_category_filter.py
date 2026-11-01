@@ -104,6 +104,56 @@ def test_travel_mode_keeps_category_exact_hits() -> None:
     assert [r.id for r in out.results] == ["tagged"]
 
 
+def test_events_mode_keeps_only_events() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [_hit("e", "events"), _hit("s", "shopping"), _hit("o", "other")],
+            "events",
+        )
+    )
+    assert [r.id for r in out.results] == ["e"]
+    assert out.metadata["mode-category-filter-removed"] == 2
+    assert "mode-category-filter" in out.applied_filters
+    assert "mode-category-filter-fallback" not in out.metadata
+
+
+def test_events_mode_matches_keywords() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("e", "other", title="Summer music festival tickets"),
+                _hit("code", "other", title="Python github repo"),
+            ],
+            "events",
+        )
+    )
+    assert [r.id for r in out.results] == ["e"]
+
+
+def test_events_mode_keeps_category_exact_hits() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("tagged", "events", title="Python guide"),
+                _hit("code", "other", title="Python github repo"),
+            ],
+            "events",
+        )
+    )
+    assert [r.id for r in out.results] == ["tagged"]
+
+
+def test_events_empty_filter_falls_back_with_flag() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(_context([_hit("g", "other", title="github")], "events"))
+    assert [r.id for r in out.results] == ["g"]
+    assert out.metadata["mode-category-filter-fallback"] is True
+    assert out.metadata["mode-category-filter-removed"] == 1
+
+
 def test_default_and_agent_modes_are_noops() -> None:
     plugin = ModeCategoryFilter()
     for mode in ("default", "agent"):
