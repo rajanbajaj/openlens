@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from contextlib import suppress
 from dataclasses import replace
@@ -63,6 +64,13 @@ _MODE_SITE_CATEGORY: dict[str, str] = {
 #: a page past post-retrieval filters. Bounds worst-case cost; pages past
 #: a heavily filtered corpus still degrade to the pre-filter total.
 _FILL_DEPTH_CAP = 2000
+
+#: Safety margin on the survival-rate depth projection: downstream
+#: filtering/grouping is not perfectly linear in depth, so the loop aims
+#: past the page instead of exactly at it. Coverage stays exact — the
+#: loop still only stops when the page is covered, providers exhaust,
+#: or the cap is hit.
+_FILL_GROWTH_MARGIN = 1.5
 
 #: TTL for the per-engine suggest-vocabulary cache (``suggest_terms`` /
 #: ``suggest_term_weights``). Vocabulary scans can touch thousands of
@@ -756,7 +764,22 @@ class SearchEngine(Engine):
                 break
             if depth >= _FILL_DEPTH_CAP:
                 break
-            depth = min(depth * 2, _FILL_DEPTH_CAP)
+            # Survival-rate projection instead of blind doubling: the
+            # finished pass measures how much of its fetched window
+            # survived filtering and grouping, then jumps straight to
+            # the depth that should cover the page (with margin). The
+            # stop condition above is unchanged, so coverage and totals
+            # stay exact — this only changes how fast the loop gets
+            # there. Fewer passes means fewer provider round trips, and
+            # each avoided pass also skips a full expansion-variant
+            # fan-out plus a complete pipeline/ranker rerun.
+            survived = len(context.results)
+            fetched = max(len(hits), 1)
+            if survived <= 0:
+                depth = min(depth * 2, _FILL_DEPTH_CAP)
+            else:
+                projected = math.ceil(need * fetched / survived * _FILL_GROWTH_MARGIN)
+                depth = min(max(projected, depth + 1), _FILL_DEPTH_CAP)
             fetch_request = replace(fetch_request, offset=0, limit=depth)
             first_pass = False
         reported = [

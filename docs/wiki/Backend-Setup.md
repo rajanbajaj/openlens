@@ -57,13 +57,34 @@ Caveats:
 - First replica boot basebackups the whole DB (minutes on a big
   index); the 180s `start_period` covers it, and the backend boots
   fine without the replica in the meantime.
-- After any postgres restart the caches are cold and common-term
-  queries (10k+ matches) can take seconds: warm with
-  `CREATE EXTENSION IF NOT EXISTS pg_prewarm;` then
+- Restart warmup is automatic: on boot the backend spawns a
+  best-effort daemon thread that runs `warm_search_index()` on the
+  primary and (when configured) the replica — `pg_prewarm` on
+  `public.documents` plus the top-N search term probes — so post-
+  restart cold caches recover without manual steps. It never raises
+  and never blocks startup; the manual commands above remain as the
+  fallback if you need to re-warm by hand.
+  `shared_buffers=256MB` (both servers) keeps the hot set resident
+  afterwards. Manual fallback (unchanged):
+  `CREATE EXTENSION IF NOT EXISTS pg_prewarm;` on the primary, then
   `SELECT pg_prewarm('public.documents');` and
   `SELECT pg_prewarm('idx_documents_search_tsv');` on the replica.
-  `shared_buffers=256MB` (both servers) keeps the hot set resident
-  afterwards.
+- Search is single-scan: the total rides on the same match scan as
+  the ranked page (`COUNT(*) OVER ()`), so one round trip replaces
+  the old count-then-page pair and common terms pay for one GIN
+  bitmap build instead of two. Totals stay exact.
+- The pagination fill loop projects its refetch depth from the
+  measured survival rate instead of blind doubling, so heavily
+  filtered modes cover the page in ~2 passes instead of ~5 — each
+  avoided pass also skips a full plugin-pipeline rerun and an
+  expansion-variant fan-out.
+- Autovacuum is self-tuned at schema init for crawler upsert churn:
+  `autovacuum_vacuum_scale_factor=0.05` /
+  `autovacuum_analyze_scale_factor=0.025`
+  (`autovacuum_vacuum_threshold=1000` /
+  `autovacuum_analyze_threshold=500`), so the documents table is
+  vacuumed/analyzed after ~5% churn instead of the ~20% default.
+  Idempotent `ALTER TABLE` — safe on every boot.
 
 ## Key routes
 

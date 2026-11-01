@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging as stdlib_logging
 import os
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
@@ -606,6 +607,35 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 _store_save_settings(_config, missing)
     except Exception:  # noqa: BLE001, S110 — boot must never crash; workers keep boot values
         pass
+
+    # Warm search buffers off the boot path: post-restart cold caches
+    # turn common-term FTS into multi-second scans. Best-effort in a
+    # daemon thread — the server answers while warming, and a missing
+    # extension or locked-down database just leaves caches cold.
+    def _warm_in_background() -> None:
+        try:
+            from openlens.storage.postgres_backend import (
+                PostgresDocumentStore,
+                warm_search_index,
+            )
+
+            config = load_effective_config() or {}
+            storage = config.get("storage", {}) if isinstance(config, dict) else {}
+            pg = storage.get("postgres") if isinstance(storage, dict) else None
+            if not isinstance(pg, dict):
+                return
+            store = PostgresDocumentStore.from_config(pg)
+            try:
+                warm_search_index(store)
+            finally:
+                with suppress(Exception):
+                    store.close()
+        except Exception:  # noqa: BLE001, S110 — warmup never breaks boot
+            pass
+
+    threading.Thread(
+        target=_warm_in_background, name="ol-db-warmup", daemon=True
+    ).start()
     yield
 
 

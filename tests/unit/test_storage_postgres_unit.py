@@ -74,8 +74,8 @@ def _store_with_rows(rows: list[tuple[Any, ...]]) -> PostgresDocumentStore:
     return store
 
 
-def test_search_returns_trailing_score_not_content_type() -> None:
-    """Score is the trailing column; content_type must not leak into it."""
+def test_search_returns_score_before_trailing_total() -> None:
+    """Score sits before the trailing total; content_type must not leak in."""
     rows = [
         (
             "d1",
@@ -92,6 +92,7 @@ def test_search_returns_trailing_score_not_content_type() -> None:
             0,
             120.0,
             0.75,
+            1,
         ),
     ]
     store = _store_with_rows(rows)
@@ -123,6 +124,7 @@ def test_search_backfills_category_columns_into_metadata() -> None:
             0,
             120.0,
             0.5,
+            1,
         ),
     ]
     store = _store_with_rows(rows)
@@ -151,8 +153,10 @@ def test_search_short_rows_skip_category_backfill() -> None:
     assert "site_category" not in doc.metadata
 
 
-def _fourteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, ...]:
-    """Full search row: 13 data columns (fetch_ms at 12) + trailing score."""
+def _fifteen_col_row(
+    doc_id: str = "d1", category: str = "news", total: int = 2
+) -> tuple[Any, ...]:
+    """Full search row: 13 data columns (fetch_ms at 12) + score + total."""
     return (
         doc_id,
         "title",
@@ -168,11 +172,12 @@ def _fourteen_col_row(doc_id: str = "d1", category: str = "news") -> tuple[Any, 
         1,
         120.0,
         0.5,
+        total,
     )
 
 
 def test_search_narrows_by_site_category() -> None:
-    cursor_rows = [_fourteen_col_row("d1", "news"), _fourteen_col_row("d2", "other")]
+    cursor_rows = [_fifteen_col_row("d1", "news"), _fifteen_col_row("d2", "other")]
     store = _store_with_rows(cursor_rows)
     (hit, _score) = store.search("hello", site_category="news")[0][0]
     assert hit.id == "d1"
@@ -181,7 +186,7 @@ def test_search_narrows_by_site_category() -> None:
 
 
 def test_search_without_category_has_no_narrowing() -> None:
-    store = _store_with_rows([_fourteen_col_row()])
+    store = _store_with_rows([_fifteen_col_row()])
     store.search("hello")
     executed = store._stub_cursor.executed  # type: ignore[attr-defined]
     assert not any("AND site_category" in sql for sql in executed)
@@ -194,7 +199,7 @@ def test_search_category_params_match_placeholders() -> None:
     five placeholders, so news/shopping searches failed on Postgres
     with ``provider_unavailable`` while default mode kept working.
     """
-    store = _store_with_rows([_fourteen_col_row("d1", "news")])
+    store = _store_with_rows([_fifteen_col_row("d1", "news")])
     store.search("hello", site_category="news")
     calls = store._stub_cursor.calls  # type: ignore[attr-defined]
     assert calls
@@ -316,6 +321,7 @@ def _search_rows() -> list[tuple[Any, ...]]:
             0,
             120.0,
             0.75,
+            1,
         ),
     ]
 
@@ -426,10 +432,85 @@ def test_search_page_query_ranks_ids_before_fetching_rows() -> None:
     rank narrow (id, score) rows first and fetch full TOASTed content
     for the top-N only, or searches blow past the provider timeout."""
     store = _store_with_rows(_search_rows())
-    store.search("hello", limit=10)
-    page_sql = store._stub_cursor.calls[1][0]
+    hits, total = store.search("hello", limit=10)
+    calls = store._stub_cursor.calls  # type: ignore[attr-defined]
+    assert len(calls) == 1, "count+page must be one statement, one trip"
+    page_sql = calls[0][0]
     assert "WITH ranked AS" in page_sql
+    assert "COUNT(*) OVER ()" in page_sql
     assert "JOIN ranked ON ranked.id" in page_sql
     assert page_sql.count("%s") == 4  # match, rank, limit, offset
-    params = store._stub_cursor.calls[1][1]
+    params = calls[0][1]
     assert params == ("hello", "hello", 10, 0)
+    assert total == 1
+    assert hits[0][1] == 0.75
+
+
+def test_search_empty_first_page_returns_zero_without_count() -> None:
+    """No matches means no window row: total is exactly 0 with no
+    second query (the common no-hit path stays a single statement)."""
+    store = _store_with_rows([])
+    hits, total = store.search("hello", limit=10)
+    assert (hits, total) == ([], 0)
+    calls = store._stub_cursor.calls  # type: ignore[attr-defined]
+    assert len(calls) == 1
+
+
+def test_search_empty_deep_page_falls_back_to_count() -> None:
+    """Offset past the end yields no window row: the count query still
+    reports the exact total instead of a wrong 0."""
+
+    class _CountCursor(_StubCursor):
+        def fetchone(self) -> tuple[Any, ...] | None:
+            if any(sql.lstrip().startswith("SELECT COUNT") for sql in self.executed):
+                return (7,)
+            return super().fetchone()
+
+    store = PostgresDocumentStore.__new__(PostgresDocumentStore)
+    store._schema = "public"
+    store._table = "documents"
+    cursor = _CountCursor([])
+    store._connection = lambda: _StubConnectionCtx(cursor)  # type: ignore[method-assign]
+    hits, total = store.search("hello", limit=10, offset=50)
+    assert (hits, total) == ([], 7)
+    executed = cursor.executed
+    assert len(executed) == 2
+    assert executed[1].lstrip().startswith("SELECT COUNT")
+
+
+def test_init_schema_sets_aggressive_autovacuum() -> None:
+    """Crawler upserts churn dead tuples: stock thresholds (scale 0.2)
+    let ~15k pile up on a 75k table before vacuum, slowing COUNT/rank
+    scans and growing the GIN pending list every search merges."""
+    store = _store_with_rows([])
+    store._init_schema()
+    assert any(
+        "autovacuum_vacuum_scale_factor = 0.05" in sql
+        and "autovacuum_analyze_scale_factor = 0.025" in sql
+        for sql in store._stub_cursor.executed  # type: ignore[attr-defined]
+    )
+
+
+def test_warm_search_index_prewarms_table_and_gin_on_both_sides() -> None:
+    from openlens.storage.postgres_backend import warm_search_index
+
+    primary = _StubCursor([("public.idx_documents_search_tsv",)])
+    replica = _StubCursor([("public.idx_documents_search_tsv",)])
+    store = _store_with_replica(primary, replica, replica_kwargs={"host": "replica"})
+    warm_search_index(store)
+    assert any("CREATE EXTENSION" in sql for sql in primary.executed)
+    assert sum("SELECT pg_prewarm" in sql for sql in primary.executed) == 2
+    assert not any("CREATE EXTENSION" in sql for sql in replica.executed)
+    assert sum("SELECT pg_prewarm" in sql for sql in replica.executed) == 2
+
+
+def test_warm_search_index_never_raises() -> None:
+    from openlens.storage.postgres_backend import warm_search_index
+
+    store = _store_with_replica(_StubCursor([]))
+
+    def _boom() -> Any:
+        raise RuntimeError("primary down")
+
+    store._connection = _boom  # type: ignore[method-assign]
+    warm_search_index(store)  # must not raise

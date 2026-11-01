@@ -668,6 +668,17 @@ class PostgresDocumentStore(DocumentStore):
             " || ' ' || coalesce(metadata->>'description', ''))"
             " WHERE search_tsv IS NULL"
         )
+        # The documents table churns under crawler upserts: at the stock
+        # thresholds (scale 0.2) ~15k dead tuples pile up on a 75k table
+        # before autovacuum runs, slowing COUNT/rank scans and growing
+        # the GIN pending list every search must merge. Vacuum at ~5%.
+        maintenance = (
+            f"ALTER TABLE {qualified} SET ("  # noqa: S608
+            " autovacuum_vacuum_scale_factor = 0.05,"
+            " autovacuum_vacuum_threshold = 1000,"
+            " autovacuum_analyze_scale_factor = 0.025,"
+            " autovacuum_analyze_threshold = 1000)"
+        )
         with self._connection() as conn:
             try:
                 with conn.cursor() as cur:
@@ -692,6 +703,7 @@ class PostgresDocumentStore(DocumentStore):
                     cur.execute(ddl_published_idx)
                     cur.execute(ddl_content_hash_idx)
                     cur.execute(ddl_site_category_idx)
+                    cur.execute(maintenance)
                     cur.execute(backfill)
                 conn.commit()
             except Exception as exc:
@@ -1113,20 +1125,23 @@ class PostgresDocumentStore(DocumentStore):
         # S608 false positives below: validated identifiers; the query
         # text, category, and paging values are bound %s parameters.
         count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
-        # Two-phase page: rank narrow (id, score) rows first, then fetch
-        # full rows — including TOASTed content/metadata — for the top-N
-        # only. Ranking 20k+ matches of a common term while heap-fetching
-        # every candidate's content blows past the provider timeout; the
-        # inner scan touches (id, search_tsv) alone. Parameter order is
+        # Single-statement page: the total rides on the same match scan
+        # as the ranked window (``COUNT(*) OVER ()`` counts pre-LIMIT /
+        # pre-OFFSET rows), so one round trip replaces the old
+        # count-then-page pair and common terms (10k+ matches) pay for
+        # one GIN bitmap build instead of two. Totals stay exact for
+        # pagination. Rank still goes narrow (id, score) first with full
+        # TOASTed rows fetched for the top-N only. Parameter order is
         # unchanged, so existing call sites are untouched.
         page_sql = (
-            f"WITH ranked AS (SELECT id, {rank} AS score"  # noqa: S608
+            f"WITH ranked AS (SELECT id, {rank} AS score,"  # noqa: S608
+            " COUNT(*) OVER () AS total"
             f" FROM {self._qualified()} WHERE {match}{narrowing}"
             " ORDER BY score DESC, id ASC LIMIT %s OFFSET %s)"
             " SELECT documents.id, documents.title, documents.content,"
             " documents.url, documents.metadata, documents.content_type,"
             f" documents.published, {CATEGORY_SELECT}, documents.fetch_ms,"
-            " ranked.score"
+            " ranked.score, ranked.total"
             f" FROM {self._qualified()} AS documents"
             " JOIN ranked ON ranked.id = documents.id"
             " ORDER BY ranked.score DESC, ranked.id ASC"
@@ -1135,27 +1150,38 @@ class PostgresDocumentStore(DocumentStore):
             try:
                 with conn.cursor() as cur:
                     if category is None:
-                        cur.execute(count_sql, (ts_text,))
-                    else:
-                        cur.execute(count_sql, (ts_text, category))
-                    row = cur.fetchone()
-                    total = int(row[0])
-                    if category is None:
                         cur.execute(page_sql, (ts_text, ts_text, limit, offset))
                     else:
                         narrowed = (ts_text, ts_text, category, limit, offset)
                         cur.execute(page_sql, narrowed)
                     rows = cur.fetchall()
+                    if rows:
+                        total = int(rows[0][-1])
+                    elif offset == 0:
+                        # An empty first page means zero matches: the
+                        # window has no row to ride on, and the count is
+                        # exactly 0 without a second query.
+                        total = 0
+                    else:
+                        # Deep empty page (offset past the end): fall back
+                        # to the count query — rare, exactness preserved.
+                        if category is None:
+                            cur.execute(count_sql, (ts_text,))
+                        else:
+                            cur.execute(count_sql, (ts_text, category))
+                        row = cur.fetchone()
+                        total = int(row[0])
             except Exception as exc:
                 raise ProviderError(
                     f"search failed: {exc}",
                     provider_name=_PROVIDER_NAME,
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
-        # Score is the trailing column (index 13 on full rows): the
-        # promoted content_type/published/category/fetch_ms columns
-        # shifted it. Trailing access keeps short test doubles working.
-        return [(_row_to_document(r), float(r[-1])) for r in rows], total
+        # Score is second-to-trailing, total trails (indexes 13/14 on
+        # full rows): the promoted content_type/published/category/
+        # fetch_ms columns shifted them. From-the-end access keeps the
+        # mapping stable if columns are appended later.
+        return [(_row_to_document(r), float(r[-2])) for r in rows], total
 
     def close(self) -> None:
         with self._state_lock:
@@ -1164,3 +1190,40 @@ class PostgresDocumentStore(DocumentStore):
             self._closed = True
         self._drain()
         self._drop_replica_pool()
+
+
+def warm_search_index(store: PostgresDocumentStore) -> None:
+    """Load the search working set into shared buffers. Never raises.
+
+    Post-restart cold caches turn common-term FTS into multi-second
+    scans (full COUNT plus rank/sort over 10k+ matches). Warming is
+    best-effort: every step is suppressed, so a missing extension,
+    locked-down database, or absent replica degrades to an unwarmed
+    (merely slower) start instead of a failed boot.
+    """
+    qualified = store._qualified()
+
+    def _prewarm(conn: Any, create_extension: bool) -> None:
+        with contextlib.suppress(Exception):
+            with conn.cursor() as cur:
+                if create_extension:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+                cur.execute("SELECT pg_prewarm(%s)", (qualified,))
+                cur.execute(
+                    "SELECT format('%I.%I', schemaname, indexname)"
+                    " FROM pg_indexes WHERE schemaname = %s"
+                    " AND tablename = %s AND indexdef ILIKE '%%USING gin%%'",
+                    (store._schema, store._table),
+                )
+                for (index_name,) in cur.fetchall():
+                    cur.execute("SELECT pg_prewarm(%s)", (index_name,))
+
+    # Primary first (owns the extension DDL), then the replica when
+    # one is configured — _read_connection degrades to the primary
+    # otherwise, which just re-warms harmlessly.
+    with contextlib.suppress(Exception):
+        with store._connection() as conn:
+            _prewarm(conn, True)
+    with contextlib.suppress(Exception):
+        with store._read_connection() as conn:
+            _prewarm(conn, False)
