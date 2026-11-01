@@ -72,6 +72,11 @@
 :root {
   color-scheme: light;
 
+  /* Brand (OpenLens navy + teal). */
+  --ol-brand-navy: #14213d;
+  --ol-brand-navy-deep: #0f1a30;
+  --ol-brand-teal: #0e9f8e;
+
   /* Ink on light glass (dark so AA holds on translucent white washes) */
   --ol-paper: #ffffff;
   --ol-well: #eef2f7;
@@ -297,17 +302,49 @@ body::before {
 }
 
 .ol-button-primary {
-  background: linear-gradient(135deg, #6d28d9, #2563eb);
-  color: var(--ol-on-accent);
-  box-shadow: 0 4px 16px rgb(37 99 235 / 0.4);
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease;
+  background: var(--ol-brand-navy);
+  color: #ffffff;
 }
 
 .ol-button-primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 22px rgb(37 99 235 / 0.5);
+  background: var(--ol-brand-navy-deep);
+}
+
+/* Brand lockup (shared with the search app). */
+.ol-brand-heading {
+  margin: 0;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--ol-space-s);
+}
+
+.ol-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ol-space-s);
+}
+
+.ol-wordmark {
+  color: var(--ol-brand-navy);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  font-size: 1.375rem;
+}
+
+.ol-wordmark-open {
+  font-weight: 500;
+}
+
+.ol-wordmark-lens {
+  font-weight: 800;
+}
+
+.ol-admin-tag {
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  color: var(--ol-ink-soft);
 }
 
 .ol-button-secondary {

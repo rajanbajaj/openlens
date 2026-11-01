@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import signal
 import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -47,10 +49,35 @@ from openlens.storage.frontier import (
     skip_url_matches,
 )
 
+logger = logging.getLogger(__name__)
+
 API_URL_ENV = "OPENLENS_API_URL"
 ADMIN_TOKEN_ENV = "OPENLENS_FRONTIER_ADMIN_TOKEN"  # noqa: S105 (env var name, not a credential)
 HEARTBEAT_INTERVAL_ENV = "OPENLENS_HEARTBEAT_INTERVAL_S"
 CRAWL_ID_ENV = "OPENLENS_CRAWL_ID"
+
+
+def _heartbeat_discovery_fragment(
+    discovery: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Sanitize a discovery summary for the heartbeat payload (never raises)."""
+    if discovery is None or not isinstance(discovery, Mapping):
+        return None
+    try:
+        items = dict(discovery)
+    except Exception:
+        return None
+    fragment: dict[str, Any] = {}
+    for key in ("feeds_checked", "new_urls", "refreshed"):
+        try:
+            fragment[key] = max(0, int(items.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            fragment[key] = 0
+    try:
+        fragment["at"] = float(items.get("at", time.time()))
+    except (TypeError, ValueError):
+        fragment["at"] = time.time()
+    return fragment
 
 
 def heartbeat_once(
@@ -62,20 +89,29 @@ def heartbeat_once(
     status: str = "alive",
     admin_token: str = "",
     timeout_s: float = 10.0,
+    discovery: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    """POST one heartbeat; return the decoded worker list payload."""
+    """POST one heartbeat; return the decoded worker list payload.
+
+    ``discovery`` carries the worker's last discovery summary
+    (``feeds_checked``/``new_urls``/``refreshed``); a unix-epoch ``at``
+    timestamp is stamped when the caller omits it. Malformed values
+    degrade to zeros rather than breaking the heartbeat.
+    """
     url = api_url.rstrip("/") + "/api/v1/frontier/workers/heartbeat"
     scheme = urllib.parse.urlparse(url).scheme.lower()
     if scheme not in ("http", "https"):
         raise ValueError(f"refusing to heartbeat non-HTTP(S) URL: {scheme or '?'}")
-    payload = json.dumps(
-        {
-            "worker_id": worker_id,
-            "crawl_id": crawl_id,
-            "claimed": claimed,
-            "status": status,
-        }
-    ).encode()
+    body: dict[str, Any] = {
+        "worker_id": worker_id,
+        "crawl_id": crawl_id,
+        "claimed": claimed,
+        "status": status,
+    }
+    fragment = _heartbeat_discovery_fragment(discovery)
+    if fragment is not None:
+        body["discovery"] = fragment
+    payload = json.dumps(body).encode()
     headers = {"Content-Type": "application/json"}
     if admin_token.strip():
         headers["X-Admin-Token"] = admin_token.strip()
@@ -488,10 +524,21 @@ class CrawlerWorker:
                 text = fetch(
                     feed_url, user_agent=user_agent, timeout_s=15.0, max_bytes=1_000_000
                 )
-            except Exception:  # noqa: S112 — dead feeds degrade to zero new URLs
+            except Exception as exc:  # noqa: S112 — dead feeds degrade to zero new URLs
+                logger.warning(
+                    "discovery feed fetch failed: url=%s error=%s",
+                    feed_url,
+                    exc,
+                )
                 continue
             if not text:
+                logger.warning(
+                    "discovery feed yielded zero URLs: url=%s cause=empty response",
+                    feed_url,
+                )
                 continue
+            kind = "unknown"
+            pairs: list[Any] = []
             try:
                 kind = discovery_module.classify_discovery_xml(text)
                 if kind == "sitemap":
@@ -524,7 +571,20 @@ class CrawlerWorker:
                 else:
                     pairs = []
             except Exception:  # noqa: S112 — malformed feeds degrade to zero new URLs
+                logger.warning(
+                    "discovery feed yielded zero URLs: url=%s cause=unparseable "
+                    "response (kind=%s)",
+                    feed_url,
+                    kind,
+                )
                 continue
+            if not pairs:
+                logger.warning(
+                    "discovery feed yielded zero URLs: url=%s cause=no URLs "
+                    "parsed (kind=%s)",
+                    feed_url,
+                    kind,
+                )
             if store is None:
                 continue
             seen_urls: set[str] = set()
@@ -547,6 +607,12 @@ class CrawlerWorker:
                     store.requeue_stale(days, _MAX_REFRESH_PER_PASS) or 0
                 )
         self.last_discovery = dict(result)
+        logger.info(
+            "discovery pass complete: feeds_checked=%d new_urls=%d refreshed=%d",
+            result["feeds_checked"],
+            result["new_urls"],
+            result["refreshed"],
+        )
         return result
 
     def maybe_run_discovery(self, http_fetch: Any = None) -> dict[str, int]:
@@ -905,6 +971,46 @@ def run_kafka_worker(
         counts["added"] += int(getattr(drain_stats, "added", 0) or 0)
         counts["updated"] += int(getattr(drain_stats, "updated", 0) or 0)
 
+    # Dashboard reporting (fail-open): the Kafka consumer itself owns its
+    # API heartbeat so `claimed` carries the rows this replica actually
+    # holds and `discovery` carries its last discovery pass. A separate
+    # reporter process could only ever send zeros under a different id.
+    api_url = (
+        os.environ.get(API_URL_ENV, "http://localhost:8000").strip()
+        or "http://localhost:8000"
+    )
+    admin_token = os.environ.get(ADMIN_TOKEN_ENV, "")
+    last_beat_at = 0.0
+
+    def _report_progress(force: bool = False) -> None:
+        nonlocal last_beat_at
+        try:
+            interval = float(getattr(worker, "heartbeat_interval_s", 0) or 0)
+        except (TypeError, ValueError):
+            interval = 0.0
+        now = time.monotonic()
+        if not force and interval > 0 and now - last_beat_at < interval:
+            return
+        last_beat_at = now
+        try:
+            owned = worker.frontier_store.owned(worker.worker_id)
+            claimed = len(owned) if owned is not None else 0
+        except Exception:
+            claimed = 0
+        # No completed pass yet: omit rather than report a zeroed summary
+        # that would mask an older replica's real numbers in the aggregate.
+        discovery = dict(worker.last_discovery) if worker.last_discovery else None
+        with contextlib.suppress(Exception):
+            heartbeat_once(
+                api_url,
+                worker.worker_id,
+                crawl_id=crawl_id,
+                claimed=max(0, int(claimed)),
+                admin_token=admin_token,
+                timeout_s=2.0,
+                discovery=discovery,
+            )
+
     try:
         for seed in seed_urls:
             if isinstance(seed, str) and seed.strip():
@@ -914,6 +1020,8 @@ def run_kafka_worker(
         # the poll loop, so no queued URL waits for the next message.
         if not worker.paused():
             _drain_once()
+        with contextlib.suppress(Exception):
+            _report_progress(force=True)
         iteration = 0
         idle_polls = 0
         while True:
@@ -925,6 +1033,10 @@ def run_kafka_worker(
                 break
             iteration += 1
             if worker.paused():
+                # Stay on the dashboard while paused (throttled): the rows
+                # this replica holds stay leased to it until resume/reap.
+                with contextlib.suppress(Exception):
+                    _report_progress()
                 if stop_event is not None:
                     if stop_event.wait(idle_sleep_s):
                         break
@@ -991,7 +1103,11 @@ def run_kafka_worker(
             kafka.commit()
             with contextlib.suppress(Exception):
                 worker.maybe_run_discovery()
+            with contextlib.suppress(Exception):
+                _report_progress()
     finally:
+        with contextlib.suppress(Exception):
+            _report_progress(force=True)
         with contextlib.suppress(Exception):
             kafka.close()
         with contextlib.suppress(Exception):

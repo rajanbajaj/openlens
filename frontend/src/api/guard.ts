@@ -16,6 +16,8 @@ import type {
   Diagnostics,
   ErrorEnvelope,
   FeedbackResponse,
+  PerspectiveStance,
+  PerspectiveView,
   ProviderPrefs,
   QueryProvenance,
   SearchResponse,
@@ -386,6 +388,7 @@ export function readChatResponse(value: unknown): ChatResponse | null {
     results: results as ChatResponse['results'],
     trace: trace ?? {},
     notice: typeof notice === 'string' ? notice : null,
+    perspectives: readPerspectives(value),
   };
 }
 
@@ -393,4 +396,87 @@ export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isRecord(value)) return false;
   if (!isRecord(value.error)) return false;
   return typeof value.error.code === 'string' && typeof value.error.message === 'string';
+}
+
+/**
+ * Narrow one raw stance entry: keep entries with a usable `source_id`
+ * and a known stance label, degrading unknown labels to `neutral`
+ * (mirrors the backend `PerspectiveViewSchema.from_mapping` rule).
+ * Evidence must be a non-empty string to render; otherwise dropped.
+ */
+function narrowStance(value: unknown): PerspectiveStance | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['source_id'] !== 'string' || value['source_id'] === '') return null;
+  const stance = value['stance'];
+  const evidence = value['evidence'];
+  return {
+    source_id: value['source_id'] as string,
+    stance:
+      stance === 'supports' || stance === 'refutes' || stance === 'neutral' || stance === 'unrated'
+        ? (stance as string)
+        : 'neutral',
+    evidence: typeof evidence === 'string' ? evidence : '',
+  };
+}
+
+/**
+ * Narrow one raw story view: every field optional, malformed entries
+ * degrade to absent (never throw). Returns `null` when the entry
+ * carries nothing renderable (no claim and no members).
+ */
+function narrowPerspectiveView(value: unknown): PerspectiveView | null {
+  if (!isRecord(value)) return null;
+  const view: PerspectiveView = {};
+  if (typeof value['story_id'] === 'string' && value['story_id'] !== '') {
+    view.story_id = value['story_id'];
+  }
+  if (typeof value['claim'] === 'string' && value['claim'] !== '') {
+    view.claim = value['claim'];
+  }
+  if (typeof value['representative_id'] === 'string' && value['representative_id'] !== '') {
+    view.representative_id = value['representative_id'];
+  }
+  if (Array.isArray(value['member_ids'])) {
+    const members = (value['member_ids'] as unknown[]).filter(
+      (id): id is string => typeof id === 'string' && id !== '',
+    );
+    if (members.length > 0) view.member_ids = members;
+  }
+  if (Array.isArray(value['stances'])) {
+    const stances = (value['stances'] as unknown[])
+      .map(narrowStance)
+      .filter((s): s is PerspectiveStance => s !== null);
+    if (stances.length > 0) view.stances = stances;
+  }
+  for (const key of ['supports', 'refutes', 'neutral'] as const) {
+    const count = value[key];
+    if (typeof count === 'number' && Number.isInteger(count) && count >= 0) {
+      view[key] = count;
+    }
+  }
+  if (typeof value['multi_source'] === 'boolean') view.multi_source = value['multi_source'];
+  if (typeof value['missing_note'] === 'string' && value['missing_note'] !== '') {
+    view.missing_note = value['missing_note'];
+  }
+  if (Array.isArray(value['trust_caveats'])) {
+    const caveats = (value['trust_caveats'] as unknown[]).filter(
+      (c): c is string => typeof c === 'string' && c !== '',
+    );
+    if (caveats.length > 0) view.trust_caveats = caveats;
+  }
+  return view.claim !== undefined || view.member_ids !== undefined ? view : null;
+}
+
+/**
+ * `perspectives` story views from a search or chat payload, or `[]`
+ * when absent or malformed. Never throws, so a bad block renders as
+ * absent instead of crashing the page.
+ */
+export function readPerspectives(response: unknown): PerspectiveView[] {
+  if (!isRecord(response)) return [];
+  const raw = response['perspectives'];
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[])
+    .map(narrowPerspectiveView)
+    .filter((v): v is PerspectiveView => v !== null);
 }

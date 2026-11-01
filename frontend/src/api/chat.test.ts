@@ -123,6 +123,7 @@ describe('readChatResponse', () => {
         steps: [{ kind: 'retrieve', detail: 'queried mock' }],
         model_calls: 1,
       },
+      perspectives: [],
     });
   });
 
@@ -134,6 +135,7 @@ describe('readChatResponse', () => {
       ...(rest as object),
       notice: null,
       trace: {},
+      perspectives: [],
     });
   });
 

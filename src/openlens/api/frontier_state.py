@@ -105,6 +105,33 @@ WORKER_STALE_AFTER_S = 240.0
 _WORKERS: dict[str, dict[str, Any]] = {}
 
 
+def sanitize_discovery_summary(value: Any, *, now: float) -> dict[str, Any] | None:
+    """Validate a worker discovery summary; None when missing/malformed.
+
+    Accepts the ``{"at", "feeds_checked", "new_urls", "refreshed"}``
+    heartbeat fragment: counts coerce to non-negative ints, ``at``
+    coerces to a unix-epoch float (defaulting to ``now``). Never raises:
+    anything unusable degrades to None.
+    """
+    if not isinstance(value, dict):
+        return None
+    try:
+        summary: dict[str, Any] = {}
+        for key in ("feeds_checked", "new_urls", "refreshed"):
+            try:
+                summary[key] = max(0, int(value.get(key, 0) or 0))
+            except (TypeError, ValueError):
+                summary[key] = 0
+        raw_at = value.get("at", now)
+        try:
+            summary["at"] = float(raw_at) if raw_at is not None else float(now)
+        except (TypeError, ValueError):
+            summary["at"] = float(now)
+        return summary
+    except Exception:
+        return None
+
+
 def heartbeat_worker(
     worker_id: str | None = None,
     *,
@@ -112,20 +139,27 @@ def heartbeat_worker(
     claimed: int = 0,
     status: str = "alive",
     role: str = "worker",
+    discovery: Any = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record a worker heartbeat; return its stored entry (a copy)."""
     resolved = resolve_worker_id(worker_id)
+    moment = float(now) if now is not None else time.time()
     entry = {
         "worker_id": resolved,
         "crawl_id": crawl_id.strip() or DEFAULT_CRAWL_ID,
-        "last_seen": float(now) if now is not None else time.time(),
+        "last_seen": moment,
         "claimed": max(0, int(claimed)),
         "status": (status or "alive").strip() or "alive",
         "role": (role or "worker").strip()[:64] or "worker",
+        "discovery": sanitize_discovery_summary(discovery, now=moment),
     }
     _WORKERS[resolved] = entry
-    return dict(entry)
+    stored = dict(entry)
+    fragment = stored.get("discovery")
+    if isinstance(fragment, dict):
+        stored["discovery"] = dict(fragment)
+    return stored
 
 
 def list_workers(
@@ -141,7 +175,11 @@ def list_workers(
         if moment - float(entry["last_seen"]) > max_age_s:
             del _WORKERS[worker_id]
             continue
-        live.append(dict(entry))
+        copied = dict(entry)
+        fragment = copied.get("discovery")
+        if isinstance(fragment, dict):
+            copied["discovery"] = dict(fragment)
+        live.append(copied)
     live.sort(key=lambda item: float(item["last_seen"]), reverse=True)
     return live
 

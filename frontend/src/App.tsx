@@ -18,7 +18,7 @@ import type {
   SearchResponse,
   SearchResult,
 } from './api/types.ts';
-import { readAgentTrace, readRelated, readSpelling } from './api/guard.ts';
+import { readAgentTrace, readPerspectives, readRelated, readSpelling } from './api/guard.ts';
 import {
   loadSavedResults,
   recordRecentSearch,
@@ -26,10 +26,12 @@ import {
   saveResult,
 } from './components/libraryStore.ts';
 import { Button } from './components/ui/Button.tsx';
+import { Logo } from './components/Logo.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 import ModeSelector from './components/ModeSelector.tsx';
 import ChatView from './components/ChatView.tsx';
 import { Pagination } from './components/Pagination.tsx';
+import { PerspectivesSection } from './components/PerspectivesSection.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import SearchForm from './components/SearchForm.tsx';
@@ -80,7 +82,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [announcement, setAnnouncement] = useState('');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Filters start collapsed on narrow screens (filter icon), expanded
+  // on desktop. Guarded for non-DOM harnesses (jsdom lacks matchMedia).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 48rem)').matches,
+  );
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<'search' | 'chat'>('search');
   const [savedIds, setSavedIds] = useState<string[]>(() =>
@@ -254,25 +263,31 @@ export default function App() {
 
   function viewNav() {
     return (
-      <nav aria-label="Primary" data-testid="primary-nav" className="flex items-center gap-2">
-        <Button
-          variant={view === 'search' ? 'primary' : 'ghost'}
+      <nav
+        aria-label="Primary"
+        data-testid="primary-nav"
+        className="ol-viewtabs flex items-center gap-1"
+      >
+        <button
+          type="button"
+          className="ol-viewtab"
           data-testid="nav-search"
           aria-label="Search tab"
           aria-current={view === 'search' ? 'page' : undefined}
           onClick={() => setView('search')}
         >
           Search
-        </Button>
-        <Button
-          variant={view === 'chat' ? 'primary' : 'ghost'}
+        </button>
+        <button
+          type="button"
+          className="ol-viewtab"
           data-testid="nav-chat"
           aria-label="AI chat tab"
           aria-current={view === 'chat' ? 'page' : undefined}
           onClick={() => setView('chat')}
         >
           AI chat
-        </Button>
+        </button>
       </nav>
     );
   }
@@ -282,7 +297,9 @@ export default function App() {
       {showLanding ? (
         <main className="ol-landing grid min-h-screen place-items-center p-6">
           <GlassPanel variant="hero" data-testid="search-hero">
-            <h1 className="ol-brand m-0 text-2xl font-bold tracking-tight">OpenLens</h1>
+            <h1 className="ol-brand-heading">
+              <Logo size="hero" />
+            </h1>
             <p className="ol-brand-sub text-ol-ink-soft m-0 text-sm">Plug-and-play search</p>
             {viewNav()}
             {view === 'chat' ? (
@@ -295,6 +312,7 @@ export default function App() {
                   onSubmit={submitFirstPage}
                   onSuggestSelect={handleSuggestSelect}
                   disabled={loading}
+                  autoFocus
                 />
                 <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
               </>
@@ -305,7 +323,9 @@ export default function App() {
         <>
           <GlassPanel variant="header" role="banner" data-testid="search-header">
             <div className="ol-header-inner mx-auto flex w-full max-w-4xl items-baseline gap-4 px-6 py-4">
-              <h1 className="ol-brand m-0 text-2xl font-bold tracking-tight">OpenLens</h1>
+              <h1 className="ol-brand-heading">
+                <Logo size="header" />
+              </h1>
               <SearchForm
                 value={query}
                 onChange={setQuery}
@@ -378,6 +398,10 @@ export default function App() {
                         </Button>
                       </p>
                     ) : null}
+                    <PerspectivesSection
+                      views={readPerspectives(response)}
+                      results={response.results}
+                    />
                     <ResultList
                       results={response.results}
                       total={response.total}

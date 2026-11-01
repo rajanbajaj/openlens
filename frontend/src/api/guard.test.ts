@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readAgentTrace, readChatResponse, readChatTrace } from './guard.ts';
+import { readAgentTrace, readChatResponse, readChatTrace, readPerspectives } from './guard.ts';
 
 const TRACE = {
   rewritten_query: 'cheap bluetooth headphones',
@@ -98,5 +98,57 @@ describe('readChatTrace model label', () => {
       notice: null,
     });
     expect(response?.trace.model).toBe('test-model-1');
+  });
+});
+
+describe('readPerspectives', () => {
+  const VIEW = {
+    story_id: 's1',
+    claim: 'The bridge reopened',
+    representative_id: 'a',
+    member_ids: ['a', 'b'],
+    stances: [
+      { source_id: 'a', stance: 'supports', evidence: 'Reopened Monday.' },
+      { source_id: 'b', stance: 'bogus', evidence: 42 },
+    ],
+    supports: 1,
+    refutes: 0,
+    neutral: 1,
+    multi_source: true,
+    missing_note: 'no refuting source in this cluster',
+    trust_caveats: ['b: low credibility signal (0.20)'],
+  };
+
+  it('narrows a full view, degrading unknown stances to neutral', () => {
+    const [view] = readPerspectives({ perspectives: [VIEW] });
+    expect(view.claim).toBe('The bridge reopened');
+    expect(view.member_ids).toEqual(['a', 'b']);
+    expect(view.stances?.[0]).toEqual({
+      source_id: 'a',
+      stance: 'supports',
+      evidence: 'Reopened Monday.',
+    });
+    expect(view.stances?.[1]?.stance).toBe('neutral');
+    expect(view.missing_note).toBe('no refuting source in this cluster');
+    expect(view.trust_caveats).toEqual(['b: low credibility signal (0.20)']);
+  });
+
+  it('returns [] for absent, malformed, or content-free blocks', () => {
+    expect(readPerspectives({})).toEqual([]);
+    expect(readPerspectives({ perspectives: 'nope' })).toEqual([]);
+    expect(readPerspectives({ perspectives: [{ stances: [{ stance: 'supports' }] }] })).toEqual([]);
+    expect(readPerspectives(null)).toEqual([]);
+  });
+
+  it('carries perspectives through chat response narrowing', () => {
+    const response = readChatResponse({
+      answer: 'hi [1]',
+      citations: [{ ref: 1, title: 'T', url: null }],
+      results: [],
+      trace: {},
+      notice: null,
+      perspectives: [VIEW],
+    });
+    expect(response?.perspectives?.[0]?.claim).toBe('The bridge reopened');
   });
 });

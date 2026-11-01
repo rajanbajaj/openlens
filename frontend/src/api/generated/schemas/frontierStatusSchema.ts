@@ -5,6 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { FrontierCheckpointSchema } from './frontierCheckpointSchema.ts';
+import type { FrontierDiscoverySchema } from './frontierDiscoverySchema.ts';
 import type { FrontierNewUrlSchema } from './frontierNewUrlSchema.ts';
 import type { FrontierQueueEntrySchema } from './frontierQueueEntrySchema.ts';
 import type { FrontierWorkerSchema } from './frontierWorkerSchema.ts';
@@ -27,4 +28,5 @@ export interface FrontierStatusSchema {
   kafka_lag_partitions?: number | null;
   /** @minimum 0 */
   cluster_config_version?: number;
+  discovery?: FrontierDiscoverySchema | null;
 }

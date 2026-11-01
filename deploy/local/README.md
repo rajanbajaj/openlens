@@ -22,8 +22,9 @@ docker compose -f deploy/local/docker-compose.yml up --build -d
 - Kafka UI: http://localhost:8080 (`${KAFKA_UI_PORT:-8080}`) — topics,
   `crawlers` consumer-group lag, and message browser for `crawl.urls`.
 - Crawler: Kafka consume loop (`crawl-worker --queue kafka`, PID 1)
-  plus the heartbeat reporter (`python -m openlens.indexing.worker`)
-  against `http://backend:8000`; replicas visible at
+  against `http://backend:8000`; the loop reports its own heartbeat
+  (liveness + owned-row `claimed` counts + last discovery summary),
+  so replicas are visible with real numbers at
   `GET /api/v1/frontier/workers` (the crawl dashboard lives in the
   admin app, not the user frontend). One replica runs by default.
 

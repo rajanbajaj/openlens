@@ -37,6 +37,7 @@ from openlens.ranking.profiles import (
 )
 from openlens.ranking.ranker import Ranker
 from openlens.retrieval.agent import AGENT_MODE, run_agent_search
+from openlens.retrieval.perspectives import build_perspectives
 from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 
 #: Display bound for the per-request ``query`` provenance entry recorded in
@@ -752,6 +753,7 @@ class SearchEngine(Engine):
             total=total,
             applied_filters=list(context.applied_filters),
             diagnostics=context.diagnostics(),
+            perspectives=[view.to_dict() for view in build_perspectives(list(page))],
         )
 
     def health_check(self) -> dict[str, bool]:

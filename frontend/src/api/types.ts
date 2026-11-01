@@ -167,6 +167,8 @@ export interface SearchResponse {
   diagnostics: Diagnostics;
   /** Opaque response metadata (carries `agent_trace` in agent mode). */
   metadata?: SearchResponseMetadata;
+  /** Story views with stances and caveats; absent on older envelopes. */
+  perspectives?: PerspectiveView[];
 }
 
 /** GET /api/v1/suggest response body (`SuggestResponseSchema`). */
@@ -220,6 +222,32 @@ export interface ChatCitation {
   url: string | null;
 }
 
+/** One member's stance toward the story claim (keyword heuristic). */
+export interface PerspectiveStance {
+  source_id: string;
+  stance: string;
+  evidence: string;
+}
+
+/**
+ * One story view: claim, member stances, and honesty notes. Every
+ * field optional at render time so partial views degrade instead of
+ * crashing; readers keep only the fields present.
+ */
+export interface PerspectiveView {
+  story_id?: string;
+  claim?: string;
+  representative_id?: string;
+  member_ids?: string[];
+  stances?: PerspectiveStance[];
+  supports?: number;
+  refutes?: number;
+  neutral?: number;
+  multi_source?: boolean;
+  missing_note?: string | null;
+  trust_caveats?: string[];
+}
+
 /**
  * Planning trace echoed on the chat response. Mirrors {@link AgentTrace}:
  * every field is optional at render time so partial traces degrade
@@ -239,6 +267,8 @@ export interface ChatResponse {
   trace: ChatTrace;
   /** Set when the model was disabled or errored; null otherwise. */
   notice: string | null;
+  /** Story views with stances and caveats; absent on older envelopes. */
+  perspectives?: PerspectiveView[];
 }
 
 /** Machine-readable error code plus a human-readable message. */

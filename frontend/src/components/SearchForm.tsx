@@ -8,6 +8,7 @@ import {
 import { Button } from './ui/Button.tsx';
 import { TextInput } from './ui/TextInput.tsx';
 import SuggestDropdown, { moveSuggestHighlight } from './SuggestDropdown.tsx';
+import VoiceInput from './VoiceInput.tsx';
 
 export interface SearchFormProps {
   /** Current raw query text (controlled by the parent). */
@@ -28,6 +29,12 @@ export interface SearchFormProps {
    * suggestion falls back to `onSubmit`, so direct search still works.
    */
   onSuggestSelect?: (suggestion: string) => void;
+  /**
+   * Moves keyboard focus into the query input on mount (landing hero
+   * only). Never set on the sticky results header: re-focusing there
+   * would yank focus away from results and pagination.
+   */
+  autoFocus?: boolean;
 }
 
 /** Queries shorter than this never fetch: silence over tiny indexes. */
@@ -60,6 +67,7 @@ export default function SearchForm({
   disabled = false,
   className,
   onSuggestSelect,
+  autoFocus = false,
 }: SearchFormProps) {
   const validationError = validateQuery(value);
   const error = (value.length === 0 ? null : validationError) ?? externalError;
@@ -210,6 +218,7 @@ export default function SearchForm({
         value={value}
         maxLength={MAX_QUERY_LENGTH}
         autoComplete="off"
+        autoFocus={autoFocus}
         role="combobox"
         aria-expanded={showDropdown}
         aria-controls={showDropdown ? SUGGEST_LIST_ID : undefined}
@@ -239,6 +248,7 @@ export default function SearchForm({
           onActiveChange={setActiveIndex}
         />
       ) : null}
+      <VoiceInput onTranscript={onChange} disabled={disabled} />
       <Button variant="primary" type="submit" disabled={disabled}>
         Search
       </Button>

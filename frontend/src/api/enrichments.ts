@@ -90,6 +90,22 @@ export function resultSponsored(metadata: Record<string, unknown>): boolean {
 }
 
 /**
+ * Registrable domain for the source line (hostname minus a leading
+ * `www.`). Null when the URL is missing or unparsable, so the card
+ * degrades to the provider badge row instead of showing a raw URL.
+ */
+export function resultDomain(url: string | null): string | null {
+  if (typeof url !== 'string' || url.trim() === '') return null;
+  try {
+    const host = new URL(url.trim()).hostname.toLowerCase();
+    if (!host) return null;
+    return host.startsWith('www.') ? host.slice(4) : host;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deterministic ranking confidence stamped by the backend explanation
  * stage (`metadata.confidence`, 0..1). Returns null when absent or
  * out of range so the UI degrades to the score-only layout.

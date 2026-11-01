@@ -4,6 +4,7 @@
  * OpenLens
  * OpenAPI spec version: 0.1.0
  */
+import type { FrontierDiscoverySchema } from './frontierDiscoverySchema.ts';
 
 /**
  * One crawler worker recently heard from by this API replica.
@@ -16,4 +17,5 @@ export interface FrontierWorkerSchema {
   claimed?: number;
   status?: string;
   role?: string;
+  discovery?: FrontierDiscoverySchema | null;
 }

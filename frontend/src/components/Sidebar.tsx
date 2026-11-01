@@ -279,7 +279,22 @@ export function Sidebar({
         disabled={disabled}
         onClick={() => onCollapsedChange(!collapsed)}
       >
-        {collapsed ? 'Show filters' : 'Hide filters'}
+        <svg
+          aria-hidden="true"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" />
+        </svg>
+        <span className="ol-filter-toggle-label">
+          {collapsed ? 'Show filters' : 'Hide filters'}
+        </span>
       </Button>
       {onLibraryOpen ? (
         <Button variant="secondary" onClick={onLibraryOpen} data-testid="library-open">

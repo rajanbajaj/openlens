@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AdminConfigName } from './api/types.ts';
 import { ConfigEditor } from './components/ConfigEditor.tsx';
 import { FrontierDrawer } from './components/FrontierDrawer.tsx';
+import { Logo } from './components/Logo.tsx';
 import { TokenBar, loadStoredToken } from './components/TokenBar.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 
@@ -49,6 +50,7 @@ const FILE_DEFAULTS: Record<AdminConfigName, Record<string, unknown>> = {
     max_queued_urls: 10000,
     respect_robots: true,
     default_max_depth: 2,
+    deny_url_patterns: [],
   },
 };
 
@@ -77,7 +79,10 @@ export default function App() {
   return (
     <main className="ol-admin">
       <GlassPanel variant="hero">
-        <h1>OpenLens Admin</h1>
+        <h1 className="ol-brand-heading">
+          <Logo size="header" />
+          <span className="ol-admin-tag">Admin</span>
+        </h1>
         <TokenBar adminToken={adminToken} onChange={setAdminToken} />
       </GlassPanel>
       <nav aria-label="Admin sections" className="flex flex-wrap gap-ol-s my-ol-m">

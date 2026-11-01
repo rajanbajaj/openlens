@@ -1,9 +1,31 @@
 # OpenLens
 
-Plug-and-play search engine skeleton: the local custom index
-(SQLite FTS5) and AI backends are swappable via config, with
-filtering, ranking, and enrichment owned by independent plugins behind stable
-interfaces (`src/openlens/core/interfaces.py` + `core/context.py`).
+Plug-and-play search over your own crawl: the Postgres-backed custom
+index is the single source of truth (no external search dependency),
+with AI backends swappable via config, and filtering, ranking, and
+enrichment owned by independent plugins behind stable interfaces
+(`src/openlens/core/interfaces.py` + `core/context.py`).
+
+## Features
+
+- Search modes: default, news, shopping, travel, child-safe — plus an
+  agentic AI Mode (`POST /api/v1/agent/chat`) where a model rewrites
+  the query, calls the index through budgeted tools, and returns a
+  cited answer (fail-closed to standard results with no model).
+- Perspectives: same-story coverage grouped query-time with
+  per-source stances, coverage gaps, and trust caveats — no ranking
+  influence, keyboard- and screen-reader-friendly markup.
+- Accessibility: autofocus on the landing search box; optional
+  microphone input via the built-in Web Speech API (feature-detected,
+  nothing rendered where unsupported); every icon button labelled.
+- Anonymous usefulness feedback (`POST /api/v1/feedback`) with reasons
+  (privacy, kids-safety, …) to steer ranking work.
+- Admin app (`admin-frontend/`): URL-frontier dashboard (queue, pause,
+  resume, priority, clear), models/providers/ranking/query/plugins
+  editors — all mutations behind the `X-Admin-Token` gate.
+- Distributed crawling: Postgres frontier + Kafka topic with
+  multi-worker consumer groups, heartbeat leases, and per-domain
+  politeness (see below).
 
 ## Install
 
@@ -63,18 +85,21 @@ cd admin-frontend && npm ci && npm run dev -- --port 5174
 
 Every mutation reuses the existing `X-Admin-Token` gate
 (`OPENLENS_FRONTIER_ADMIN_TOKEN`); no second auth scheme exists. The
-models/providers/ranking/query/plugins editors target the pending
-`GET/PUT /api/v1/admin/config/*` routes and show file defaults with a
-notice until those routes land; regenerate the admin OpenAPI snapshot
+models/providers/ranking/query/plugins editors target
+`GET/PUT /api/v1/admin/config/*`; regenerate the admin OpenAPI snapshot
 (`admin-frontend/openapi/README.md`) only when backend routes change.
 
 ## Run the tests
 
 ```bash
-uv run pytest tests/unit tests/integration
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests -q
 ```
 
 Offline only: no network, no API keys, no external cluster. Tests use fakes.
+
+The lifecycle these gates enforce — releases, contracts, secrets,
+indexing, observability — is written down in
+[docs/product-development-best-practices.md](docs/product-development-best-practices.md).
 
 ## Config overview
 
@@ -165,15 +190,18 @@ The local Docker stack (`deploy/local/docker-compose.yml`) runs this
 Postgres plus a pgAdmin browser UI; the backend service points at it
 via `OPENLENS_PG_HOST=postgres`. Tables are created on first connect
 (`CREATE TABLE IF NOT EXISTS`), so a fresh volume boots cleanly and
-the seed corpus is indexed on startup. Releasing to the LAN server
-(push-to-`main` via a self-hosted runner) is documented in
-[deploy/local/README.md](deploy/local/README.md).
+the seed corpus is indexed on startup. Releases ship on git tags
+(`v*`), not on `main` pushes: pushing a tag runs the release workflow
+(self-hosted runner, server-side compose build, search/frontier/
+frontend health gates). See [deploy/local/README.md](deploy/local/README.md)
+and the plans in [docs/releases/](docs/releases/).
 
-Postgres is the default store and its driver (`psycopg` v3, binary
-wheel) ships in the base install. MySQL stays an extra
-(`pip install openlens[mysql]` for `pymysql`); SQLite has zero extra
-dependencies. Drivers lazy-import, so unconfigured backends add no
-import-time dependency — instantiating without the driver raises
+Postgres is the runtime store and its driver (`psycopg` v3, binary
+wheel) ships in the base install. (`storage.backend` also accepts
+`sqlite` for offline work and tests, plus a `mysql` extra
+(`pip install openlens[mysql]` for `pymysql`).) Drivers lazy-import,
+so unconfigured backends add no import-time dependency —
+instantiating without the driver raises
 `ProviderError(UNAVAILABLE)`, never a raw `ImportError`, and connection
 failures at construction surface the same way.
 

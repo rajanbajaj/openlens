@@ -225,6 +225,11 @@ indexing:
   allowed_content_types: ["text/html", "text/plain"]
   allow_domains: []
   deny_domains: []
+  # Case-insensitive substring hits against the full discovered URL drop
+  # the link before it ever queues (nav-filter backstop the built-in
+  # junk rules miss, e.g. vendor-specific tracking paths). Empty by
+  # default; manage from the admin indexing editor.
+  deny_url_patterns: []
   user_agent: "OpenLensBot/1.0"
   respect_robots: true
   # Per-domain crawl policy (index breadth, plan step 4). Active keys

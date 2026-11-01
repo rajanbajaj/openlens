@@ -62,6 +62,7 @@ from openlens.api.schemas import (
     ChatResponseSchema,
     ChatTraceSchema,
     ChatTraceStepSchema,
+    PerspectiveViewSchema,
 )
 from openlens.api.schemas import SearchRequestSchema, SearchResponseSchema
 from openlens.api.schemas import SearchResultSchema
@@ -439,12 +440,17 @@ def agent_chat(
     ]
     raw_steps = steps if isinstance(steps, list) else []
     notice = outcome.get("notice")
+    perspectives = outcome.get("perspectives")
     return ChatResponseSchema(
         answer=str(outcome.get("answer", "")),
         citations=citations,
         results=[
             SearchResultSchema.from_core(hit)
             for hit in (outcome.get("results", []) or [])
+        ],
+        perspectives=[
+            PerspectiveViewSchema.from_mapping(entry)
+            for entry in (perspectives if isinstance(perspectives, list) else [])
         ],
         trace=ChatTraceSchema(
             rewritten_query=str(trace.get("rewritten_query", "")),
@@ -838,6 +844,11 @@ def _overlay_store_status(
             "pages_attempted": int(getattr(checkpoint, "pages_attempted", 0) or 0),
             "pages_indexed": int(getattr(checkpoint, "pages_indexed", 0) or 0),
         }
+    discovery = getattr(payload, "discovery", None)
+    if isinstance(discovery, dict):
+        discovery_payload: Any = dict(discovery)
+    else:
+        discovery_payload = discovery
     return FrontierStatusSchema(
         paused=bool(payload.paused),
         queue=queue,  # type: ignore[arg-type]
@@ -845,7 +856,39 @@ def _overlay_store_status(
         checkpoint=checkpoint_payload,  # type: ignore[arg-type]
         new_urls=list(payload.new_urls),  # type: ignore[union-attr,arg-type]
         workers=list(payload.workers),  # type: ignore[union-attr,arg-type]
+        discovery=discovery_payload,  # type: ignore[arg-type]
     )
+
+
+def _latest_discovery_summary(
+    workers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Aggregate discovery: the latest-reporting worker's summary.
+
+    Workers arrive newest-heartbeat-first; the first entry carrying a
+    discovery fragment wins, attributed with its ``worker_id``. Never
+    raises: anything unreadable degrades to None.
+    """
+    try:
+        for entry in workers or []:
+            if not isinstance(entry, dict):
+                continue
+            summary = entry.get("discovery")
+            if not isinstance(summary, dict):
+                continue
+            try:
+                return {
+                    "worker_id": str(entry.get("worker_id", "") or ""),
+                    "at": float(summary.get("at", 0.0) or 0.0),
+                    "feeds_checked": max(0, int(summary.get("feeds_checked", 0) or 0)),
+                    "new_urls": max(0, int(summary.get("new_urls", 0) or 0)),
+                    "refreshed": max(0, int(summary.get("refreshed", 0) or 0)),
+                }
+            except (TypeError, ValueError):
+                continue
+    except Exception:
+        return None
+    return None
 
 
 def _frontier_status_payload() -> FrontierStatusSchema:
@@ -871,6 +914,10 @@ def _frontier_status_payload() -> FrontierStatusSchema:
         workers = frontier_state.list_workers()
     except Exception:
         workers = []
+    try:
+        discovery = _latest_discovery_summary(workers)
+    except Exception:
+        discovery = None
     return FrontierStatusSchema(
         paused=bool(snap["paused"]),
         queue=queue,  # type: ignore[arg-type]
@@ -882,6 +929,7 @@ def _frontier_status_payload() -> FrontierStatusSchema:
         },  # type: ignore[arg-type]
         new_urls=new_urls,  # type: ignore[arg-type]
         workers=workers,  # type: ignore[arg-type]
+        discovery=discovery,  # type: ignore[arg-type]
     )
 
 
@@ -1344,6 +1392,7 @@ def frontier_worker_heartbeat(
             claimed=body.claimed,
             status=body.status,
             role=body.role,
+            discovery=body.discovery,
         )
         workers = frontier_state.list_workers()
     except Exception:

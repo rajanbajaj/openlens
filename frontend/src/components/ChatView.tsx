@@ -9,6 +9,7 @@ import {
 import { readChatResponse } from '../api/guard.ts';
 import type { ChatCitation, ChatResponse, ChatTrace } from '../api/types.ts';
 import { ResultList } from './ResultList.tsx';
+import { PerspectivesSection } from './PerspectivesSection.tsx';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { TextInput } from './ui/TextInput.tsx';
@@ -349,6 +350,10 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
                       <summary className="cursor-pointer font-semibold text-ol-s">
                         Sources ({entry.response.results.length})
                       </summary>
+                      <PerspectivesSection
+                        views={entry.response.perspectives ?? []}
+                        results={entry.response.results}
+                      />
                       <ResultList
                         results={entry.response.results}
                         total={entry.response.results.length}
@@ -377,6 +382,10 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
                     />
                   ) : null}
                   <CitationChips citations={entry.response.citations} />
+                  <PerspectivesSection
+                    views={entry.response.perspectives ?? []}
+                    results={entry.response.results}
+                  />
                   {entry.response.results.length > 0 ? (
                     <details data-testid="chat-raw-results" className="mt-ol-s">
                       <summary className="cursor-pointer font-semibold text-ol-s">

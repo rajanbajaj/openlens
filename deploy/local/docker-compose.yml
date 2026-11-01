@@ -88,20 +88,23 @@ services:
   #
   #   docker compose -f deploy/local/docker-compose.yml up --build -d --scale crawler=3
   #
-  # The container runs two foreground pieces: the heartbeat reporter
-  # (`python -m openlens.indexing.worker`) so the dashboard Workers
-  # view shows every replica, and the Kafka consume loop
-  # (`crawl-worker --queue kafka`), which is PID 1 and owns SIGTERM.
-  # `OPENLENS_WORKER_ID` is intentionally left empty so each replica
-  # auto-resolves a unique `{hostname}-{pid}-{rand}` id (Compose gives
-  # every replica its own hostname). Set it explicitly only to pin one
-  # replica's identity. Postgres keeps documents, checkpoints, settings,
-  # and the seen-set; size `max_connections` as N * (pool_size * 2).
+  # The Kafka consume loop (`crawl-worker --queue kafka`) is PID 1 and
+  # owns SIGTERM. It reports its own heartbeat to the backend (liveness
+  # + owned-row `claimed` counts + last discovery summary), so the
+  # dashboard Workers view shows every replica with real numbers — no
+  # sidecar reporter needed (a second process could only send zeros
+  # under a different id). `OPENLENS_WORKER_ID` is intentionally left
+  # empty so each replica auto-resolves a unique
+  # `{hostname}-{pid}-{rand}` id (Compose gives every replica its own
+  # hostname; stale rows age out of the Workers view). Set it explicitly
+  # only to pin one replica's identity. Postgres keeps documents,
+  # checkpoints, settings, and the seen-set; size `max_connections` as
+  # N * (pool_size * 2).
   crawler:
     build:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
-    command: ["sh", "-c", "python -m openlens.indexing.worker & exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
+    command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
     volumes:
       - openlens-data:/app/data
     environment:

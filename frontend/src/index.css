@@ -65,6 +65,11 @@
 :root {
   color-scheme: light;
 
+  /* Brand (OpenLens navy + teal). */
+  --ol-brand-navy: #14213d;
+  --ol-brand-navy-deep: #0f1a30;
+  --ol-brand-teal: #0e9f8e;
+
   --ol-paper: #ffffff;
   --ol-well: #f8f9fa;
   --ol-ink: #202124;
@@ -162,7 +167,19 @@ body {
   padding: var(--ol-space-m) var(--ol-space-l);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--ol-space-m);
+}
+
+/* Flex hygiene: the query input must shrink instead of forcing the
+ * sticky header wider than the viewport on narrow screens. */
+.ol-search-form .ol-field {
+  min-width: 0;
+}
+
+.ol-search-form .ol-input {
+  width: 100%;
+  min-width: 0;
 }
 
 .ol-brand {
@@ -308,12 +325,12 @@ body {
 }
 
 .ol-button-primary {
-  background: var(--ol-accent);
-  color: var(--ol-on-accent);
+  background: var(--ol-brand-navy);
+  color: #ffffff;
 }
 
 .ol-button-primary:hover:not(:disabled) {
-  background: var(--ol-accent-strong);
+  background: var(--ol-brand-navy-deep);
 }
 
 .ol-button-secondary {
@@ -369,6 +386,140 @@ body {
 .ol-result-meta {
   font-size: var(--ol-font-size-s);
   color: var(--ol-ink-soft);
+}
+
+/* ---- Result card hierarchy: domain source line, badge row, snippet,
+ * claims. One muted scale step below the title; badges carry native
+ * tooltips (title attributes) explaining each marker. */
+.ol-result-domain {
+  margin: var(--ol-space-xs) 0 0;
+}
+
+.ol-result-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ol-space-xs);
+  margin: var(--ol-space-s) 0 0;
+}
+
+.ol-result-snippet {
+  margin: var(--ol-space-s) 0 0;
+  overflow-wrap: break-word;
+}
+
+.ol-result-claims {
+  margin: var(--ol-space-s) 0 0;
+}
+
+.ol-result-claims ul {
+  margin: var(--ol-space-xs) 0 0;
+  padding-left: var(--ol-space-l);
+}
+
+.ol-result-claims li {
+  margin-bottom: var(--ol-space-xs);
+}
+
+.ol-result-claims li::marker {
+  color: var(--ol-ink-soft);
+}
+
+/* ---- Brand lockup + view tabs (Google-reference posture) ---- */
+
+.ol-brand-heading {
+  margin: 0;
+  line-height: 1;
+}
+
+.ol-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ol-space-s);
+}
+
+.ol-logo-hero {
+  flex-direction: column;
+  gap: var(--ol-space-m);
+}
+
+.ol-wordmark {
+  color: var(--ol-brand-navy);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ol-logo-header .ol-wordmark {
+  font-size: 1.375rem;
+}
+
+.ol-logo-hero .ol-wordmark {
+  font-size: 2.75rem;
+}
+
+.ol-wordmark-open {
+  font-weight: 500;
+}
+
+.ol-wordmark-lens {
+  font-weight: 800;
+}
+
+.ol-viewtabs {
+  border-bottom: 1px solid var(--ol-line);
+}
+
+.ol-viewtab {
+  font: inherit;
+  font-size: var(--ol-font-size-s);
+  font-weight: 600;
+  color: var(--ol-ink-soft);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: var(--ol-space-s) var(--ol-space-m);
+  cursor: pointer;
+}
+
+.ol-viewtab:hover {
+  color: var(--ol-ink);
+}
+
+.ol-viewtab[aria-current='page'] {
+  color: var(--ol-brand-navy);
+  border-bottom-color: var(--ol-brand-navy);
+}
+
+/* Domain favicon tile: first letter on navy, no network fetch. */
+.ol-favicon-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: var(--ol-radius-s);
+  background: var(--ol-brand-navy);
+  color: #ffffff;
+  font-size: var(--ol-font-size-s);
+  font-weight: 800;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+
+.ol-result-domain {
+  display: flex;
+  align-items: center;
+  gap: var(--ol-space-xs);
+}
+
+/* Filter toggle carries an icon + text label; align the pair. */
+[data-testid='sidebar'] .ol-button svg {
+  vertical-align: -3px;
+}
+
+.ol-filter-toggle-label {
+  margin-left: var(--ol-space-xs);
 }
 
 /* ---- Badges + chips ---- */
@@ -500,11 +651,34 @@ body {
 
   .ol-header-inner {
     padding: var(--ol-space-s) var(--ol-space-m);
+    row-gap: var(--ol-space-s);
   }
 
-  .ol-search-form {
+  /* Landing hero stacks full-width; the sticky results header keeps the
+   * query + button on one row (brand beside it) while the mode select
+   * and Search/AI-chat tabs wrap onto a second row. */
+  .ol-landing .ol-search-form {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .ol-header-inner .ol-search-form {
+    flex-direction: row;
+    flex: 1 1 12rem;
+  }
+
+  /* Filters collapse behind an icon-only button: the label stays in
+   * the accessibility tree but takes no visual space. */
+  .ol-filter-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
   }
 }
 

@@ -22,4 +22,5 @@ export interface FrontierWorkerHeartbeatSchema {
   status?: string;
   /** @maxLength 64 */
   role?: string;
+  discovery?: unknown;
 }

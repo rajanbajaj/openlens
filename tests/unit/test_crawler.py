@@ -173,6 +173,138 @@ def test_invalid_config_values_rejected() -> None:
         crawler.configure({"max_pages": 0})
 
 
+def test_normalize_url_sorts_and_strips_volatile_query() -> None:
+    from openlens.indexing.crawler import normalize_url
+
+    assert (
+        normalize_url("https://Example.com/Path/?b=2&a=1")
+        == "https://example.com/path?a=1&b=2"
+    )
+    # Tracking/view params collapse to the canonical page.
+    assert (
+        normalize_url("https://example.com/a?utm_source=x&fbclid=y&q=1")
+        == "https://example.com/a?q=1"
+    )
+    assert normalize_url("https://example.com/t?bb=264781") == "https://example.com/t"
+    assert (
+        normalize_url("https://example.com/trending?since=daily")
+        == "https://example.com/trending"
+    )
+    # Fragments still dropped, case/trailing-slash still folded.
+    assert normalize_url("https://EXAMPLE.com/A/#frag") == "https://example.com/a"
+
+
+def _junk_page(url: str = "https://example.com/seed"):  # noqa: ANN202
+    from openlens.indexing.crawler import _FetchedPage
+
+    body = (
+        "<html><head><title>Seed</title></head><body>"
+        "<p>Informative crawlable prose about the topic. </p>"
+        * 12
+        + '<nav><a href="https://example.com/nav-link">nav</a></nav>'
+        + '<a href="https://example.com/nf" rel="nofollow">nf</a>'
+        + '<a href="https://example.com/login">login</a>'
+        + '<a href="https://example.com/vote?id=1">vote</a>'
+        + '<a href="https://example.com/trending/rust">trend</a>'
+        + '<a href="https://example.com/t/python">tag</a>'
+        + '<a href="https://example.com/real-article">good</a>'
+        + "</body></html>"
+    ).encode("utf-8")
+    return _FetchedPage(
+        status=200, url=url, content_type="text/html", body=body, headers={}
+    )
+
+
+def test_extract_links_drops_nofollow_chrome_and_junk() -> None:
+    crawler = _crawler(max_pages=1, respect_robots=False)
+    links = crawler._extract_links(_junk_page())
+    assert links == ["https://example.com/real-article"]
+
+
+def test_push_time_robots_gate_keeps_disallowed_out_of_queue(stub_base: str) -> None:
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        seed = f"{stub_base}/page1"
+        crawler = _crawler(max_pages=1)
+        docs = crawler.crawl([seed], frontier_store=store)
+        assert len(docs) == 1
+        pending = {entry.url for entry in store.pending(limit=10)}
+        # /page2 (allowed) queues; /private (robots-disallowed) never does.
+        assert any(url.endswith("/page2") for url in pending)
+        assert not any(url.endswith("/private") for url in pending)
+        assert crawler.last_stats.skipped_robots >= 1
+    finally:
+        store.close()
+
+
+def test_discovery_applies_push_time_gates_and_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import openlens.indexing.crawler as crawler_mod
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    monkeypatch.setattr(crawler_mod, "MAX_OUTLINKS_PER_PAGE", 3)
+    store = SqliteFrontierStore(":memory:")
+    try:
+        seed = "https://example.com/seed"
+        assert store.enqueue(seed, 0) is True
+        crawler = _crawler(
+            max_pages=1, respect_robots=False, deny_domains=["blocked.test"]
+        )
+        body = (
+            "<html><head><title>Seed</title></head><body>"
+            + "<p>Informative crawlable prose about the topic. </p>" * 12
+            + '<a href="https://example.com/good-1">1</a>'
+            + '<a href="https://example.com/good-2">2</a>'
+            + '<a href="https://example.com/login">junk</a>'
+            + '<a href="https://blocked.test/x">denied</a>'
+            + '<a href="https://example.com/good-3">3</a>'
+            + '<a href="https://example.com/good-4">over-cap</a>'
+            + "</body></html>"
+        ).encode("utf-8")
+        from openlens.indexing.crawler import _FetchedPage
+
+        monkeypatch.setattr(
+            crawler,
+            "_fetch_bounded",
+            lambda url: _FetchedPage(
+                status=200, url=url, content_type="text/html", body=body, headers={}
+            ),
+        )
+        docs = crawler.crawl([seed], frontier_store=store)
+        assert len(docs) == 1
+        pending = {entry.url for entry in store.pending(limit=20)}
+        assert "https://example.com/good-1" in pending
+        assert "https://example.com/good-2" in pending
+        assert "https://example.com/good-3" in pending
+        assert "https://example.com/login" not in pending
+        assert "https://blocked.test/x" not in pending
+        assert "https://example.com/good-4" not in pending
+        assert crawler.last_stats.skipped_domain >= 1
+        assert crawler.last_stats.skipped_cap >= 1
+    finally:
+        store.close()
+
+
+def test_deny_url_patterns_config_and_enforcement() -> None:
+    crawler = _crawler(
+        max_pages=1, respect_robots=False, deny_url_patterns=["internal-stuff"]
+    )
+    links = crawler._extract_links(_junk_page("https://example.com/seed"))
+    assert "https://example.com/real-article" in links
+    page = _junk_page("https://example.com/seed")
+    page.body = (
+        b"<html><head><title>T</title></head><body>"
+        b'<a href="https://example.com/internal-stuff/x">x</a>'
+        b'<a href="https://example.com/real-article">good</a></body></html>'
+    )
+    assert crawler._extract_links(page) == ["https://example.com/real-article"]
+    with pytest.raises(ConfigError):
+        _crawler(deny_url_patterns="not-a-list")
+
+
 def test_decay_child_priority_steps() -> None:
     from openlens.indexing.crawler import decay_child_priority
 

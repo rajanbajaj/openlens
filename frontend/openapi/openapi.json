@@ -1040,6 +1040,13 @@
               }
             ],
             "title": "Notice"
+          },
+          "perspectives": {
+            "items": {
+              "$ref": "#/components/schemas/PerspectiveViewSchema"
+            },
+            "type": "array",
+            "title": "Perspectives"
           }
         },
         "type": "object",
@@ -1436,6 +1443,41 @@
         "title": "FrontierCheckpointSchema",
         "description": "Latest crawl checkpoint summary."
       },
+      "FrontierDiscoverySchema": {
+        "properties": {
+          "worker_id": {
+            "type": "string",
+            "title": "Worker Id",
+            "default": ""
+          },
+          "at": {
+            "type": "number",
+            "title": "At",
+            "default": 0.0
+          },
+          "feeds_checked": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Feeds Checked",
+            "default": 0
+          },
+          "new_urls": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "New Urls",
+            "default": 0
+          },
+          "refreshed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Refreshed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierDiscoverySchema",
+        "description": "A worker's last discovery-pass summary (feeds + refresh).\n\n``at`` is a unix-epoch timestamp for when the worker reported the\nsummary; ``worker_id`` names the reporting worker (empty on\nper-worker entries where the parent already names it)."
+      },
       "FrontierNewUrlSchema": {
         "properties": {
           "url": {
@@ -1698,6 +1740,16 @@
             "minimum": 0.0,
             "title": "Cluster Config Version",
             "default": 0
+          },
+          "discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrontierDiscoverySchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -1738,6 +1790,9 @@
             "maxLength": 64,
             "title": "Role",
             "default": "worker"
+          },
+          "discovery": {
+            "title": "Discovery"
           }
         },
         "additionalProperties": false,
@@ -1779,6 +1834,16 @@
             "type": "string",
             "title": "Role",
             "default": "worker"
+          },
+          "discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrontierDiscoverySchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -1944,6 +2009,105 @@
         "type": "object",
         "title": "KafkaNodesResponseSchema",
         "description": "GET /api/v1/frontier/kafka/nodes response body."
+      },
+      "PerspectiveStanceSchema": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id",
+            "default": ""
+          },
+          "stance": {
+            "type": "string",
+            "title": "Stance",
+            "default": "neutral"
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PerspectiveStanceSchema",
+        "description": "One member's stance toward the story claim (keyword heuristic)."
+      },
+      "PerspectiveViewSchema": {
+        "properties": {
+          "story_id": {
+            "type": "string",
+            "title": "Story Id",
+            "default": ""
+          },
+          "claim": {
+            "type": "string",
+            "title": "Claim",
+            "default": ""
+          },
+          "representative_id": {
+            "type": "string",
+            "title": "Representative Id",
+            "default": ""
+          },
+          "member_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Member Ids"
+          },
+          "stances": {
+            "items": {
+              "$ref": "#/components/schemas/PerspectiveStanceSchema"
+            },
+            "type": "array",
+            "title": "Stances"
+          },
+          "supports": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Supports",
+            "default": 0
+          },
+          "refutes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Refutes",
+            "default": 0
+          },
+          "neutral": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Neutral",
+            "default": 0
+          },
+          "multi_source": {
+            "type": "boolean",
+            "title": "Multi Source",
+            "default": false
+          },
+          "missing_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missing Note"
+          },
+          "trust_caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trust Caveats"
+          }
+        },
+        "type": "object",
+        "title": "PerspectiveViewSchema",
+        "description": "One story view: claim, member stances, and honesty notes."
       },
       "ProviderPrefsSchema": {
         "properties": {
@@ -2290,6 +2454,13 @@
           },
           "diagnostics": {
             "$ref": "#/components/schemas/DiagnosticsSchema"
+          },
+          "perspectives": {
+            "items": {
+              "$ref": "#/components/schemas/PerspectiveViewSchema"
+            },
+            "type": "array",
+            "title": "Perspectives"
           }
         },
         "type": "object",

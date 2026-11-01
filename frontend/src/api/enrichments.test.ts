@@ -6,6 +6,7 @@ import {
   resultAlsoFrom,
   resultCommerce,
   resultConfidence,
+  resultDomain,
   resultSignals,
   resultStoryId,
   resultUnderstanding,
@@ -197,5 +198,13 @@ describe('enrichment readers', () => {
       latencyMs: null,
       error: null,
     });
+  });
+
+  it('reads the registrable domain for the source line', () => {
+    expect(resultDomain('https://www.Example.com/path?q=1')).toBe('example.com');
+    expect(resultDomain('https://example.com')).toBe('example.com');
+    expect(resultDomain(null)).toBeNull();
+    expect(resultDomain('')).toBeNull();
+    expect(resultDomain('not a url')).toBeNull();
   });
 });

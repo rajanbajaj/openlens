@@ -6,6 +6,7 @@ import {
   resultAlsoFrom,
   resultBook,
   resultCommerce,
+  resultDomain,
   resultFood,
   resultKeyClaims,
   resultOpinion,
@@ -113,6 +114,7 @@ export function ResultCard({
   const book = resultBook(result.metadata);
   const food = resultFood(result.metadata);
   const opinion = resultOpinion(result.metadata);
+  const domain = resultDomain(result.url);
   const keyClaims = resultKeyClaims(result.metadata);
   const confidence = resultConfidence(result.metadata);
   const price = formatPrice(commerce.price, commerce.currency);
@@ -155,12 +157,38 @@ export function ResultCard({
               <span>{result.title}</span>
             )}
           </h3>
-          <p>
-            <Badge>{result.provider}</Badge>{' '}
+          {domain ? (
+            <p data-testid="result-domain" className="ol-result-domain text-ol-s text-ol-ink-soft">
+              <span className="ol-favicon-tile" aria-hidden="true">
+                {domain.charAt(0)}
+              </span>
+              {domain}
+            </p>
+          ) : null}
+          <p className="ol-result-badges">
+            <Badge title={`Indexed by the ${result.provider} search provider`}>
+              {result.provider}
+            </Badge>{' '}
             {alsoFrom.map((provider) => (
-              <Badge key={provider}>also from {provider}</Badge>
+              <Badge key={provider} title={`This page is also indexed by ${provider}`}>
+                also from {provider}
+              </Badge>
             ))}{' '}
-            {sponsored ? <Badge>Sponsored</Badge> : null}
+            {sponsored ? (
+              <Badge title="Paid placement: an advertiser paid for this position">Sponsored</Badge>
+            ) : null}
+            {opinion ? (
+              <Badge
+                testId="result-opinion"
+                title={
+                  opinion === 'opinion'
+                    ? 'Detected as commentary or opinion rather than straight reporting'
+                    : `This page reads as ${opinion} content`
+                }
+              >
+                {opinion === 'opinion' ? 'Opinion / commentary' : `Reads as ${opinion}`}
+              </Badge>
+            ) : null}
             {onSave ? (
               <>
                 {' '}
@@ -189,7 +217,9 @@ export function ResultCard({
             {highlight.text}
           </p>
         ) : null}
-        <p data-testid="result-snippet">{result.snippet}</p>
+        <p data-testid="result-snippet" className="ol-result-snippet">
+          {result.snippet}
+        </p>
         {attributes.length > 0 ? (
           <p data-testid="result-attributes" className="text-ol-s text-ol-ink-soft">
             {attributes.join(' · ')}
@@ -207,13 +237,8 @@ export function ResultCard({
             </a>
           </p>
         ) : null}
-        {opinion ? (
-          <p data-testid="result-opinion" className="text-ol-s text-ol-ink-soft">
-            {opinion === 'opinion' ? 'Opinion / commentary' : `Reads as ${opinion}`}
-          </p>
-        ) : null}
         {keyClaims.length > 0 ? (
-          <div>
+          <div className="ol-result-claims">
             <p className="text-ol-s text-ol-ink-soft">Key claims:</p>
             <ul data-testid="result-claims">
               {keyClaims.map((claim) => (
@@ -230,10 +255,19 @@ export function ResultCard({
               : ''} · {understanding.model === 'rule-based' ? 'rule-based' : understanding.model}
           </p>
         ) : null}
-        <p data-testid="result-meta" className="text-ol-s text-ol-ink-soft">
-          <span>Score: {result.final_score}</span>
+        <p data-testid="result-meta" className="ol-result-meta text-ol-s text-ol-ink-soft">
+          <Badge
+            title={`Ranking score after all ranking signals (original query score ${result.original_score})`}
+          >
+            Score: {result.final_score}
+          </Badge>
           {confidence !== null ? (
-            <span data-testid="result-confidence"> · Confidence: {confidence}</span>
+            <span data-testid="result-confidence">
+              {' '}
+              <Badge title="Backend confidence in this ranking, 0 to 1">
+                Confidence: {confidence}
+              </Badge>
+            </span>
           ) : null}
         </p>
         <div>

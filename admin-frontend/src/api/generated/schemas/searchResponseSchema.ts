@@ -5,6 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { DiagnosticsSchema } from './diagnosticsSchema.ts';
+import type { PerspectiveViewSchema } from './perspectiveViewSchema.ts';
 import type { SearchResultSchema } from './searchResultSchema.ts';
 
 /**
@@ -29,4 +30,5 @@ export interface SearchResponseSchema {
   related?: string[];
   applied_filters?: string[];
   diagnostics?: DiagnosticsSchema;
+  perspectives?: PerspectiveViewSchema[];
 }

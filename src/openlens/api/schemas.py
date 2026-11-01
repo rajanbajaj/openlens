@@ -165,6 +165,70 @@ class SuggestResponseSchema(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+class PerspectiveStanceSchema(BaseModel):
+    """One member's stance toward the story claim (keyword heuristic)."""
+
+    source_id: str = ""
+    stance: str = "neutral"
+    evidence: str = ""
+
+
+class PerspectiveViewSchema(BaseModel):
+    """One story view: claim, member stances, and honesty notes."""
+
+    story_id: str = ""
+    claim: str = ""
+    representative_id: str = ""
+    member_ids: list[str] = Field(default_factory=list)
+    stances: list[PerspectiveStanceSchema] = Field(default_factory=list)
+    supports: int = Field(default=0, ge=0)
+    refutes: int = Field(default=0, ge=0)
+    neutral: int = Field(default=0, ge=0)
+    multi_source: bool = False
+    missing_note: Optional[str] = None
+    trust_caveats: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "PerspectiveViewSchema":
+        """Coerce a builder dict; malformed entries degrade to empty."""
+        if not isinstance(raw, dict):
+            return cls()
+        stances: list[PerspectiveStanceSchema] = []
+        for entry in raw.get("stances", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            stance = entry.get("stance", "")
+            stances.append(
+                PerspectiveStanceSchema(
+                    source_id=str(entry.get("source_id", "")),
+                    stance=(
+                        str(stance)
+                        if stance in ("supports", "refutes", "neutral", "unrated")
+                        else "neutral"
+                    ),
+                    evidence=str(entry.get("evidence", "")),
+                )
+            )
+        missing = raw.get("missing_note")
+        raw_members = raw.get("member_ids", []) or []
+        raw_caveats = raw.get("trust_caveats", []) or []
+        return cls(
+            story_id=str(raw.get("story_id", "")),
+            claim=str(raw.get("claim", "")),
+            representative_id=str(raw.get("representative_id", "")),
+            member_ids=[str(item) for item in raw_members if isinstance(item, str)],
+            stances=stances,
+            supports=int(raw.get("supports", 0) or 0),
+            refutes=int(raw.get("refutes", 0) or 0),
+            neutral=int(raw.get("neutral", 0) or 0),
+            multi_source=bool(raw.get("multi_source", False)),
+            missing_note=(
+                str(missing) if isinstance(missing, str) and missing else None
+            ),
+            trust_caveats=[str(item) for item in raw_caveats if isinstance(item, str)],
+        )
+
+
 class SearchResponseSchema(BaseModel):
     """POST /api/v1/search response body."""
 
@@ -180,6 +244,7 @@ class SearchResponseSchema(BaseModel):
     related: list[str] = Field(default_factory=list)
     applied_filters: list[str] = Field(default_factory=list)
     diagnostics: DiagnosticsSchema = Field(default_factory=DiagnosticsSchema)
+    perspectives: list[PerspectiveViewSchema] = Field(default_factory=list)
 
     @classmethod
     def from_core(
@@ -208,6 +273,10 @@ class SearchResponseSchema(BaseModel):
             related=list(related) if related is not None else [],
             applied_filters=list(response.applied_filters),
             diagnostics=DiagnosticsSchema.from_core(response.diagnostics),
+            perspectives=[
+                PerspectiveViewSchema.from_mapping(entry)
+                for entry in (getattr(response, "perspectives", []) or [])
+            ],
         )
 
 
@@ -235,6 +304,21 @@ class FrontierNewUrlSchema(BaseModel):
     status: str = "added"
 
 
+class FrontierDiscoverySchema(BaseModel):
+    """A worker's last discovery-pass summary (feeds + refresh).
+
+    ``at`` is a unix-epoch timestamp for when the worker reported the
+    summary; ``worker_id`` names the reporting worker (empty on
+    per-worker entries where the parent already names it).
+    """
+
+    worker_id: str = ""
+    at: float = 0.0
+    feeds_checked: int = Field(default=0, ge=0)
+    new_urls: int = Field(default=0, ge=0)
+    refreshed: int = Field(default=0, ge=0)
+
+
 class FrontierWorkerSchema(BaseModel):
     """One crawler worker recently heard from by this API replica."""
 
@@ -244,6 +328,7 @@ class FrontierWorkerSchema(BaseModel):
     claimed: int = Field(default=0, ge=0)
     status: str = "alive"
     role: str = "worker"
+    discovery: Optional[FrontierDiscoverySchema] = None
 
 
 class FrontierWorkerHeartbeatSchema(BaseModel):
@@ -256,6 +341,11 @@ class FrontierWorkerHeartbeatSchema(BaseModel):
     claimed: int = Field(default=0, ge=0)
     status: str = Field(default="alive", max_length=64)
     role: str = Field(default="worker", max_length=64)
+    # Optional discovery summary (``{"at", "feeds_checked", "new_urls",
+    # "refreshed"}``). Typed as free-form so malformed fragments degrade
+    # to null instead of failing the heartbeat with 422; the route
+    # sanitizes before storing.
+    discovery: Any = None
 
 
 class FrontierWorkersResponseSchema(BaseModel):
@@ -285,6 +375,9 @@ class FrontierStatusSchema(BaseModel):
     kafka_lag_total: int | None = None
     kafka_lag_partitions: int | None = None
     cluster_config_version: int = Field(default=0, ge=0)
+    # Most recently active worker's discovery summary (None when no
+    # worker ever reported one).
+    discovery: Optional[FrontierDiscoverySchema] = None
 
 
 class FrontierSettingsSchema(BaseModel):
@@ -603,6 +696,7 @@ class ChatResponseSchema(BaseModel):
     results: list[SearchResultSchema] = Field(default_factory=list)
     trace: ChatTraceSchema = Field(default_factory=ChatTraceSchema)
     notice: Optional[str] = None
+    perspectives: list[PerspectiveViewSchema] = Field(default_factory=list)
 
 
 class ErrorDetailSchema(BaseModel):

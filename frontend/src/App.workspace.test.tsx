@@ -83,6 +83,36 @@ function searchBodies(stub: ReturnType<typeof mockFetchEnvelope>) {
 }
 
 describe('search workspace', () => {
+  it('renders the perspectives section above results when the backend sends views', async () => {
+    mockFetchEnvelope({
+      ...BASE_ENVELOPE,
+      perspectives: [
+        {
+          story_id: 's1',
+          claim: 'Headphones sound great',
+          representative_id: 'r1',
+          member_ids: ['r1'],
+          stances: [{ source_id: 'r1', stance: 'supports', evidence: 'Great sound' }],
+          supports: 1,
+          refutes: 0,
+          neutral: 0,
+          multi_source: false,
+          missing_note: null,
+          trust_caveats: [],
+        },
+      ],
+    });
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByTestId('perspectives-section')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Headphones sound great')).toBeInTheDocument();
+    // The section renders before the result list in the results column.
+    const section = screen.getByTestId('perspectives-section');
+    const cards = screen.getAllByTestId('result-card');
+    expect(section.compareDocumentPosition(cards[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it('sends advanced panel filters and offers removable chips', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
     render(<App />);
@@ -330,6 +360,30 @@ describe('search workspace', () => {
     } finally {
       Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
     }
+  });
+
+  it('starts with filters collapsed behind the icon on narrow screens', async () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes('max-width'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockPagedEnvelope();
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
+    });
+    // Collapsed: the icon button names the action, the panel stays hidden.
+    expect(screen.getByRole('button', { name: 'Show filters' })).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-panel')).not.toBeVisible();
   });
 
   it('leaves focus on a live node (never a detached one) across result updates', async () => {

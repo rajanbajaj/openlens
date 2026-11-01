@@ -131,6 +131,9 @@ class SearchResponse:
     total: int = 0
     applied_filters: list[str] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    #: Query-time story views (see ``retrieval.perspectives``). Ranking
+    #: never depends on this: it is assembled from the ranked page.
+    perspectives: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

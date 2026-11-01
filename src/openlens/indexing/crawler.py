@@ -92,6 +92,7 @@ ALLOWED_CONFIG_KEYS = frozenset(
         "allowed_content_types",
         "allow_domains",
         "deny_domains",
+        "deny_url_patterns",
         "domain_policies",
         "default_max_depth",
         "user_agent",
@@ -125,6 +126,94 @@ def published_from_last_modified(value: str | None) -> str | None:
     return parsed.date().isoformat()
 
 
+#: Query params stripped before frontier dedup: tracking markers and
+#: view-window selectors (``?since=daily`` vs ``?since=weekly`` are the
+#: same nav page, not two fetches).
+_VOLATILE_QUERY_PARAMS: frozenset[str] = frozenset(
+    {
+        "bb",
+        "fbclid",
+        "gclid",
+        "msclkid",
+        "yclid",
+        "mc_cid",
+        "mc_eid",
+        "igshid",
+        "since",
+    }
+)
+
+#: ``utm_*`` prefixes stripped alongside the names above.
+_TRACKING_QUERY_PREFIXES: tuple[str, ...] = ("utm_",)
+
+#: Last path segments that mark nav/chrome pages, never content:
+#: login walls, vote/hide/submit chrome, user/profile indexes.
+_JUNK_LAST_SEGMENTS: frozenset[str] = frozenset(
+    {
+        "hide",
+        "login",
+        "register",
+        "signin",
+        "sign-in",
+        "signup",
+        "sign-up",
+        "submit",
+        "user",
+        "users",
+        "vote",
+    }
+)
+
+#: First path segments that mark tag-index pages (``/t/<tag>`` shapes),
+#: never articles.
+_JUNK_FIRST_SEGMENTS: frozenset[str] = frozenset({"t", "tag", "tags"})
+
+#: Tags whose subtrees are page chrome, not content; links found only
+#: inside them never enter the queue.
+_CHROME_TAGS: frozenset[str] = frozenset({"nav", "header", "footer"})
+
+
+def _is_junk_nav_url(
+    url: str,
+    *,
+    rel: str = "",
+    in_chrome: bool = False,
+    extra_patterns: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """True when ``url`` is crawler junk: nav/chrome, not content.
+
+    Pure (no I/O): ``rel="nofollow"``, links seen only inside
+    ``nav``/``header``/``footer``, well-known chrome paths (login,
+    vote, hide, user, tag indexes, trending language filters), and
+    operator ``deny_url_patterns`` substring hits. Callers pass the
+    already-absolute URL; matching is case-insensitive.
+    """
+    tokens = {token.strip().lower() for token in rel.split() if token.strip()}
+    if "nofollow" in tokens:
+        return True
+    if in_chrome:
+        return True
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return True
+    lowered = url.lower()
+    for pattern in extra_patterns:
+        cleaned = pattern.strip().lower() if isinstance(pattern, str) else ""
+        if cleaned and cleaned in lowered:
+            return True
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if not segments:
+        return False
+    if segments[-1].lower() in _JUNK_LAST_SEGMENTS:
+        return True
+    if len(segments) > 1 and segments[0].lower() in _JUNK_FIRST_SEGMENTS:
+        return True
+    # ``/trending/<language>`` style language-filter indexes: the index
+    # root itself (``/trending``) still crawls, only filtered views drop.
+    return len(segments) > 1 and segments[0].lower() == "trending"
+
+
 def normalize_url(url: str) -> str:
     """Normalize a URL for frontier dedup.
 
@@ -132,10 +221,27 @@ def normalize_url(url: str) -> str:
     ``retrieval/deduplicator.py`` (strip, drop ``#fragment``,
     lowercase, strip trailing ``/``) so ingest stores what query-time
     dedup keeps, never a divergent form. Fragment-only link variants
-    are never enqueued as separate fetches.
+    are never enqueued as separate fetches. The query string is
+    canonicalized on top: tracking/view params (``utm_*``, ``fbclid``,
+    ``bb``, ``since`` ...) are stripped and the remainder sorted, so
+    ``?b=2&a=1`` and ``?a=1&b=2`` (or ``?since=daily`` vs
+    ``?since=weekly``) dedup to one queue row.
     """
     bare, _ = urllib.parse.urldefrag(url.strip())
-    return bare.lower().rstrip("/")
+    lowered = bare.lower()
+    if "?" not in lowered:
+        return lowered.rstrip("/")
+    base, _, query = lowered.partition("?")
+    kept: list[tuple[str, str]] = []
+    for name, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+        if name in _VOLATILE_QUERY_PARAMS or name.startswith(_TRACKING_QUERY_PREFIXES):
+            continue
+        kept.append((name, value))
+    kept.sort()
+    canonical = base.rstrip("/")
+    if kept:
+        canonical += "?" + urllib.parse.urlencode(kept)
+    return canonical
 
 
 class CrawlError(Exception):
@@ -154,6 +260,8 @@ class CrawlStats:
     skipped_content_type: int = 0
     skipped_not_modified: int = 0
     skipped_quality: int = 0
+    #: Outlinks dropped by the per-page enqueue cap (MAX_OUTLINKS_PER_PAGE).
+    skipped_cap: int = 0
     aborted_bytes: int = 0
     timeouts: int = 0
     errors: int = 0
@@ -419,7 +527,10 @@ class _LinkTitleParser(html.parser.HTMLParser):
 
     def __init__(self) -> None:
         super().__init__()
-        self.links: list[str] = []
+        # ``(href, rel, in_chrome)`` per anchor: the junk filter needs
+        # the ``rel`` value and whether the link lives in page chrome
+        # (nav/header/footer), not just the href.
+        self.links: list[tuple[str, str, bool]] = []
         self._title_parts: list[str] = []
         self._in_title = False
         self._in_head = False
@@ -427,6 +538,7 @@ class _LinkTitleParser(html.parser.HTMLParser):
         self._head_closed = False
         self._saw_body = False
         self._svg_depth = 0
+        self._chrome_depth = 0
         self.meta_titles: dict[str, str] = {}
         self._h1_parts: list[str] = []
         self._in_h1 = False
@@ -458,10 +570,19 @@ class _LinkTitleParser(html.parser.HTMLParser):
             content = norm.get("content", "").strip()
             if key in ("og:title", "twitter:title") and content:
                 self.meta_titles.setdefault(key, content)
+        if lowered in _CHROME_TAGS:
+            self._chrome_depth += 1
         if lowered == "a":
+            href = ""
+            rel = ""
             for name, value in attrs:
-                if name.lower() == "href" and value:
-                    self.links.append(value.strip())
+                lowered_name = name.lower()
+                if lowered_name == "href" and value:
+                    href = value.strip()
+                elif lowered_name == "rel" and value:
+                    rel = value.strip()
+            if href:
+                self.links.append((href, rel, self._chrome_depth > 0))
 
     def handle_endtag(self, tag: str) -> None:
         lowered = tag.lower()
@@ -475,6 +596,8 @@ class _LinkTitleParser(html.parser.HTMLParser):
         if lowered == "h1" and self._in_h1:
             self._in_h1 = False
             self._h1_done = True
+        if lowered in _CHROME_TAGS and self._chrome_depth > 0:
+            self._chrome_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
@@ -1432,6 +1555,7 @@ class PoliteCrawler:
         self.allowed_content_types = list(DEFAULT_ALLOWED_CONTENT_TYPES)
         self.allow_domains: list[str] = []
         self.deny_domains: list[str] = []
+        self.deny_url_patterns: list[str] = []
         self.domain_policies: dict[str, dict[str, Any]] = {}
         self.default_max_depth: int | None = DEFAULT_MAX_DEPTH
         self.user_agent = DEFAULT_USER_AGENT
@@ -1537,6 +1661,14 @@ class PoliteCrawler:
                     f"crawler: '{key}' must be a list of strings, "
                     f"got {value!r}. Startup validation failed."
                 )
+        deny_patterns = config.get("deny_url_patterns", [])
+        if not isinstance(deny_patterns, list) or not all(
+            isinstance(item, str) and item.strip() for item in deny_patterns
+        ):
+            raise ConfigError(
+                "crawler: 'deny_url_patterns' must be a list of strings, "
+                f"got {deny_patterns!r}. Startup validation failed."
+            )
         policies = config.get("domain_policies", {})
         if not isinstance(policies, dict):
             raise ConfigError(
@@ -1669,6 +1801,7 @@ class PoliteCrawler:
         self.allowed_content_types = [item.strip().lower() for item in content_types]
         self.allow_domains = [item.strip().lower() for item in allow]
         self.deny_domains = [item.strip().lower() for item in deny]
+        self.deny_url_patterns = [item.strip().lower() for item in deny_patterns]
         self.domain_policies = normalized_policies
         self.default_max_depth = default_depth
         self.user_agent = user_agent.strip()
@@ -1919,12 +2052,35 @@ class PoliteCrawler:
                         last_modified=page.headers.get("last-modified"),
                     )
                 if page.content_type.startswith("text/html"):
+                    enqueued_this_page = 0
                     for link in self._extract_links(page):
+                        # Per-page enqueue cap: extraction already dropped
+                        # chrome/junk, so the survivors are content links in
+                        # document order; beyond the cap they wait for a
+                        # refetch rather than flooding the queue.
+                        if enqueued_this_page >= MAX_OUTLINKS_PER_PAGE:
+                            stats.skipped_cap += 1
+                            break
                         if normalize_url(link) not in seen:
                             child_depth = depth + 1
                             child_host = (
                                 urllib.parse.urlsplit(link).hostname or ""
                             ).lower()
+                            # Push-time gates: disallowed hosts never enter
+                            # the queue (pop-side checks stay as the fetch
+                            # backstop). No mark_failed here: these rows
+                            # were never queued, so no failure row is owed.
+                            if not self._domain_allowed(child_host):
+                                stats.skipped_domain += 1
+                                continue
+                            if not self._policy_allowed(child_host):
+                                stats.skipped_policy += 1
+                                continue
+                            if self.respect_robots and not self._allowed_by_robots(
+                                link
+                            ):
+                                stats.skipped_robots += 1
+                                continue
                             if not self._depth_allowed(child_host, child_depth):
                                 stats.skipped_depth += 1
                                 continue
@@ -1939,6 +2095,7 @@ class PoliteCrawler:
                                 )
                             else:
                                 frontier.push(link)
+                            enqueued_this_page += 1
                 if store is not None and interval > 0 and attempts % interval == 0:
                     _save_checkpoint(PHASE_RUNNING)
             stats.evicted = frontier.evicted
@@ -2175,6 +2332,15 @@ class PoliteCrawler:
         )
 
     def _extract_links(self, page: _FetchedPage) -> list[str]:
+        """Absolute http(s) outlinks minus crawler junk.
+
+        ``rel="nofollow"``, nav/header/footer chrome, well-known junk
+        paths (login, vote, hide, tag indexes, trending filters), and
+        operator ``deny_url_patterns`` never leave extraction, so one
+        nav-heavy page cannot flood the queue with hundreds of chrome
+        links. Surviving links are canonicalized (query-sorted,
+        tracking params stripped) for dedup.
+        """
         try:
             text = page.body.decode("utf-8", errors="replace")
         except Exception:
@@ -2184,12 +2350,18 @@ class PoliteCrawler:
             parser.feed(text)
         except Exception:
             return []
+        patterns = tuple(self.deny_url_patterns)
         links: list[str] = []
-        for href in parser.links:
+        for href, rel, in_chrome in parser.links:
             absolute = urllib.parse.urljoin(page.url, href)
             scheme = urllib.parse.urlsplit(absolute).scheme.lower()
-            if scheme in ("http", "https"):
-                links.append(absolute)
+            if scheme not in ("http", "https"):
+                continue
+            if _is_junk_nav_url(
+                absolute, rel=rel, in_chrome=in_chrome, extra_patterns=patterns
+            ):
+                continue
+            links.append(absolute)
         return links
 
     def _to_document(self, page: _FetchedPage) -> Document:

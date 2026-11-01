@@ -148,6 +148,36 @@ describe('ChatView send/render flow', () => {
   });
 });
 
+describe('ChatView perspectives', () => {
+  it('renders story views with stances below the answer', async () => {
+    stubChat({
+      ...CHAT_OK,
+      perspectives: [
+        {
+          story_id: 's1',
+          claim: 'The bridge reopened',
+          representative_id: 'r1',
+          member_ids: ['r1'],
+          stances: [{ source_id: 'r1', stance: 'supports', evidence: 'Costs $9 today' }],
+          supports: 1,
+          refutes: 0,
+          neutral: 0,
+          multi_source: false,
+          missing_note: 'no refuting source in this cluster',
+          trust_caveats: [],
+        },
+      ],
+    });
+    render(<ChatView />);
+    await sendMessage('did it reopen?');
+    await waitFor(() => {
+      expect(screen.getByTestId('perspectives-section')).toBeInTheDocument();
+    });
+    expect(screen.getByText('The bridge reopened')).toBeInTheDocument();
+    expect(screen.getByText('Supports')).toBeInTheDocument();
+  });
+});
+
 describe('ChatView citations', () => {
   it('chips link to result URLs in a new tab with noopener', async () => {
     stubChat({

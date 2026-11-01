@@ -6,6 +6,7 @@
  */
 import type { ChatCitationSchema } from './chatCitationSchema.ts';
 import type { ChatTraceSchema } from './chatTraceSchema.ts';
+import type { PerspectiveViewSchema } from './perspectiveViewSchema.ts';
 import type { SearchResultSchema } from './searchResultSchema.ts';
 
 /**
@@ -17,4 +18,5 @@ export interface ChatResponseSchema {
   results?: SearchResultSchema[];
   trace?: ChatTraceSchema;
   notice?: string | null;
+  perspectives?: PerspectiveViewSchema[];
 }

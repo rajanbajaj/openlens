@@ -509,6 +509,45 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     assert hits.get("https://kafka.test/a", 0) == 1
 
 
+def test_run_kafka_worker_reports_claimed_and_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The consumer loop owns the API heartbeat: real claimed counts plus
+    the last discovery summary (omitted until a pass completes)."""
+    import openlens.indexing.worker as worker_mod
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_beat(
+        api_url: str,
+        worker_id: str,
+        **kwargs: Any,
+    ) -> dict[str, object]:
+        calls.append({"api_url": api_url, "worker_id": worker_id, **kwargs})
+        return {"workers": [], "worker_count": 0}
+
+    monkeypatch.setattr(worker_mod, "heartbeat_once", _fake_beat)
+    db_path = str(tmp_path / "frontier.db")
+    fake = _FakeQueue([("https://kafka.test/a", 0, 3)])
+    hits: dict[str, int] = {}
+    run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=_crawler_factory(hits),
+        queue=fake,
+        max_iterations=2,
+        idle_sleep_s=0.01,
+    )
+    assert calls, "expected at least one progress heartbeat"
+    first = calls[0]
+    assert first["crawl_id"] == "default"
+    assert isinstance(first["claimed"], int) and first["claimed"] >= 0
+    discovery = first.get("discovery")
+    assert isinstance(discovery, dict)
+    assert set(discovery) >= {"feeds_checked", "new_urls", "refreshed"}
+
+
 def test_run_kafka_worker_passes_message_priority_to_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

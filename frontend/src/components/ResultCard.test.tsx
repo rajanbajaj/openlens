@@ -124,6 +124,19 @@ describe('ResultCard transparency', () => {
 });
 
 describe('ResultCard hierarchy', () => {
+  it('shows the domain source line and tooltip badges', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    expect(screen.getByTestId('result-domain')).toHaveTextContent('example.com');
+    expect(screen.getByText('custom_index').closest('span')).toHaveAttribute(
+      'title',
+      'Indexed by the custom_index search provider',
+    );
+    expect(screen.getByText(/^Score:/).closest('span')).toHaveAttribute(
+      'title',
+      expect.stringContaining('Ranking score'),
+    );
+  });
+
   it('demotes commerce and understanding lines to secondary meta text', () => {
     render(<ResultCard result={RICH_RESULT} />);
     expect(screen.getByTestId('result-snippet')).not.toHaveClass('text-ol-s', 'text-ol-ink-soft');
