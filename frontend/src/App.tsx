@@ -32,6 +32,7 @@ import ModeSelector from './components/ModeSelector.tsx';
 import ChatView from './components/ChatView.tsx';
 import { Pagination } from './components/Pagination.tsx';
 import { PerspectivesSection } from './components/PerspectivesSection.tsx';
+import { QuickFilters } from './components/QuickFilters.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import SearchForm from './components/SearchForm.tsx';
@@ -401,6 +402,11 @@ export default function App() {
                     <PerspectivesSection
                       views={readPerspectives(response)}
                       results={response.results}
+                    />
+                    <QuickFilters
+                      value={userFilters}
+                      onChange={handleFiltersChange}
+                      disabled={loading}
                     />
                     <ResultList
                       results={response.results}

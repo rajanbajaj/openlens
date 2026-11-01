@@ -5,6 +5,7 @@ import {
   resultAiDigest,
   resultAlsoFrom,
   resultBook,
+  resultBreadcrumb,
   resultCommerce,
   resultDomain,
   resultFood,
@@ -89,8 +90,8 @@ function verticalHighlight(result: SearchResult, mode: string): VerticalHighligh
 }
 
 /**
- * One flat search hit, link-led like google.com: title row,
- * provider + federation badges, snippet,
+ * One flat search hit, DuckDuckGo-style source-led: favicon +
+ * domain breadcrumb, title row, provider + federation badges, snippet,
  * secondary commerce/understanding lines, score with an expandable
  * breakdown (original vs final, T11 signals in display order), the
  * labelled AI block (rendered only when the backend produced one), and
@@ -156,6 +157,15 @@ export function ResultCard({
     <Card>
       <article aria-label={result.title} data-testid="result-card">
         <header>
+          {domain ? (
+            <p data-testid="result-domain" className="ol-result-domain text-ol-s text-ol-ink-soft">
+              <span className="ol-favicon-tile" aria-hidden="true">
+                {domain.charAt(0)}
+              </span>
+              {domain}
+              {resultBreadcrumb(result.url)}
+            </p>
+          ) : null}
           <h3>
             {result.url ? (
               <a href={result.url} target="_blank" rel="noopener noreferrer">
@@ -165,14 +175,6 @@ export function ResultCard({
               <span>{result.title}</span>
             )}
           </h3>
-          {domain ? (
-            <p data-testid="result-domain" className="ol-result-domain text-ol-s text-ol-ink-soft">
-              <span className="ol-favicon-tile" aria-hidden="true">
-                {domain.charAt(0)}
-              </span>
-              {domain}
-            </p>
-          ) : null}
           <p className="ol-result-badges">
             <Badge title={`Indexed by the ${result.provider} search provider`}>
               {result.provider}

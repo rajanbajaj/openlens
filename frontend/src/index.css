@@ -511,6 +511,28 @@ body {
   display: flex;
   align-items: center;
   gap: var(--ol-space-xs);
+  margin-bottom: var(--ol-space-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* DuckDuckGo-style inline filter row: compact selects in the results
+ * column, horizontally scrollable on narrow screens instead of
+ * wrapping the results down the page. */
+.ol-quickfilters {
+  display: flex;
+  align-items: end;
+  gap: var(--ol-space-s);
+  overflow-x: auto;
+  padding: var(--ol-space-xs) 0 var(--ol-space-s);
+  margin-bottom: var(--ol-space-s);
+  border-bottom: 1px solid var(--ol-line);
+}
+
+.ol-quickfilters .ol-field {
+  flex: 0 0 auto;
+  min-width: 8rem;
 }
 
 /* Filter toggle carries an icon + text label; align the pair. */

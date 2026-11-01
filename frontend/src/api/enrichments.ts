@@ -106,6 +106,35 @@ export function resultDomain(url: string | null): string | null {
 }
 
 /**
+ * DuckDuckGo-style breadcrumb for the source line
+ * (`host › path › segment`, at most two path segments). Null when the
+ * URL is missing or unparsable, or when it carries no path beyond `/`,
+ * so those cards degrade to the bare domain.
+ */
+export function resultBreadcrumb(url: string | null): string | null {
+  if (typeof url !== 'string' || url.trim() === '') return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  const segments = parsed.pathname.split('/').filter((part) => part !== '');
+  if (segments.length === 0) return null;
+  const trail = segments
+    .slice(0, 2)
+    .map((part) => {
+      try {
+        return decodeURIComponent(part).replace(/_/g, ' ');
+      } catch {
+        return part;
+      }
+    })
+    .join(' › ');
+  return ` › ${trail}`;
+}
+
+/**
  * Deterministic ranking confidence stamped by the backend explanation
  * stage (`metadata.confidence`, 0..1). Returns null when absent or
  * out of range so the UI degrades to the score-only layout.

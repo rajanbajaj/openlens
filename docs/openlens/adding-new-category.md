@@ -108,11 +108,12 @@ for the new mode instead.
 ## 8. Data migration
 
 New crawls classify at extraction. Already-indexed rows need
-`backfill_site_categories()` (mirrors the classifier over stored
-URL+metadata, rewrites only stale rows). There is no CLI or admin
-button — run the script inside the backend container (see the
-team's runbook); safe to run live, then verify with a
-`site_category` count query.
+`scripts/backfill_site_categories.py` (mirrors the classifier over
+stored URL+metadata, rewrites only stale rows). There is no CLI or
+admin button — follow the Category backfill runbook in
+`docs/wiki/Crawler-and-Frontier-Ops.md` (run inside the backend
+container; safe live and idempotent), then verify with the
+`site_category` census query there.
 
 ## 9. Seeds and regen
 

@@ -127,6 +127,7 @@ describe('ResultCard hierarchy', () => {
   it('shows the domain source line and tooltip badges', () => {
     render(<ResultCard result={RICH_RESULT} />);
     expect(screen.getByTestId('result-domain')).toHaveTextContent('example.com');
+    expect(screen.getByTestId('result-domain')).toHaveTextContent('› h');
     expect(screen.getByText('custom_index').closest('span')).toHaveAttribute(
       'title',
       'Indexed by the custom_index search provider',

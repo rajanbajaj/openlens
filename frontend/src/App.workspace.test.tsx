@@ -83,6 +83,23 @@ function searchBodies(stub: ReturnType<typeof mockFetchEnvelope>) {
 }
 
 describe('search workspace', () => {
+  it('renders the quick-filter row and re-runs on quick date change', async () => {
+    const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
+    await submitQuery();
+    await waitFor(() => {
+      expect(screen.getByTestId('quick-filters')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: 'past-day' } });
+    await waitFor(() => {
+      expect(searchBodies(fetchStub)).toHaveLength(2);
+    });
+    const body = searchBodies(fetchStub)[1] as Record<string, unknown>;
+    const filters = body.filters as Record<string, unknown>;
+    expect(typeof filters['date_from']).toBe('string');
+    expect(typeof filters['date_to']).toBe('string');
+    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Date: past-day');
+  });
+
   it('renders the perspectives section above results when the backend sends views', async () => {
     mockFetchEnvelope({
       ...BASE_ENVELOPE,
@@ -158,7 +175,7 @@ describe('search workspace', () => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText(/sort/i), { target: { value: 'newest' } });
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'newest' } });
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });

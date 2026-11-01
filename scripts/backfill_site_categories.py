@@ -1,16 +1,23 @@
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/app/src")
-from contextlib import suppress
+# Resolve the openlens package without assuming the runtime layout:
+# a repo checkout carries scripts/ beside src/ (host, venv, remote),
+# while the backend image mounts the tree at /app (docker).
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+for _candidate in (_REPO_ROOT / "src", Path("/app/src")):
+    if str(_candidate) not in sys.path and _candidate.is_dir():
+        sys.path.insert(0, str(_candidate))
+from contextlib import suppress  # noqa: E402
 
-from openlens.core.interfaces import Document
-from openlens.indexing.crawler import (
+from openlens.core.interfaces import Document  # noqa: E402
+from openlens.indexing.crawler import (  # noqa: E402
     CATEGORY_RULES_VERSION,
     SITE_CATEGORIES,
     classify_site_category,
 )
-from openlens.main import load_app_config
-from openlens.providers.custom_index import open_store
+from openlens.main import load_app_config  # noqa: E402
+from openlens.providers.custom_index import open_store  # noqa: E402
 
 store = open_store(load_app_config())
 rewritten = total = offset = 0
