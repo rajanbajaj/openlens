@@ -18,7 +18,6 @@ export default function FilterToggle({ checked, onChange, disabled = false }: Fi
     <label className="ol-filter-toggle">
       <input
         type="checkbox"
-        aria-label="Exclude sponsored"
         checked={checked}
         disabled={disabled}
         onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
