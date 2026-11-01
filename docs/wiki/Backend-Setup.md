@@ -57,6 +57,13 @@ Caveats:
 - First replica boot basebackups the whole DB (minutes on a big
   index); the 180s `start_period` covers it, and the backend boots
   fine without the replica in the meantime.
+- After any postgres restart the caches are cold and common-term
+  queries (10k+ matches) can take seconds: warm with
+  `CREATE EXTENSION IF NOT EXISTS pg_prewarm;` then
+  `SELECT pg_prewarm('public.documents');` and
+  `SELECT pg_prewarm('idx_documents_search_tsv');` on the replica.
+  `shared_buffers=256MB` (both servers) keeps the hot set resident
+  afterwards.
 
 ## Key routes
 

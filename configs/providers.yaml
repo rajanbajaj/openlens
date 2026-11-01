@@ -37,4 +37,7 @@ providers:
   custom_index:
     enabled: true
     type: custom_index
-    timeout_s: 5
+    # Worst case is a cold cache + common term (10k+ matches: full
+    # COUNT plus rank/sort ≈ 5s); warmed, the same query is <1s.
+    # Keep headroom for cold starts without masking a hung backend.
+    timeout_s: 12

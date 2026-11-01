@@ -24,4 +24,5 @@ fi
 
 exec docker-entrypoint.sh postgres \
   -c hot_standby_feedback=on \
+  -c shared_buffers=256MB \
   -c max_connections="${POSTGRES_MAX_CONNECTIONS:-200}"
