@@ -87,6 +87,16 @@ CATEGORY_SELECT = (
     " kids_domain_hit, news_domain_hit"
 )
 
+#: Seconds before a failed replica pool build is retried. Reads fall
+#: back to the primary in between, so a down replica never blocks.
+_REPLICA_RETRY_S = 30.0
+
+#: Consecutive mid-use replica failures before the replica is dropped
+#: (reads return to primary until the next retry window). A replica
+#: that connects but fails queries — e.g. recovery conflicts — must
+#: not take search down with it.
+_REPLICA_MAX_FAILURES = 3
+
 
 def _backfill_category_metadata(
     metadata: dict[str, Any], values: Any
@@ -257,6 +267,7 @@ class PostgresDocumentStore(DocumentStore):
         pool_size: int = 5,
         connect_timeout: int = 5,
         checkout_timeout: float = 5.0,
+        replica: Mapping[str, Any] | None = None,
     ) -> None:
         if pool_size <= 0:
             raise ValueError(f"pool_size must be positive, got {pool_size}")
@@ -271,6 +282,37 @@ class PostgresDocumentStore(DocumentStore):
             "password": password,
             "connect_timeout": connect_timeout,
         }
+        # Optional read replica: search/suggest reads go here while
+        # writes stay on the primary, so crawl write pressure cannot
+        # starve search. Best-effort — the pool builds lazily and any
+        # failure degrades to the primary (see ``_read_connection``).
+        # A mapping without a non-empty ``host`` disables the replica.
+        self._replica_kwargs: dict[str, Any] | None = None
+        self._replica_pool_size = pool_size
+        if isinstance(replica, Mapping):
+            replica_host = str(replica.get("host") or "").strip()
+            if replica_host:
+                self._replica_kwargs = {
+                    "host": replica_host,
+                    "port": int(replica.get("port", 5432)),
+                    "dbname": str(
+                        replica.get("dbname", replica.get("database", dbname))
+                    ),
+                    "user": str(replica.get("user", user)),
+                    "password": str(replica.get("password", password)),
+                    "connect_timeout": int(
+                        replica.get("connect_timeout", connect_timeout)
+                    ),
+                }
+                self._replica_pool_size = int(replica.get("pool_size", pool_size))
+                if self._replica_pool_size <= 0:
+                    raise ValueError(
+                        "replica pool_size must be positive, got "
+                        f"{self._replica_pool_size}"
+                    )
+        self._replica_pool: queue.Queue[Any] | None = None
+        self._replica_retry_at = 0.0
+        self._replica_consec_failures = 0
         self._state_lock = threading.Lock()
         self._closed = False
         # Short-TTL cache for list_domains: limit -> (cached_at, ranks).
@@ -315,6 +357,31 @@ class PostgresDocumentStore(DocumentStore):
                 kwargs[key] = int(config[key])
         if "checkout_timeout" in config:
             kwargs["checkout_timeout"] = float(config["checkout_timeout"])
+        replica = config.get("replica")
+        if isinstance(replica, Mapping):
+            # Empty host disables the replica (zero behavior change for
+            # existing deploys); user/password/dbname fall back to the
+            # primary's when omitted.
+            replica_host = str(replica.get("host") or "").strip()
+            if replica_host:
+                replica_kwargs: dict[str, Any] = {
+                    "host": replica_host,
+                    "port": int(replica.get("port", kwargs.get("port", 5432))),
+                    "dbname": str(
+                        replica.get(
+                            "dbname",
+                            replica.get("database", kwargs.get("dbname")),
+                        )
+                    ),
+                    "user": str(replica.get("user", kwargs.get("user", "postgres"))),
+                    "password": str(
+                        replica.get("password", kwargs.get("password", ""))
+                    ),
+                }
+                for key in ("pool_size", "connect_timeout"):
+                    if key in replica:
+                        replica_kwargs[key] = int(replica[key])
+                kwargs["replica"] = replica_kwargs
         return cls(**kwargs)
 
     @classmethod
@@ -336,16 +403,109 @@ class PostgresDocumentStore(DocumentStore):
     # -- connection handling ------------------------------------------
 
     def _connect(self) -> Any:
+        return self._connect_to(self._connect_kwargs)
+
+    def _connect_to(self, connect_kwargs: dict[str, Any]) -> Any:
         driver = _load_driver()
         try:
-            return driver.connect(**self._connect_kwargs)
+            return driver.connect(**connect_kwargs)
         except Exception as exc:
             raise ProviderError(
-                f"failed to connect to Postgres at {self._connect_kwargs['host']}"
-                f":{self._connect_kwargs['port']}: {exc}",
+                f"failed to connect to Postgres at {connect_kwargs['host']}"
+                f":{connect_kwargs['port']}: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
+
+    def _ensure_replica_pool(self) -> queue.Queue[Any] | None:
+        """Return the replica pool, building it lazily (None when unusable).
+
+        The pool builds on first read — never at construction — so the
+        backend boots while the replica is still basebacking-up or down.
+        Build failures throttle to one attempt per ``_REPLICA_RETRY_S``;
+        reads use the primary in between.
+        """
+        if self._replica_kwargs is None:
+            return None
+        pool = self._replica_pool
+        if pool is not None:
+            return pool
+        now = time.monotonic()
+        if now < self._replica_retry_at:
+            return None
+        try:
+            pool = queue.Queue()
+            for _ in range(self._replica_pool_size):
+                pool.put(self._connect_to(self._replica_kwargs))
+        except Exception:
+            self._replica_retry_at = now + _REPLICA_RETRY_S
+            return None
+        self._replica_pool = pool
+        return pool
+
+    def _drop_replica_pool(self) -> None:
+        """Discard the replica pool; reads return to primary until retry."""
+        pool, self._replica_pool = self._replica_pool, None
+        self._replica_retry_at = time.monotonic() + _REPLICA_RETRY_S
+        if pool is None:
+            return
+        while True:
+            try:
+                conn = pool.get_nowait()
+            except queue.Empty:
+                return
+            with contextlib.suppress(Exception):
+                conn.close()
+
+    @contextlib.contextmanager
+    def _read_connection(self) -> Iterator[Any]:
+        """Checkout for read-only methods: replica first, primary fallback.
+
+        No replica configured (or still unreachable) degrades to the
+        primary path, so behavior is identical to ``_connection``. A
+        saturated replica also falls back instead of queueing reads
+        behind write pressure on the wrong host. Mid-use replica errors
+        propagate after discarding the connection; after
+        ``_REPLICA_MAX_FAILURES`` consecutive failures the pool is
+        dropped so a sick replica stops failing searches.
+        """
+        # Test doubles may bypass __init__ (no replica attrs): degrade to
+        # the primary path instead of raising, mirroring list_domains.
+        if getattr(self, "_replica_kwargs", None) is None:
+            with self._connection() as conn:
+                yield conn
+            return
+        with self._state_lock:
+            closed = self._closed
+        if closed:
+            raise ProviderError(
+                "Postgres document store is closed",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            )
+        pool = self._ensure_replica_pool()
+        if pool is None:
+            with self._connection() as conn:
+                yield conn
+            return
+        try:
+            conn = pool.get(timeout=self._checkout_timeout)
+        except queue.Empty:
+            with self._connection() as conn:
+                yield conn
+            return
+        try:
+            yield conn
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            self._replica_consec_failures += 1
+            if self._replica_consec_failures >= _REPLICA_MAX_FAILURES:
+                self._drop_replica_pool()
+            raise
+        else:
+            self._replica_consec_failures = 0
+            self._release_to(pool, conn)
 
     @contextlib.contextmanager
     def _connection(self) -> Iterator[Any]:
@@ -374,6 +534,9 @@ class PostgresDocumentStore(DocumentStore):
             self._release(conn)
 
     def _release(self, conn: Any) -> None:
+        self._release_to(self._pool, conn)
+
+    def _release_to(self, pool: queue.Queue[Any], conn: Any) -> None:
         # End any read transaction before recycling: psycopg leaves
         # successful SELECTs "idle in transaction", and the lingering
         # AccessShare locks wedge all later DDL (boot migrations take
@@ -387,7 +550,7 @@ class PostgresDocumentStore(DocumentStore):
             with contextlib.suppress(Exception):
                 conn.close()
         else:
-            self._pool.put(conn)
+            pool.put(conn)
 
     def _replace(self, conn: Any) -> None:
         """Discard a (possibly broken) connection; keep the pool bounded."""
@@ -666,7 +829,7 @@ class PostgresDocumentStore(DocumentStore):
         wanted = [t for t in targets if isinstance(t, str) and t]
         if not wanted:
             return {}
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     placeholders = ",".join(["%s"] * len(wanted))
@@ -711,7 +874,7 @@ class PostgresDocumentStore(DocumentStore):
         return removed
 
     def get(self, doc_id: str) -> Document | None:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
@@ -737,7 +900,7 @@ class PostgresDocumentStore(DocumentStore):
         match; the next crawl upserts them by id (which stamps the hash),
         so the column self-heals without a backfill.
         """
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
@@ -833,7 +996,7 @@ class PostgresDocumentStore(DocumentStore):
             " WHERE url LIKE 'http%'"
             " GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT %s"
         )
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute(sql, (limit,))
@@ -851,7 +1014,7 @@ class PostgresDocumentStore(DocumentStore):
         return result
 
     def count(self) -> int:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers only.
@@ -870,7 +1033,7 @@ class PostgresDocumentStore(DocumentStore):
         """Return one page of documents in stable id order (export seam)."""
         if limit <= 0 or offset < 0:
             return []
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
@@ -905,7 +1068,7 @@ class PostgresDocumentStore(DocumentStore):
             if self._closed:
                 return []
         try:
-            with self._connection() as conn:
+            with self._read_connection() as conn:
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
@@ -957,7 +1120,7 @@ class PostgresDocumentStore(DocumentStore):
             f" WHERE {match}{narrowing}"
             " ORDER BY score DESC LIMIT %s OFFSET %s"
         )
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             try:
                 with conn.cursor() as cur:
                     if category is None:
@@ -989,3 +1152,4 @@ class PostgresDocumentStore(DocumentStore):
                 return
             self._closed = True
         self._drain()
+        self._drop_replica_pool()

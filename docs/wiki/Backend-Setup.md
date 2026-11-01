@@ -28,6 +28,36 @@ uv run python -m openlens.cli config validate --config /tmp/x.yaml
 uv run python -m openlens.cli providers health
 ```
 
+## Read replica (search scaling)
+
+`postgres-replica` is an async streaming standby: search/suggest reads
+(`search`, `list_titles`, `list_domains`, `count`, `get`, …) go there
+while all writes stay on the primary, so crawl write pressure cannot
+starve search. Enabled only when `OPENLENS_PG_REPLICA_HOST` is set
+(compose default: `postgres-replica`); empty means the primary serves
+everything.
+
+Fail-open contract (no operator action needed when the replica is
+down, lagging, or mid-basebackup): the pool builds lazily, reads fall
+back to the primary on any pool failure or saturation, and three
+consecutive mid-use failures drop the pool until the next retry
+window. A sick replica degrades to primary-only search, never to
+failed searches.
+
+Caveats:
+
+- Async means lag (usually ms–s): freshly crawled docs appear in
+  search with a delay. Check it with
+  `SELECT now() - pg_last_xact_replay_timestamp();` on the replica.
+- Crawlers stay primary-only on purpose, so dedup/hash checks never
+  read stale rows.
+- The backend then holds one more pool (`pool_size` conns on the
+  replica): size `POSTGRES_MAX_CONNECTIONS` as
+  `(replicas + 1) × 2 × pool_size + replica_pool_size + headroom`.
+- First replica boot basebackups the whole DB (minutes on a big
+  index); the 180s `start_period` covers it, and the backend boots
+  fine without the replica in the meantime.
+
 ## Key routes
 
 - `POST /api/v1/search`, `GET /api/v1/suggest`,

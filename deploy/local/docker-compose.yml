@@ -26,6 +26,8 @@ services:
       OPENLENS_PG_DBNAME: ${POSTGRES_DB:-openlens}
       OPENLENS_PG_USER: ${POSTGRES_USER:-openlens}
       OPENLENS_PG_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      OPENLENS_PG_REPLICA_HOST: ${OPENLENS_PG_REPLICA_HOST:-postgres-replica}
+      OPENLENS_PG_REPLICA_PORT: ${OPENLENS_PG_REPLICA_PORT:-5432}
       OPENLENS_REDIS_URL: redis://redis:6379/0
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
       OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092,kafka-2:19092,kafka-3:19092}
@@ -340,7 +342,9 @@ services:
     # process holds ~2 pools x OPENLENS_PG_POOL_SIZE connections
     # (default 5 -> ~10). 200 covers 12 crawler replicas + backend
     # with margin; raise with replicas (see Crawler-and-Frontier-Ops).
-    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+    # hba_file allows replication connections for the read replica
+    # (stock pg_hba has no replication entry); see ./pg_hba.conf.
+    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200} -c hba_file=/etc/pg_hba/pg_hba.conf
     # Postgres DSM (parallel-query shared memory) lives in /dev/shm,
     # which Docker caps at 64MB: 12 workers evicting/querying a ~100k
     # queue exhaust it ("could not resize shared memory segment ... No
@@ -355,11 +359,48 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./pg_hba.conf:/etc/pg_hba/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-openlens} -d $${POSTGRES_DB:-openlens}"]
       interval: 10s
       timeout: 5s
       retries: 12
+    networks:
+      - openlens
+
+  # Async streaming read replica: search/suggest reads land here while
+  # writes stay on `postgres`. First boot basebackups from the primary
+  # (takes minutes on a big DB; start_period covers it), later boots
+  # resume WAL replay from the replica-data volume. The backend routes
+  # reads here only when OPENLENS_PG_REPLICA_HOST is set and falls back
+  # to the primary whenever the replica is unreachable — the replica
+  # can lag, restart, or be absent without failing searches.
+  postgres-replica:
+    image: postgres:16
+    mem_limit: 1G
+    cpus: 1.0
+    logging: *default-logging
+    shm_size: 256mb
+    command: ["bash", "/entry/postgres-replica-entrypoint.sh"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      POSTGRES_DB: ${POSTGRES_DB:-openlens}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-200}
+    ports:
+      - "127.0.0.1:${POSTGRES_REPLICA_PORT:-5433}:5432"
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+      - ./postgres-replica-entrypoint.sh:/entry/postgres-replica-entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-openlens} -d $${POSTGRES_DB:-openlens}"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 180s
     networks:
       - openlens
 
@@ -409,6 +450,7 @@ services:
 volumes:
   openlens-data:
   pgdata:
+  replica-data:
   pgadmin-data:
   redis-data:
   kafka1-data:

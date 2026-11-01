@@ -68,6 +68,11 @@ message and diff is scanned for leaked credentials.
   single `X-Admin-Token` gate — including the frontier websocket,
   which accepts the token as a header or `Sec-WebSocket-Protocol`
   value because browsers cannot set handshake headers.
+- Abuse is budgeted, not trusted: per-IP fixed-window rate limiting
+  (429 past budget, `api/rate_limit.py`) and a global request-body cap
+  (413 past `OPENLENS_MAX_BODY_BYTES`, default 1 MiB,
+  `api/body_limit.py`). Both are standard-library only — no new
+  dependency for the blast door.
 
 ## 5. Tests prove behavior, offline
 
@@ -107,6 +112,23 @@ message and diff is scanned for leaked credentials.
   sitemap/RSS discovery feeds for new URLs.
 - Seed lists and `scripts/cleanup.sh` (full reset) are checked in,
   so any environment can be rebuilt or wiped deterministically.
+- Throughput is budgeted against the broker: `max_pages_per_poll`
+  (default 25) keeps worst-case poll work under ~1/4 of
+  `max_poll_interval_ms`, so a busy consumer is never mistaken for a
+  dead one and rebalanced; link fan-out is one broker flush per drain
+  (`KafkaQueue.publish_many`), not one round-trip per link.
+- The worker degrades instead of dying: per-link publish, eviction,
+  discovery, and reporting failures are suppressed at the boundary —
+  the store row is the durable record — so a full queue or a down
+  Kafka stalls progress but never crash-loops the fleet.
+- Workers are visible from second one: a startup banner plus a forced
+  heartbeat before the first drain, so a long initial backlog reads
+  as alive-with-work instead of silent-and-missing.
+- The database is sized on paper first: per-process pools × replicas
+  against `POSTGRES_MAX_CONNECTIONS`, and container `/dev/shm`
+  (Docker default 64 MB) against Postgres parallel-query needs
+  (`shm_size: 256mb`) — each bitten once in production, each now in
+  `deploy/local/docker-compose.yml` with the math inline.
 
 ## 7. Secrets never touch the repo
 
@@ -139,6 +161,15 @@ message and diff is scanned for leaked credentials.
   results header), `aria-live` announcements, keyboard maps on the
   combobox, and capability-gated enhancements (voice input renders
   nothing where the Web Speech API is absent).
+- One control, one labelling path: a wrapping `<label>` plus a
+  redundant `aria-label` on the same input resolves twice in Testing
+  Library and breaks `getByLabelText` — associate once. Both `Select`
+  and `FilterToggle` learned this from red CI, not from review.
+- Query what the user would wait for: the results section remounts
+  on every refetch, so post-refetch assertions use `findBy*` (waits
+  for the remount) instead of assuming the row survived the
+  loading gap. CI runners are ~4x slower than laptops; timing
+  assumptions that pass locally fail there first.
 - Styling uses design tokens + Tailwind utilities; no gradients,
   no emoji iconography, no nested-card or glow-card stacks.
   Prettier and eslint run in CI, so formatting debates end there.
@@ -158,3 +189,21 @@ message and diff is scanned for leaked credentials.
   and queue inspection.
 - `docs/troubleshoots/` records each production incident and its
   fix next to the code it disciplines.
+
+## 10. Scale reads and writes independently
+
+- Search reads (`search`, `list_titles`, `list_domains`, `count`,
+  `get`, …) route to an async streaming replica
+  (`postgres-replica`, `PostgresDocumentStore(replica=…)`); every
+  write stays on the primary, so crawl write pressure cannot starve
+  search past the 5 s provider timeout that first proved the need.
+- The replica is best-effort with three fallback layers: lazy pool
+  build (the backend boots while the replica is still basebacking
+  up), primary fallback on pool failure or saturation, and a
+  3-strike circuit breaker for mid-use failures. A sick replica
+  degrades to primary-only search, never to failed searches.
+- Freshness has a price: async lag (usually ms–s) delays newly
+  crawled docs in results — monitored via
+  `pg_last_xact_replay_timestamp()`, never assumed zero. Crawlers
+  stay primary-only on purpose, so dedup checks never read stale
+  rows.

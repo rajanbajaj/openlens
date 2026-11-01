@@ -80,6 +80,17 @@ storage:
     pool_size: "${OPENLENS_PG_POOL_SIZE:-5}"
     connect_timeout: "${OPENLENS_PG_CONNECT_TIMEOUT:-5}"
     checkout_timeout: "${OPENLENS_PG_CHECKOUT_TIMEOUT:-5.0}"
+    # Optional async streaming read replica: search/suggest reads go
+    # here while writes stay on the primary, so crawl write pressure
+    # cannot starve search. Empty host disables it (default: primary
+    # serves everything, zero behavior change). user/password/dbname
+    # fall back to the primary's when omitted. Replica lag is
+    # milliseconds-to-seconds: freshly crawled docs appear in search
+    # with a delay. Only the backend sets these; crawlers stay on the
+    # primary so dedup checks never read stale rows.
+    replica:
+      host: "${OPENLENS_PG_REPLICA_HOST:-}"
+      port: "${OPENLENS_PG_REPLICA_PORT:-5432}"
 
 # Pipeline plugins, toggled without core edits. Entries are
 # `{name, enabled, config?}` resolved via the plugin registry.

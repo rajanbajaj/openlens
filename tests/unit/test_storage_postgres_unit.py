@@ -7,9 +7,13 @@ in ``tests/integration/test_storage_postgres.py`` cannot guard.
 
 from __future__ import annotations
 
+import queue
+import threading
 from typing import Any
 
-from openlens.core.interfaces import Document
+import pytest
+
+from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.postgres_backend import (
     PostgresDocumentStore,
     _doc_to_row,
@@ -290,3 +294,128 @@ def test_update_document_tsvector_folds_in_description() -> None:
     assert sql.count("coalesce(%s, '')") == 3
     assert sql.count("%s") == len(params)
     assert params[-2] == "meta desc here"
+
+
+# -- read-replica routing -------------------------------------------------
+
+
+def _search_rows() -> list[tuple[Any, ...]]:
+    return [
+        (
+            "d1",
+            "hello world",
+            "hello world content",
+            "https://x.test/a",
+            "{}",
+            "text/html",
+            "2024-01-02",
+            "other",
+            None,
+            None,
+            0,
+            0,
+            120.0,
+            0.75,
+        ),
+    ]
+
+
+def _store_with_replica(
+    primary_cursor: _StubCursor,
+    replica_cursor: _StubCursor | None = None,
+    replica_kwargs: dict[str, Any] | None = None,
+) -> PostgresDocumentStore:
+    """Offline store with stubbed primary (and optional replica pool)."""
+    store = PostgresDocumentStore.__new__(PostgresDocumentStore)
+    store._schema = "public"
+    store._table = "documents"
+    store._checkout_timeout = 0.5
+    store._closed = False
+    store._state_lock = threading.Lock()
+    store._connect_kwargs = {}
+    store._connection = (  # type: ignore[method-assign]
+        lambda: _StubConnectionCtx(primary_cursor)
+    )
+    store._replica_kwargs = replica_kwargs
+    store._replica_pool = None
+    if replica_cursor is not None:
+        pool: queue.Queue[Any] = queue.Queue()
+        pool.put(_StubConnectionCtx(replica_cursor))
+        pool.put(_StubConnectionCtx(replica_cursor))
+        pool.put(_StubConnectionCtx(replica_cursor))
+        store._replica_pool = pool
+    store._replica_pool_size = 1
+    store._replica_retry_at = 0.0
+    store._replica_consec_failures = 0
+    return store
+
+
+def test_read_uses_replica_when_healthy() -> None:
+    primary = _StubCursor(_search_rows())
+    replica = _StubCursor(_search_rows())
+    store = _store_with_replica(primary, replica, replica_kwargs={"host": "replica"})
+    docs, total = store.search("hello", limit=10)
+    assert total == 1 and docs[0][0].id == "d1"
+    assert replica.executed, "expected the query on the replica"
+    assert not primary.executed, "primary must stay untouched"
+    assert store._replica_pool is not None
+    assert store._replica_pool.qsize() == 3  # connection recycled
+
+
+def test_read_falls_back_when_replica_unreachable() -> None:
+    primary = _StubCursor(_search_rows())
+    store = _store_with_replica(primary, None, replica_kwargs={"host": "replica"})
+
+    def _boom(_kwargs: dict[str, Any]) -> Any:
+        raise RuntimeError("replica down")
+
+    store._connect_to = _boom  # type: ignore[method-assign]
+    docs, total = store.search("hello", limit=10)
+    assert total == 1 and docs[0][0].id == "d1"
+    assert primary.executed, "expected fallback to the primary"
+
+
+def test_sick_replica_opens_circuit_back_to_primary() -> None:
+    class _FailCursor(_StubCursor):
+        def execute(self, sql: str, params: Any = None) -> None:
+            super().execute(sql, params)
+            raise RuntimeError("recovery conflict")
+
+    primary = _StubCursor(_search_rows())
+    store = _store_with_replica(
+        primary, _FailCursor(_search_rows()), {"host": "replica"}
+    )
+    for _ in range(3):
+        with pytest.raises(ProviderError):
+            store.search("hello", limit=10)
+    assert store._replica_pool is None, "circuit must open after 3 failures"
+    docs, total = store.search("hello", limit=10)
+    assert total == 1 and docs[0][0].id == "d1"
+    assert primary.executed, "reads return to the primary"
+
+
+def test_from_config_parses_replica(monkeypatch: Any) -> None:
+    monkeypatch.setattr(PostgresDocumentStore, "_connect", lambda self, *a: object())
+    monkeypatch.setattr(PostgresDocumentStore, "_init_schema", lambda self: None)
+    store = PostgresDocumentStore.from_config(
+        {"host": "primary", "replica": {"host": "replica", "port": 5433}}
+    )
+    try:
+        assert store._replica_kwargs is not None
+        assert store._replica_kwargs["host"] == "replica"
+        assert store._replica_kwargs["port"] == 5433
+        assert store._replica_pool is None  # lazy: never built at boot
+    finally:
+        store.close()
+    plain = PostgresDocumentStore.from_config({"host": "primary"})
+    try:
+        assert plain._replica_kwargs is None
+    finally:
+        plain.close()
+    blank = PostgresDocumentStore.from_config(
+        {"host": "primary", "replica": {"host": "  "}}
+    )
+    try:
+        assert blank._replica_kwargs is None
+    finally:
+        blank.close()

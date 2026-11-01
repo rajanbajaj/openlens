@@ -45,8 +45,9 @@ per (fetch + politeness wait + index writes). Scale in this order:
    not one round-trip per link.
 
 **Connection math** (Postgres is the ceiling): each process holds ~2
-pools × `OPENLENS_PG_POOL_SIZE` (default 5 → ~10 server connections),
-backend included. Provision
+pools × `OPENLENS_PG_POOL_SIZE` (default 5 → ~10 server connections);
+the backend holds one more pool on the replica when it is enabled.
+Provision
 `(replicas + 1) × 2 × pool_size + headroom` via
 `POSTGRES_MAX_CONNECTIONS` (compose default 200 — covers 12 replicas
 at pool 5). We hit `sorry, too many clients` before this knob
