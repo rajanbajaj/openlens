@@ -7,12 +7,15 @@
 import type {
   AdminConfigDoc,
   AiCitation,
+  AnalyticsCounts,
   CacheStatus,
   CrawlRequest,
   CrawlRequestList,
   Diagnostics,
   ErrorEnvelope,
   FeedbackResponse,
+  FeedbackSummary,
+  FrontierDiscovery,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -293,6 +296,59 @@ export function readFrontierNewUrls(value: unknown): FrontierStatus['new_urls'] 
 export function readFrontierSettings(value: unknown): FrontierSettings | null {
   if (!isFrontierSettingsResponse(value)) return null;
   return value.settings;
+}
+
+/** One worker discovery-pass summary, or false when absent or malformed. */
+export function isFrontierDiscovery(value: unknown): value is FrontierDiscovery {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.at === 'number' &&
+    typeof value.feeds_checked === 'number' &&
+    typeof value.new_urls === 'number' &&
+    typeof value.refreshed === 'number' &&
+    (value.worker_id === undefined || typeof value.worker_id === 'string')
+  );
+}
+
+/** Discovery summary, or `null` when absent or malformed. */
+export function readFrontierDiscovery(value: unknown): FrontierDiscovery | null {
+  if (!isRecord(value)) return null;
+  const discovery: unknown = value.discovery;
+  return isFrontierDiscovery(discovery) ? discovery : null;
+}
+
+/** `GET /api/v1/admin/analytics/counts` response shape. */
+export function isAnalyticsCounts(value: unknown): value is AnalyticsCounts {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.days === 'number' &&
+    typeof value.total === 'number' &&
+    isNumberRecord(value.by_name)
+  );
+}
+
+/** One per-document feedback rollup. */
+function isFeedbackDocSummary(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.doc_id === 'string' &&
+    typeof value.total === 'number' &&
+    typeof value.helpful === 'number' &&
+    typeof value.not_helpful === 'number' &&
+    typeof value.reports === 'number'
+  );
+}
+
+/** `GET /api/v1/admin/feedback/summary` response shape. */
+export function isFeedbackSummary(value: unknown): value is FeedbackSummary {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.total === 'number' &&
+    isNumberRecord(value.by_action) &&
+    isNumberRecord(value.by_reason) &&
+    Array.isArray(value.top_docs) &&
+    value.top_docs.every(isFeedbackDocSummary)
+  );
 }
 
 /** `GET /api/v1/admin/config/{name}` response shape (versioned doc). */

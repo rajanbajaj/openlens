@@ -8,9 +8,11 @@
 
 import {
   isAdminConfigDoc,
+  isAnalyticsCounts,
   isCrawlRequest,
   isCrawlRequestList,
   isErrorEnvelope,
+  isFeedbackSummary,
   isFrontierSettingsResponse,
   isFrontierStatus,
   isFrontierWorkersResponse,
@@ -18,6 +20,8 @@ import {
   isSuggestResponse,
 } from './guard.ts';
 import {
+  adminAnalyticsCountsApiV1AdminAnalyticsCountsGet,
+  adminFeedbackSummaryApiV1AdminFeedbackSummaryGet,
   frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
   frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
   frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet,
@@ -25,9 +29,11 @@ import {
 import type {
   AdminConfigDoc,
   AdminConfigName,
+  AnalyticsCounts,
   CrawlRequest,
   CrawlRequestList,
   FeedbackRequest,
+  FeedbackSummary,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -641,4 +647,50 @@ export async function saveAdminConfig(
     );
   }
   return parseFrontier(response, isAdminConfigDoc);
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/admin/analytics/counts` (admin-only
+ * read). Resolves to `null` on transport, auth, store-unavailable
+ * (503), or shape failures so the analytics view degrades to an
+ * empty panel with a notice instead of crashing the page. Pass
+ * `adminToken` when the backend sets `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function fetchAnalyticsCounts(
+  days: number = 30,
+  adminToken: string = '',
+): Promise<AnalyticsCounts | null> {
+  let res;
+  try {
+    res = await adminAnalyticsCountsApiV1AdminAnalyticsCountsGet(
+      { days },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isAnalyticsCounts(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/admin/feedback/summary` (admin-only
+ * read). Resolves to `null` on transport, auth, or shape failures so
+ * the analytics view degrades to an empty panel with a notice
+ * instead of crashing the page. Pass `adminToken` when the backend
+ * sets `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function fetchFeedbackSummary(
+  adminToken: string = '',
+): Promise<FeedbackSummary | null> {
+  let res;
+  try {
+    res = await adminFeedbackSummaryApiV1AdminFeedbackSummaryGet({
+      headers: { ...frontierAdminHeaders(adminToken) },
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFeedbackSummary(res.data) ? res.data : null;
 }

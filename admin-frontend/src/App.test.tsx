@@ -19,7 +19,15 @@ describe('admin shell', () => {
     stubFetchAllFailing();
     render(<App />);
     expect(screen.getByTestId('frontier-admin-token')).toBeInTheDocument();
-    for (const tab of ['frontier', 'models', 'providers', 'ranking', 'query', 'plugins']) {
+    for (const tab of [
+      'frontier',
+      'analytics',
+      'models',
+      'providers',
+      'ranking',
+      'query',
+      'plugins',
+    ]) {
       expect(screen.getByTestId(`admin-tab-${tab}`)).toBeInTheDocument();
     }
   });

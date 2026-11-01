@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -40,6 +41,9 @@ class AnalyticsStore:
         self._lock = threading.Lock()
         self._closed = False
         try:
+            if db_path != ":memory:":
+                parent = os.path.dirname(os.path.abspath(db_path))
+                os.makedirs(parent, exist_ok=True)
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             with self._lock:
@@ -367,8 +371,10 @@ def open_analytics_store(config: Mapping[str, Any] | None = None) -> Any:
     """Open the configured analytics store (sqlite default, else ClickHouse).
 
     ``{"backend": "clickhouse", "clickhouse": {...}}`` selects ClickHouse;
-    anything else opens SQLite (``sqlite.db_path``, default in-memory), so
-    offline dev and tests boot with no services.
+    anything else opens SQLite (``sqlite.db_path``, default
+    ``data/openlens-analytics.db``), so offline dev boots with no services
+    and the API and worker share one durable file. Explicit ``:memory:``
+    keeps tests hermetic.
     """
     cfg = config if isinstance(config, Mapping) else {}
     backend = str(cfg.get("backend", "sqlite") or "sqlite").strip().lower()
@@ -381,7 +387,10 @@ def open_analytics_store(config: Mapping[str, Any] | None = None) -> Any:
             merged["retention_days"] = cfg["retention_days"]
         return ClickHouseAnalyticsStore.from_config({"clickhouse": merged})
     sqlite_cfg = cfg.get("sqlite", {})
-    db_path = ":memory:"
+    db_path = "data/openlens-analytics.db"
     if isinstance(sqlite_cfg, Mapping):
-        db_path = str(sqlite_cfg.get("db_path", ":memory:") or ":memory:")
+        db_path = str(
+            sqlite_cfg.get("db_path", "data/openlens-analytics.db")
+            or "data/openlens-analytics.db"
+        )
     return AnalyticsStore(db_path)

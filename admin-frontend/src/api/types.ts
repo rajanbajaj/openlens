@@ -180,6 +180,15 @@ export interface FrontierStats {
   errors: number;
 }
 
+/** One worker's last discovery-pass summary (feeds + refresh). */
+export interface FrontierDiscovery {
+  worker_id?: string;
+  at: number;
+  feeds_checked: number;
+  new_urls: number;
+  refreshed: number;
+}
+
 /** One crawler worker recently heard from by the API replica. */
 export interface FrontierWorker {
   worker_id: string;
@@ -187,6 +196,8 @@ export interface FrontierWorker {
   last_seen: number;
   claimed: number;
   status: string;
+  role?: string;
+  discovery?: FrontierDiscovery | null;
   stats?: FrontierStats | null;
   pages_per_min?: number | null;
   tokens_per_min?: number | null;
@@ -226,6 +237,39 @@ export interface FrontierStatus {
   cleared_queued?: number;
   /** POST /api/v1/frontier/clear echo; absent or false elsewhere. */
   kafka_purged?: boolean;
+  /** Best-effort consumer-group lag for the crawl topic (null when unknown). */
+  kafka_lag_total?: number | null;
+  /** Lag broken down per partition (null when unknown). */
+  kafka_lag_partitions?: number | null;
+  /** Cluster-map version the API replica serves. */
+  cluster_config_version?: number;
+  /** Latest discovery-pass summary (null when no pass ran yet). */
+  discovery?: FrontierDiscovery | null;
+}
+
+/** Admin analytics overview: durable per-name counts over a window. */
+export interface AnalyticsCounts {
+  days: number;
+  total: number;
+  by_name: Record<string, number>;
+}
+
+/** Per-document feedback rollup for the admin summary. */
+export interface FeedbackDocSummary {
+  doc_id: string;
+  total: number;
+  helpful: number;
+  not_helpful: number;
+  reports: number;
+  top_reason?: string | null;
+}
+
+/** Admin feedback overview: totals plus the noisiest documents. */
+export interface FeedbackSummary {
+  total: number;
+  by_action: Record<string, number>;
+  by_reason: Record<string, number>;
+  top_docs: FeedbackDocSummary[];
 }
 
 /** Frontier crawl settings (PUT body is strict: unknown keys rejected). */

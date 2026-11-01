@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import type { AdminConfigName } from './api/types.ts';
+import { AnalyticsPanel } from './components/AnalyticsPanel.tsx';
 import { ConfigEditor } from './components/ConfigEditor.tsx';
 import { FrontierDrawer } from './components/FrontierDrawer.tsx';
 import { Logo } from './components/Logo.tsx';
 import { TokenBar, loadStoredToken } from './components/TokenBar.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 
-type AdminTab = 'frontier' | AdminConfigName;
+type AdminTab = 'frontier' | 'analytics' | AdminConfigName;
 
 const TABS: Array<{ id: AdminTab; label: string }> = [
   { id: 'frontier', label: 'URL frontier' },
+  { id: 'analytics', label: 'Analytics' },
   { id: 'models', label: 'Models' },
   { id: 'providers', label: 'Providers' },
   { id: 'ranking', label: 'Ranking' },
@@ -101,6 +103,8 @@ export default function App() {
       </nav>
       {tab === 'frontier' ? (
         <FrontierDrawer adminToken={adminToken} />
+      ) : tab === 'analytics' ? (
+        <AnalyticsPanel adminToken={adminToken} />
       ) : (
         <ConfigEditor
           name={tab}

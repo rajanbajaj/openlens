@@ -307,3 +307,37 @@ def test_cli_rejects_nonpositive_batch_size() -> None:
 
     args = argparse.Namespace(batch_size=0, max_iterations=None)
     assert _cmd_analytics_worker(args) == FAILURE_EXIT
+
+
+def test_open_analytics_store_defaults_to_shared_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty config opens a shared file store, never a private :memory: db.
+
+    A ``:memory:`` default gives the API and the analytics-worker separate
+    empty databases, so admin counts would always read zero.
+    """
+    from openlens.analytics import store as store_module
+
+    seen: list[str] = []
+
+    class _Fake:
+        def __init__(self, db_path: str = ":memory:") -> None:
+            seen.append(db_path)
+
+    monkeypatch.setattr(store_module, "AnalyticsStore", _Fake)
+    store_module.open_analytics_store({})
+    store_module.open_analytics_store(None)
+    assert seen == ["data/openlens-analytics.db", "data/openlens-analytics.db"]
+
+
+def test_analytics_store_creates_parent_dirs(tmp_path) -> None:
+    from openlens.analytics.store import AnalyticsStore
+
+    db = tmp_path / "nested" / "analytics.db"
+    store = AnalyticsStore(str(db))
+    try:
+        assert db.exists()
+        assert store.counts_by_name(since_days=30) == {}
+    finally:
+        store.close()

@@ -5,8 +5,10 @@
  * OpenAPI spec version: 0.1.0
  */
 import type {
+  AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams,
   AdminConfigDocResponseSchema,
   AdminConfigPutSchema,
+  AnalyticsCountsSchema,
   ChatRequestSchema,
   ChatResponseSchema,
   ClusterMapResponseSchema,
@@ -343,6 +345,76 @@ export const adminFeedbackSummaryApiV1AdminFeedbackSummaryGet = async (
     status: res.status,
     headers: res.headers,
   } as adminFeedbackSummaryApiV1AdminFeedbackSummaryGetResponse;
+};
+
+export type adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse200 = {
+  data: AnalyticsCountsSchema;
+  status: 200;
+};
+
+export type adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponseSuccess =
+  adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse200 & {
+    headers: Headers;
+  };
+export type adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponseError =
+  adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse =
+  | adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponseSuccess
+  | adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponseError;
+
+export const getAdminAnalyticsCountsApiV1AdminAnalyticsCountsGetUrl = (
+  params?: AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/admin/analytics/counts?${stringifiedParams}`
+    : `/api/v1/admin/analytics/counts`;
+};
+
+/**
+ * Admin-only durable analytics counts (same gate as config mutations).
+ *
+ * Reads the separate analytics database over the trailing ``days``
+ * window. Fail-closed auth, fail-open store: an unreachable analytics
+ * database reports 503 instead of breaking the admin screen.
+ * @summary Admin Analytics Counts
+ */
+export const adminAnalyticsCountsApiV1AdminAnalyticsCountsGet = async (
+  params?: AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams,
+  options?: RequestInit,
+): Promise<adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse> => {
+  const res = await fetch(getAdminAnalyticsCountsApiV1AdminAnalyticsCountsGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse;
 };
 
 export type listPrefsApiV1PrefsGetResponse200 = {

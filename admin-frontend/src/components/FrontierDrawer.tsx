@@ -16,6 +16,7 @@ import {
 } from '../api/generated/openlens.ts';
 import {
   isFrontierStatus,
+  readFrontierDiscovery,
   readFrontierNewUrls,
   readFrontierQueue,
   readFrontierSettings,
@@ -419,6 +420,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const queue = status ? readFrontierQueue(status) : [];
   const newUrls = status ? readFrontierNewUrls(status) : [];
   const checkpoint = status?.checkpoint;
+  const discovery = status ? readFrontierDiscovery(status) : null;
+  const kafkaLag = typeof status?.kafka_lag_total === 'number' ? status.kafka_lag_total : null;
 
   return (
     <GlassPanel variant="rail">
@@ -462,6 +465,16 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 : 'No checkpoint yet'}
             </p>
 
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl diagnostics</h4>
+            <p data-testid="frontier-kafka-lag" className="my-ol-s text-ol-s">
+              Kafka lag: {kafkaLag === null ? 'unknown' : `${kafkaLag} urls`}
+            </p>
+            <p data-testid="frontier-discovery" className="my-ol-s text-ol-s">
+              {discovery
+                ? `Discovery: ${discovery.feeds_checked} feeds · ${discovery.new_urls} new · ${discovery.refreshed} refreshed`
+                : 'Discovery: no pass reported yet'}
+            </p>
+
             <h4 className="mt-ol-m mb-ol-s text-ol-m">Workers ({workers.length})</h4>
             {workers.length === 0 ? (
               <p className="my-ol-s text-ol-s">No workers heartbeating</p>
@@ -490,6 +503,13 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                           · {formatRate(worker.pages_per_min)} pages,{' '}
                           {formatRate(worker.tokens_per_min)} tokens · {worker.stats.pages} pages ·{' '}
                           {worker.stats.tokens} tokens total
+                        </>
+                      ) : null}
+                      {worker.discovery ? (
+                        <>
+                          {' '}
+                          · discovery: {worker.discovery.feeds_checked} feeds,{' '}
+                          {worker.discovery.new_urls} new, {worker.discovery.refreshed} refreshed
                         </>
                       ) : null}
                     </li>

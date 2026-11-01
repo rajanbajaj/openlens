@@ -327,7 +327,12 @@ analytics:
   store:
     backend: ${OPENLENS_ANALYTICS_BACKEND:-sqlite}
     sqlite:
-      db_path: ${OPENLENS_ANALYTICS_SQLITE_PATH:-:memory:}
+      # File-backed by default so the API and the analytics-worker share
+      # one durable store off-compose (``:memory:`` gives every process
+      # a private empty database, so counts would always read zero).
+      # Override with OPENLENS_ANALYTICS_SQLITE_PATH (``:memory:`` keeps
+      # tests hermetic).
+      db_path: ${OPENLENS_ANALYTICS_SQLITE_PATH:-data/openlens-analytics.db}
     clickhouse:
       host: ${OPENLENS_CLICKHOUSE_HOST:-localhost}
       port: ${OPENLENS_CLICKHOUSE_PORT:-8123}

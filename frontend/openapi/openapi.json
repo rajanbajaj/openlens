@@ -208,6 +208,50 @@
         }
       }
     },
+    "/api/v1/admin/analytics/counts": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Analytics Counts",
+        "description": "Admin-only durable analytics counts (same gate as config mutations).\n\nReads the separate analytics database over the trailing ``days``\nwindow. Fail-closed auth, fail-open store: an unreachable analytics\ndatabase reports 503 instead of breaking the admin screen.",
+        "operationId": "admin_analytics_counts_api_v1_admin_analytics_counts_get",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 30,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsCountsSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/prefs": {
       "get": {
         "tags": [
@@ -1097,6 +1141,35 @@
         ],
         "title": "AdminConfigPutSchema",
         "description": "PUT /api/v1/admin/config/{doc} body: one config doc section.\n\nThe wrapped mapping (or list, for the list-form ``plugins:``\nsection) is validated by the existing startup validators\n(models/providers/ranking/query/plugins); anything the boot path\nwould reject fails with 422. Extra top-level keys are rejected so no\nadjacent sections can be smuggled into a single-doc write."
+      },
+      "AnalyticsCountsSchema": {
+        "properties": {
+          "days": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Days"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "by_name": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "days",
+          "total",
+          "by_name"
+        ],
+        "title": "AnalyticsCountsSchema",
+        "description": "Admin analytics overview: durable per-name counts over a window."
       },
       "ChatCitationSchema": {
         "properties": {
