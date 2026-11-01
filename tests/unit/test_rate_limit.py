@@ -33,6 +33,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         "OPENLENS_RATE_LIMIT_ENABLED",
         "OPENLENS_RATE_LIMIT_SEARCH",
         "OPENLENS_RATE_LIMIT_SUGGEST",
+        "OPENLENS_RATE_LIMIT_CHAT",
         "OPENLENS_RATE_LIMIT_FEEDBACK",
         "OPENLENS_RATE_LIMIT_ADMIN",
         "OPENLENS_RATE_LIMIT_WS",
@@ -47,6 +48,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def test_scope_mapping() -> None:
     assert scope_for_request("POST", "/api/v1/search") == "search"
     assert scope_for_request("GET", "/api/v1/suggest") == "suggest"
+    assert scope_for_request("POST", "/api/v1/agent/chat") == "chat"
     assert scope_for_request("POST", "/api/v1/feedback") == "feedback"
     assert scope_for_request("POST", "/api/v1/frontier/pause") == "admin"
     assert scope_for_request("PUT", "/api/v1/admin/config/query") == "admin"
@@ -87,6 +89,19 @@ def test_search_limited_per_ip_with_retry_after(
     assert client.post("/api/v1/search", json={"query": "a"}).status_code == 200
     assert client.post("/api/v1/search", json={"query": "b"}).status_code == 200
     limited = client.post("/api/v1/search", json={"query": "c"})
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+    assert "Retry-After" in limited.headers
+
+
+def test_chat_limited_per_ip_with_retry_after(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENLENS_RATE_LIMIT_CHAT", "2/60")
+    body = {"message": "hi", "history": [], "limit": 2}
+    assert client.post("/api/v1/agent/chat", json=body).status_code == 200
+    assert client.post("/api/v1/agent/chat", json=body).status_code == 200
+    limited = client.post("/api/v1/agent/chat", json=body)
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "rate_limited"
     assert "Retry-After" in limited.headers

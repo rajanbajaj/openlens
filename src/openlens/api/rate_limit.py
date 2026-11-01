@@ -1,9 +1,10 @@
 """Per-IP fixed-window rate limiting (standard library only).
 
 Scopes protect the public, unauthenticated surface: expensive retrieval
-(`search`, `suggest`), writable spam targets (`feedback`), the admin
-mutation plane (`admin`), and live-socket handshakes (`ws`). Reads that
-dashboards poll (status/settings/workers) stay unlimited.
+(`search`, `suggest`), the multi-model-call agent turn (`chat`),
+writable spam targets (`feedback`), the admin mutation plane
+(`admin`), and live-socket handshakes (`ws`). Reads that dashboards
+poll (status/settings/workers) stay unlimited.
 
 Configuration is environment-driven so tests and deploys tune without
 rebuilds (``<limit>/<window_seconds>`` per scope, all optional):
@@ -12,6 +13,8 @@ rebuilds (``<limit>/<window_seconds>`` per scope, all optional):
   Set to ``false`` to disable (local profiling, trusted networks).
 - ``OPENLENS_RATE_LIMIT_SEARCH`` — default ``120/60``.
 - ``OPENLENS_RATE_LIMIT_SUGGEST`` — default ``120/60``.
+- ``OPENLENS_RATE_LIMIT_CHAT`` — default ``30/60`` (agent turns burn
+  rewrite + search + fetch + synthesis model calls).
 - ``OPENLENS_RATE_LIMIT_FEEDBACK`` — default ``20/60``.
 - ``OPENLENS_RATE_LIMIT_ADMIN`` — default ``60/60``.
 - ``OPENLENS_RATE_LIMIT_WS`` — default ``30/60``.
@@ -34,6 +37,7 @@ RATE_LIMIT_ENABLED_ENV = "OPENLENS_RATE_LIMIT_ENABLED"
 _DEFAULTS: dict[str, tuple[int, float]] = {
     "search": (120, 60.0),
     "suggest": (120, 60.0),
+    "chat": (30, 60.0),
     "feedback": (20, 60.0),
     "admin": (60, 60.0),
     "ws": (30, 60.0),
@@ -77,6 +81,8 @@ def scope_for_request(method: str, path: str) -> str | None:
         return "search"
     if method == "GET" and path == "/api/v1/suggest":
         return "suggest"
+    if method == "POST" and path == "/api/v1/agent/chat":
+        return "chat"
     if method == "POST" and path == "/api/v1/feedback":
         return "feedback"
     if method in ("POST", "PUT", "DELETE", "PATCH") and (

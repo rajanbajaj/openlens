@@ -23,6 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from openlens.api.body_limit import BodyLimitMiddleware
 from openlens.api.errors import error_body, register_exception_handlers
 from openlens.api.rate_limit import (
     RateLimiter,
@@ -624,6 +625,11 @@ def create_app(engine: Optional[Engine] = None) -> FastAPI:
             "X-Admin-Token",
         ],
     )
+    # Global request-body cap (413 past OPENLENS_MAX_BODY_BYTES, 1 MiB
+    # default): header fast-reject plus a counting receive wrapper for
+    # chunked bodies. Runs inside CORS so rejected floods still get
+    # correct preflight handling.
+    app.add_middleware(BodyLimitMiddleware)
     app.state.config = load_app_config()
     # Configured doc store for the admin config API. Construction performs
     # no I/O (both backends connect lazily), so importing this module and
@@ -638,8 +644,9 @@ def create_app(engine: Optional[Engine] = None) -> FastAPI:
     wrapped: Optional[Engine] = _ObservedEngine(engine) if engine is not None else None
     app.state.engine = wrapped
     # Per-IP abuse throttle for the public surface (search/suggest/
-    # feedback/admin mutations). State is per backend replica; routes
-    # read it for the live-socket handshake, which middleware can't see.
+    # chat/feedback/admin mutations). State is per backend replica;
+    # routes read it for the live-socket handshake, which middleware
+    # can't see.
     app.state.rate_limiter = RateLimiter()
     register_exception_handlers(app)
     app.include_router(search_router)
