@@ -21,7 +21,6 @@ export function Select({ label, options, onChange, ...rest }: SelectProps) {
       {label}
       <select
         className="ol-select font-normal text-ol-ink bg-white border border-ol-line rounded-ol-s px-ol-s py-ol-m disabled:bg-ol-well disabled:text-ol-ink-soft"
-        aria-label={label}
         onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
           onChange(event.target.value);
         }}
