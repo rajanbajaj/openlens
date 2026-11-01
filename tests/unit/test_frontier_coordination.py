@@ -388,6 +388,33 @@ def test_ordered_postgres_schema_migrates_before_indexing() -> None:
     assert sorted(stmts) == sorted(raw)
 
 
+def test_frontier_priority_index_covers_claim_ordering() -> None:
+    """Regression: claim()/pending() sort 100k+ queued rows without it.
+
+    Both ``claim`` (``WHERE status='queued' ORDER BY priority DESC, depth
+    ASC, discovered_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED``) and
+    ``pending`` sort by the priority-first ordering, but the only index
+    was ``(status, depth, discovered_at)``. On a deep backlog every
+    claim, dashboard status poll, 2s WS push, and crawl-request review
+    paid a full sort under write contention (multi-second responses,
+    workers completing zero pages so heartbeats carried ``stats: null``).
+    Every schema source must therefore carry the priority-first index.
+    """
+    sources = {
+        "sqlite migrations": sqlite_frontier_coordination_migrations(),
+        "postgres ddl": postgres_frontier_ddl("public"),
+        "postgres migrations": postgres_frontier_coordination_migrations("public"),
+    }
+    for name, stmts in sources.items():
+        collapsed = " ".join(" ".join(s.split()) for s in stmts).lower()
+        assert "idx_frontier_status_priority" in collapsed, (
+            f"missing priority index in {name}"
+        )
+        assert "(status, priority desc, depth asc, discovered_at asc)" in collapsed, (
+            f"priority index has wrong column shape in {name}"
+        )
+
+
 def test_coordination_defaults_preserve_single_worker_shape() -> None:
     class _LegacyStore(FrontierStore):
         def enqueue(self, url: str, depth: int = 0, parent_url=None) -> bool:  # type: ignore[no-untyped-def]

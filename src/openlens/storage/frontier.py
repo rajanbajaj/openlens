@@ -38,7 +38,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from openlens.core.interfaces import ProviderError
 
@@ -297,6 +297,28 @@ class FrontierStore(ABC):
         already finished instead of reshowing them as queued.
         """
         return None
+
+    def statuses_of(self, urls: Iterable[str]) -> dict[str, str]:
+        """Row statuses for normalized URLs, keyed by normalized URL.
+
+        Bulk form of :meth:`status_of`: unknown URLs are omitted. The
+        default loops ``status_of`` (correct everywhere); backends
+        override with a chunked single-query lookup so a dashboard
+        holding thousands of in-memory seeds does not pay one round
+        trip per seed on every status poll.
+        """
+        out: dict[str, str] = {}
+        for url in urls or []:
+            status: str | None = None
+            with contextlib.suppress(Exception):
+                status = self.status_of(url)
+            if status is None:
+                continue
+            try:
+                out[normalize_frontier_url(url)] = str(status)
+            except (AttributeError, ValueError):
+                continue
+        return out
 
     def reseed(self, url: str) -> bool:
         """Revive a terminal row (failed/skipped/done) back to queued.
@@ -727,6 +749,14 @@ def sqlite_frontier_coordination_migrations() -> list[str]:
         " updated_at TEXT NOT NULL"
         " DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
         ")",
+        # Priority-first claim/pending ordering (claim ... ORDER BY
+        # priority DESC, depth ASC, discovered_at ASC). Lives here rather
+        # than SQLITE_FRONTIER_DDL because that script runs before the
+        # coordination column backfill on legacy files, where `priority`
+        # does not exist yet; _ensure_sqlite_coordination runs this after
+        # the columns exist (IF NOT EXISTS keeps re-opens idempotent).
+        "CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"
+        " ON frontier_queue(status, priority DESC, depth ASC, discovered_at ASC)",
     ]
     return stmts
 
@@ -876,6 +906,9 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         f" ON {q}.frontier_queue (status, depth, discovered_at)",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_owner"
         f" ON {q}.frontier_queue (owner, status)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"
+        f" ON {q}.frontier_queue"
+        " (status, priority DESC, depth ASC, discovered_at ASC)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]
@@ -925,6 +958,9 @@ def postgres_frontier_coordination_migrations(
         ")",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_owner"  # noqa: S608
         f" ON {q}.frontier_queue (owner, status)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"  # noqa: S608
+        f" ON {q}.frontier_queue"
+        " (status, priority DESC, depth ASC, discovered_at ASC)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]
@@ -1726,6 +1762,36 @@ class SqliteFrontierStore(FrontierStore):
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to look up frontier URL status: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def statuses_of(self, urls: Iterable[str]) -> dict[str, str]:
+        norms: list[str] = []
+        for url in urls or []:
+            try:
+                norm = normalize_frontier_url(url)
+            except (AttributeError, ValueError):
+                continue
+            if norm not in norms:
+                norms.append(norm)
+        out: dict[str, str] = {}
+        try:
+            with self._lock:
+                for start in range(0, len(norms), 500):
+                    chunk = norms[start : start + 500]
+                    marks = ",".join("?" for _ in chunk)
+                    rows = self._conn.execute(
+                        "SELECT url, status FROM frontier_queue"  # noqa: S608
+                        f" WHERE url IN ({marks})",
+                        tuple(chunk),
+                    ).fetchall()
+                    for row in rows:
+                        out[str(row["url"])] = str(row["status"])
+                return out
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to look up frontier URL statuses: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -2861,6 +2927,41 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to look up frontier URL status: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def statuses_of(self, urls: Iterable[str]) -> dict[str, str]:
+        table = self._qualified("frontier_queue")
+        norms: list[str] = []
+        for url in urls or []:
+            try:
+                norm = normalize_frontier_url(url)
+            except (AttributeError, ValueError):
+                continue
+            if norm not in norms:
+                norms.append(norm)
+        out: dict[str, str] = {}
+        if not norms:
+            return out
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for start in range(0, len(norms), 500):
+                        chunk = norms[start : start + 500]
+                        marks = ",".join(["%s"] * len(chunk))
+                        cur.execute(
+                            f"SELECT url, status FROM {table}"  # noqa: S608
+                            f" WHERE url IN ({marks})",
+                            tuple(chunk),
+                        )
+                        for url, status in cur.fetchall():
+                            out[str(url)] = str(status)
+                conn.commit()
+                return out
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to look up frontier URL statuses: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

@@ -322,6 +322,75 @@ def test_status_overlays_store_truth(tmp_path) -> None:
     assert body["queue_depth"] == 2
 
 
+def test_statuses_of_returns_known_statuses_bulk(tmp_path) -> None:
+    """Bulk terminal-row lookup: known URLs mapped, unknown omitted."""
+    store = SqliteFrontierStore(str(tmp_path / "bulk.db"))
+    try:
+        assert store.enqueue("https://example.com/a") is True
+        assert store.enqueue("https://example.com/b") is True
+        assert store.enqueue("https://example.com/c") is True
+        store.mark_failed("https://example.com/b", "boom")
+        got = store.statuses_of(
+            [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c",
+                "https://example.com/nope",
+                "not a url",
+            ]
+        )
+        assert got == {
+            "https://example.com/a": "queued",
+            "https://example.com/b": "failed",
+            "https://example.com/c": "queued",
+        }
+        assert store.statuses_of([]) == {}
+    finally:
+        store.close()
+
+
+def test_status_overlay_uses_single_bulk_terminal_check(tmp_path) -> None:
+    """N snapshot seeds cost one bulk lookup, not N round trips.
+
+    Regression: every status poll and 2s WS push ran one status query
+    per in-memory seed, so a dashboard holding thousands of seeds took
+    seconds per refresh.
+    """
+    from openlens.api import routes as routes_mod
+    from openlens.api.schemas import FrontierStatusSchema
+
+    class _CountingStore(SqliteFrontierStore):
+        def __init__(self, db_path: str) -> None:
+            self.single_lookups = 0
+            super().__init__(db_path)
+
+        def status_of(self, url: str) -> str | None:
+            self.single_lookups += 1
+            return super().status_of(url)
+
+    store = _CountingStore(str(tmp_path / "overlay.db"))
+    try:
+        assert store.enqueue("https://example.com/seed-one") is True
+        assert store.enqueue("https://example.com/seed-two") is True
+        store.mark_done("https://example.com/seed-two")
+        payload = FrontierStatusSchema(
+            queue_depth=0,
+            queue=[
+                {"url": "https://example.com/seed-one", "depth": 0},
+                {"url": "https://example.com/seed-two", "depth": 0},
+                {"url": "https://example.com/seed-unknown", "depth": 0},
+            ],
+        )
+        merged = routes_mod._overlay_store_status(payload, store)
+        urls = {entry.url: entry for entry in merged.queue}
+        assert urls["https://example.com/seed-one"].status == "queued"
+        assert urls["https://example.com/seed-unknown"].status == "queued"
+        assert "https://example.com/seed-two" not in urls
+        assert store.single_lookups == 0
+    finally:
+        store.close()
+
+
 def test_reseed_revives_terminal_rows(tmp_path) -> None:
     """Store-level: failed/skipped/done rows go back to queued once."""
     store = SqliteFrontierStore(str(tmp_path / "reseed.db"))

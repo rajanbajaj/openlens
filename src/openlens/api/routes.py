@@ -854,6 +854,7 @@ def _overlay_store_status(
         }
     # Snapshot entries arrive as submodels (Pydantic coerces the nested
     # dicts on construction), never as plain dicts.
+    shaped: list[tuple[str, int, int]] = []
     for item in payload.queue or []:
         if isinstance(item, dict):
             url = str(item.get("url", "") or "")
@@ -876,8 +877,6 @@ def _overlay_store_status(
             key = url
         if not key or key in merged:
             continue
-        if _store_row_terminal(store, key):
-            continue
         try:
             priority = int(
                 item.get("priority", 0)
@@ -886,6 +885,27 @@ def _overlay_store_status(
             )
         except (TypeError, ValueError):
             priority = 0
+        shaped.append((key, depth, priority))
+    # One bulk terminal-row check for all snapshot seeds: the per-URL
+    # status lookup used to cost a round trip per seed on every status
+    # poll and 2s WS push (thousands of seeds = multi-second responses).
+    terminal: dict[str, str] = {}
+    bulk_ok = False
+    if store is not None and shaped:
+        with suppress(Exception):
+            statuses = store.statuses_of([key for key, _, _ in shaped])
+            if isinstance(statuses, dict):
+                bulk_ok = True
+                terminal = {str(url): str(status) for url, status in statuses.items()}
+    if not bulk_ok and store is not None and shaped:
+        # Older/test doubles without the bulk lookup keep the legacy
+        # per-URL check.
+        for key, _, _ in shaped:
+            if _store_row_terminal(store, key):
+                terminal[key] = "done"
+    for key, depth, priority in shaped:
+        if terminal.get(key) not in (None, "queued", "active"):
+            continue
         merged[key] = {
             "url": key,
             "depth": depth,
