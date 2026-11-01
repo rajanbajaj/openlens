@@ -414,7 +414,12 @@ class PersistentFrontier:
                 self._on_push(url, depth, priority)
         overflow = len(self) - self._maxsize
         if overflow > 0:
-            self.evicted += self._store.evict_oldest(self._maxsize)
+            # Best effort like the fan-out above: the row is already
+            # stored, so a failing evict (e.g. Postgres DSM/shm
+            # exhaustion under a full queue) must not abort the drain
+            # and crash-loop the worker. The next push retries.
+            with contextlib.suppress(Exception):
+                self.evicted += self._store.evict_oldest(self._maxsize)
 
     def pop(self) -> str | None:
         entry = self.pop_entry()

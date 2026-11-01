@@ -341,6 +341,12 @@ services:
     # (default 5 -> ~10). 200 covers 12 crawler replicas + backend
     # with margin; raise with replicas (see Crawler-and-Frontier-Ops).
     command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+    # Postgres DSM (parallel-query shared memory) lives in /dev/shm,
+    # which Docker caps at 64MB: 12 workers evicting/querying a ~100k
+    # queue exhaust it ("could not resize shared memory segment ... No
+    # space left on device") and crash-loop every crawler. 256MB is
+    # ample here; counts toward the 1G mem_limit above.
+    shm_size: 256mb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-openlens}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}

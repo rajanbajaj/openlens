@@ -333,6 +333,27 @@ def test_persistent_frontier_push_forwards_priority() -> None:
         store.close()
 
 
+def test_persistent_frontier_push_survives_evict_failure() -> None:
+    from openlens.indexing.crawler import PersistentFrontier
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    class _EvictBoom(SqliteFrontierStore):
+        def evict_oldest(self, limit: int) -> int:
+            raise RuntimeError("shm exhausted")
+
+    store = _EvictBoom(":memory:")
+    try:
+        frontier = PersistentFrontier(store, 1)
+        frontier.push("https://example.com/a")
+        # Over cap: the evict raises inside push, but the row is
+        # already stored and the drain must continue, not crash-loop.
+        frontier.push("https://example.com/b")
+        assert store.counts()["queued"] == 2
+        assert frontier.evicted == 0
+    finally:
+        store.close()
+
+
 def test_discovered_links_inherit_decayed_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
