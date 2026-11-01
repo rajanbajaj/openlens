@@ -30,7 +30,9 @@ Date: 2026-11-01 · Fixed in v0.4.34 (follows
    already-finished seeds. After a large seed paste that is thousands of
    round trips per refresh.
 
-## Fix (v0.4.34)
+## Fix (v0.4.34 / v0.4.35)
+
+v0.4.34:
 
 - `src/openlens/storage/frontier.py`: new
   `idx_frontier_status_priority (status, priority DESC, depth ASC,
@@ -44,10 +46,28 @@ Date: 2026-11-01 · Fixed in v0.4.34 (follows
   `src/openlens/api/routes.py`: the overlay now does one bulk terminal-row
   check, falling back to the per-URL loop only for stores without it.
 
-Regression tests: priority-index presence/shape in all three schema sources
-(`test_frontier_priority_index_covers_claim_ordering`), bulk lookup
-semantics (`test_statuses_of_returns_known_statuses_bulk`), and one-bulk-call
-overlay with zero single lookups
+v0.4.35 — the eviction stall underneath the same symptoms:
+
+- `evict_oldest()` runs `UPDATE ... WHERE url IN (SELECT ... WHERE
+  status='queued' ORDER BY discovered_at ASC LIMIT N)` on **every drain push
+  past the cap** (plus a `COUNT(*)` sizing query per push via
+  `BoundedFrontier.__len__`). With the queue pinned at cap that is a full
+  100k-row sort per discovered URL x 12 workers — and concurrent evictions
+  deadlock each other (see the `deadlock detected` lines in the Postgres
+  log). Drains never finish a page, so workers sit in their initial
+  `_drain_once()`: only the forced startup beat ever lands (12 backend
+  hits ~= 1 per crawler), the registry prunes them after 240 s, and
+  status/WS reads queue behind the eviction write locks.
+- New `idx_frontier_queued_discovered (status, discovered_at)` in the same
+  three schema sources turns eviction into an index-ordered probe and makes
+  concurrent evictions take victims in the same deterministic order (far
+  fewer deadlocks).
+
+Regression tests: index presence/shape in all three schema sources
+(`test_frontier_priority_index_covers_claim_ordering`,
+`test_frontier_eviction_index_covers_oldest_first`), bulk lookup semantics
+(`test_statuses_of_returns_known_statuses_bulk`), and one-bulk-call overlay
+with zero single lookups
 (`test_status_overlay_uses_single_bulk_terminal_check`).
 
 ## How to confirm on prod
@@ -67,4 +87,10 @@ overlay with zero single lookups
 - Kafka consumer-group lag (meaningless when the topic itself is empty).
 - `documents` count frozen (expected until the pass-end checkpoint write).
 - Eviction-deadlock log lines: self-recovering statement aborts under
-  concurrent evictions, a separate follow-up — not the cause of slow reads.
+  concurrent evictions — a symptom of the unindexed eviction sort fixed in
+  v0.4.35, not a separate cause.
+- Container CPU/memory: crawlers at ~0.5% CPU are lock-waiting, not
+  throttled (`cpus: 1.0` is ample for fetch/parse). The one real resource
+  limit, Postgres DSM in Docker's 64MB default `/dev/shm` (`could not
+  resize shared memory segment`), is already raised to 256MB in
+  `deploy/local/docker-compose.yml`.

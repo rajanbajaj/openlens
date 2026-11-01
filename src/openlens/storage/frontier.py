@@ -757,6 +757,11 @@ def sqlite_frontier_coordination_migrations() -> list[str]:
         # the columns exist (IF NOT EXISTS keeps re-opens idempotent).
         "CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"
         " ON frontier_queue(status, priority DESC, depth ASC, discovered_at ASC)",
+        # Oldest-first eviction (evict_oldest ... ORDER BY discovered_at).
+        # Same legacy-file reasoning as above: migrations run after the
+        # coordination columns exist.
+        "CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"
+        " ON frontier_queue(status, discovered_at)",
     ]
     return stmts
 
@@ -909,6 +914,8 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         f"CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"
         f" ON {q}.frontier_queue"
         " (status, priority DESC, depth ASC, discovered_at ASC)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"
+        f" ON {q}.frontier_queue (status, discovered_at)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]
@@ -961,6 +968,8 @@ def postgres_frontier_coordination_migrations(
         f"CREATE INDEX IF NOT EXISTS idx_frontier_status_priority"  # noqa: S608
         f" ON {q}.frontier_queue"
         " (status, priority DESC, depth ASC, discovered_at ASC)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"  # noqa: S608
+        f" ON {q}.frontier_queue (status, discovered_at)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]

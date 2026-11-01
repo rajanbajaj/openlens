@@ -415,6 +415,31 @@ def test_frontier_priority_index_covers_claim_ordering() -> None:
         )
 
 
+def test_frontier_eviction_index_covers_oldest_first() -> None:
+    """Regression: evict_oldest() sorts queued rows by discovered_at.
+
+    Every drain push past the queue cap runs ``UPDATE ... WHERE url IN
+    (SELECT ... WHERE status='queued' ORDER BY discovered_at ASC LIMIT
+    N)``. Without a discovered_at-first index that is a full sort of the
+    backlog per push, and concurrent evictions deadlocked each other —
+    stalling drains (no completed pages, hence ``stats: null``) and
+    queueing status/WS reads behind write locks (multi-second polls).
+    """
+    sources = {
+        "sqlite migrations": sqlite_frontier_coordination_migrations(),
+        "postgres ddl": postgres_frontier_ddl("public"),
+        "postgres migrations": postgres_frontier_coordination_migrations("public"),
+    }
+    for name, stmts in sources.items():
+        collapsed = " ".join(" ".join(s.split()) for s in stmts).lower()
+        assert "idx_frontier_queued_discovered" in collapsed, (
+            f"missing eviction index in {name}"
+        )
+        assert "(status, discovered_at)" in collapsed, (
+            f"eviction index has wrong column shape in {name}"
+        )
+
+
 def test_coordination_defaults_preserve_single_worker_shape() -> None:
     class _LegacyStore(FrontierStore):
         def enqueue(self, url: str, depth: int = 0, parent_url=None) -> bool:  # type: ignore[no-untyped-def]
