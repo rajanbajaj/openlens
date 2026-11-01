@@ -1178,6 +1178,13 @@ def run_kafka_worker(
                     # fails loud via the initial _drain_once above.
                     with contextlib.suppress(Exception):
                         _drain_once()
+                    # The idle branch otherwise never beats: with an empty
+                    # Kafka topic the only heartbeats would be the two
+                    # forced startup ones, so the registry prunes live
+                    # workers and the admin screen reads zero. Beat after
+                    # every periodic drain (carries claimed + stats).
+                    with contextlib.suppress(Exception):
+                        _report_progress()
                 continue
             idle_polls = 0
             counts["received"] += 1

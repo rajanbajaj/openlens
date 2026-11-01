@@ -592,6 +592,44 @@ def test_run_kafka_worker_reports_claimed_and_discovery(
     }
 
 
+def test_run_kafka_worker_idle_drain_sends_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An empty Kafka topic still heartbeats: the periodic drain beats.
+
+    Regression: workers whose only feed was an empty topic sent just the
+    two forced startup beats, so the API registry pruned live workers and
+    the admin screen read zero workers while crawlers were mid-pass.
+    """
+    import openlens.indexing.worker as worker_mod
+
+    calls: list[dict[str, Any]] = []
+
+    def _fake_beat(
+        api_url: str,
+        worker_id: str,
+        **kwargs: Any,
+    ) -> dict[str, object]:
+        calls.append({"api_url": api_url, "worker_id": worker_id, **kwargs})
+        return {"workers": [], "worker_count": 0}
+
+    monkeypatch.setattr(worker_mod, "heartbeat_once", _fake_beat)
+    db_path = str(tmp_path / "frontier.db")
+    fake = _FakeQueue([])
+    hits: dict[str, int] = {}
+    run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=_crawler_factory(hits),
+        queue=fake,
+        max_iterations=worker_mod._IDLE_DRAIN_EVERY_POLLS + 5,
+        idle_sleep_s=0.0,
+    )
+    # Two forced startup beats plus at least one periodic idle-drain beat.
+    assert len(calls) >= 3, f"expected an idle-drain heartbeat, got {len(calls)}"
+
+
 def test_run_kafka_worker_passes_message_priority_to_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
