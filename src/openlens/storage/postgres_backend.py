@@ -1113,12 +1113,23 @@ class PostgresDocumentStore(DocumentStore):
         # S608 false positives below: validated identifiers; the query
         # text, category, and paging values are bound %s parameters.
         count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
+        # Two-phase page: rank narrow (id, score) rows first, then fetch
+        # full rows — including TOASTed content/metadata — for the top-N
+        # only. Ranking 20k+ matches of a common term while heap-fetching
+        # every candidate's content blows past the provider timeout; the
+        # inner scan touches (id, search_tsv) alone. Parameter order is
+        # unchanged, so existing call sites are untouched.
         page_sql = (
-            f"SELECT id, title, content, url, metadata, content_type, published,"  # noqa: S608
-            f" {CATEGORY_SELECT}, fetch_ms,"
-            f" {rank} AS score FROM {self._qualified()}"
-            f" WHERE {match}{narrowing}"
-            " ORDER BY score DESC LIMIT %s OFFSET %s"
+            f"WITH ranked AS (SELECT id, {rank} AS score"  # noqa: S608
+            f" FROM {self._qualified()} WHERE {match}{narrowing}"
+            " ORDER BY score DESC, id ASC LIMIT %s OFFSET %s)"
+            " SELECT documents.id, documents.title, documents.content,"
+            " documents.url, documents.metadata, documents.content_type,"
+            f" documents.published, {CATEGORY_SELECT}, documents.fetch_ms,"
+            " ranked.score"
+            f" FROM {self._qualified()} AS documents"
+            " JOIN ranked ON ranked.id = documents.id"
+            " ORDER BY ranked.score DESC, ranked.id ASC"
         )
         with self._read_connection() as conn:
             try:

@@ -419,3 +419,17 @@ def test_from_config_parses_replica(monkeypatch: Any) -> None:
         assert blank._replica_kwargs is None
     finally:
         blank.close()
+
+
+def test_search_page_query_ranks_ids_before_fetching_rows() -> None:
+    """Common terms match tens of thousands of rows: the page query must
+    rank narrow (id, score) rows first and fetch full TOASTed content
+    for the top-N only, or searches blow past the provider timeout."""
+    store = _store_with_rows(_search_rows())
+    store.search("hello", limit=10)
+    page_sql = store._stub_cursor.calls[1][0]
+    assert "WITH ranked AS" in page_sql
+    assert "JOIN ranked ON ranked.id" in page_sql
+    assert page_sql.count("%s") == 4  # match, rank, limit, offset
+    params = store._stub_cursor.calls[1][1]
+    assert params == ("hello", "hello", 10, 0)
