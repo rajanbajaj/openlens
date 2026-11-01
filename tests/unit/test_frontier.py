@@ -7,6 +7,9 @@ FastAPI TestClient over a fake engine.
 
 from __future__ import annotations
 
+import glob
+import os
+import tempfile
 from typing import Any
 
 import pytest
@@ -14,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from openlens.core.interfaces import ConfigError
 from openlens.indexing import run_index
-from openlens.indexing.crawler import PoliteCrawler
+from openlens.indexing.crawler import BoundedFrontier, PoliteCrawler
 from openlens.main import create_app
 from openlens.storage.frontier import (
     DEFAULT_CRAWL_ID,
@@ -310,6 +313,127 @@ def test_run_index_with_frontier_store() -> None:
     finally:
         store.close()
         repo.close()
+
+
+# --- frontier batching + eviction ---------------------------------------------
+#
+# Perf batch: BoundedFrontier batches sidecar rewrites (dirty>=100 or 5s),
+# flushes on close; evict_oldest is one UPDATE with identical victims; the
+# persistent crawl path leaks no temp sidecar file.
+
+
+def _counting_frontier(maxsize: int, writes: dict[str, int]) -> BoundedFrontier:
+    """BoundedFrontier whose disk rewrites are counted (behavior same)."""
+    frontier = BoundedFrontier(maxsize)
+    raw_persist = frontier._persist
+
+    def counting_persist() -> None:
+        writes["n"] += 1
+        raw_persist()
+
+    frontier._persist = counting_persist  # type: ignore[method-assign]
+    return frontier
+
+
+def test_bounded_frontier_batches_writes_until_flush() -> None:
+    writes = {"n": 0}
+    frontier = _counting_frontier(1000, writes)
+    try:
+        for i in range(10):
+            frontier.push(f"https://example.com/{i}")
+        assert writes["n"] == 0  # batched: no disk rewrite per URL
+        assert len(frontier) == 10  # deque stays authoritative
+        frontier.flush()
+        assert writes["n"] == 1
+        lines = frontier.path.read_text(encoding="utf-8").split()
+        assert lines == [f"https://example.com/{i}" for i in range(10)]
+    finally:
+        frontier.close()
+    assert not frontier.path.exists()  # close() unlinks the sidecar
+
+
+def test_bounded_frontier_persists_after_dirty_threshold() -> None:
+    writes = {"n": 0}
+    frontier = _counting_frontier(10_000, writes)
+    try:
+        for i in range(99):
+            frontier.push(f"https://example.com/{i}")
+        assert writes["n"] == 0
+        frontier.push("https://example.com/99")  # 100th mutation flushes
+        assert writes["n"] == 1
+        assert len(frontier.path.read_text(encoding="utf-8").split()) == 100
+    finally:
+        frontier.close()
+
+
+def test_bounded_frontier_persists_after_max_age() -> None:
+    writes = {"n": 0}
+    frontier = _counting_frontier(1000, writes)
+    try:
+        frontier.push("https://example.com/a")
+        assert writes["n"] == 0
+        frontier._last_persist -= 10.0  # simulate a stale sidecar
+        frontier.push("https://example.com/b")
+        assert writes["n"] == 1
+        assert frontier.path.read_text(encoding="utf-8").split() == [
+            "https://example.com/a",
+            "https://example.com/b",
+        ]
+    finally:
+        frontier.close()
+
+
+def test_bounded_frontier_close_flushes_then_unlinks() -> None:
+    frontier = BoundedFrontier(100)
+    try:
+        frontier.push("https://example.com/a")
+        frontier.close()
+        assert not frontier.path.exists()
+        frontier.close()  # idempotent: missing_ok unlink
+    finally:
+        frontier.close()
+
+
+def test_evict_oldest_selects_same_oldest_victims() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        for i in range(5):
+            assert store.enqueue(f"https://example.com/{i}", 0) is True
+        assert store.evict_oldest(2) == 3
+        assert [e.url for e in store.pending(limit=10)] == [
+            "https://example.com/3",
+            "https://example.com/4",
+        ]
+        assert store.counts().get("skipped") == 3
+        assert store.evict_oldest(2) == 0  # idempotent once under cap
+        assert store.evict_oldest(10) == 0  # no-op when nothing overflows
+    finally:
+        store.close()
+
+
+def test_evict_oldest_zero_limit_clears_queue() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/a", 0) is True
+        assert store.enqueue("https://example.com/b", 0) is True
+        assert store.evict_oldest(0) == 2
+        assert store.counts().get("queued", 0) == 0
+    finally:
+        store.close()
+
+
+def test_persistent_crawl_path_leaks_no_temp_sidecar() -> None:
+    pattern = os.path.join(tempfile.gettempdir(), "openlens-frontier-*.urls")
+    before = set(glob.glob(pattern))
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler(max_pages=10)
+        hits: dict[str, int] = {}
+        _install_fake_fetch(crawler, hits)
+        crawler.crawl(["https://crawl.test/a"], frontier_store=store)
+    finally:
+        store.close()
+    assert set(glob.glob(pattern)) - before == set()
 
 
 def test_crawler_rejects_bad_frontier_config() -> None:

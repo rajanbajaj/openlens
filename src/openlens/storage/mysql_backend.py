@@ -669,6 +669,7 @@ class MySQLDocumentStore(DocumentStore):
         Best-effort read for the query-assistance path: a closed store or
         any failure yields ``[]`` rather than raising, so suggest
         degrades to its static fallback instead of failing the request.
+        Ordered by title so the vocabulary is deterministic.
         Mirrors ``storage/repository.py::DocumentRepository.list_titles``.
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -681,7 +682,9 @@ class MySQLDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # Validated table name; limit is a bound %s parameter.
                     cur.execute(
-                        "SELECT title FROM `" + self._table + "` LIMIT %s",  # noqa: S608
+                        "SELECT title FROM `"  # noqa: S608
+                        + self._table
+                        + "` ORDER BY title ASC LIMIT %s",
                         (limit,),
                     )
                     rows = cur.fetchall()

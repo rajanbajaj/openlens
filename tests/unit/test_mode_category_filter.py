@@ -154,6 +154,62 @@ def test_events_empty_filter_falls_back_with_flag() -> None:
     assert out.metadata["mode-category-filter-removed"] == 1
 
 
+def test_tech_mode_keeps_only_tech() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [_hit("t", "tech"), _hit("s", "software"), _hit("o", "other")],
+            "tech",
+        )
+    )
+    assert [r.id for r in out.results] == ["t"]
+    assert out.metadata["mode-category-filter-removed"] == 2
+    assert "mode-category-filter" in out.applied_filters
+    assert "mode-category-filter-fallback" not in out.metadata
+
+
+def test_tech_mode_matches_keywords() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("t", "other", title="New smartphone review"),
+                _hit("s", "other", title="Python github repo"),
+            ],
+            "tech",
+        )
+    )
+    assert [r.id for r in out.results] == ["t"]
+
+
+def test_software_mode_keeps_only_software() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [_hit("s", "software"), _hit("t", "tech"), _hit("o", "other")],
+            "software",
+        )
+    )
+    assert [r.id for r in out.results] == ["s"]
+    assert out.metadata["mode-category-filter-removed"] == 2
+    assert "mode-category-filter" in out.applied_filters
+    assert "mode-category-filter-fallback" not in out.metadata
+
+
+def test_software_mode_matches_keywords() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("s", "other", title="Python github repo"),
+                _hit("t", "other", title="Summer music festival tickets"),
+            ],
+            "software",
+        )
+    )
+    assert [r.id for r in out.results] == ["s"]
+
+
 def test_default_and_agent_modes_are_noops() -> None:
     plugin = ModeCategoryFilter()
     for mode in ("default", "agent"):

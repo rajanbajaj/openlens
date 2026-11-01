@@ -1,6 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildFilters, EMPTY_FILTER_STATE, type UserFilterState } from '../api/filters.ts';
 import type { ProviderPrefs } from '../api/types.ts';
 import { Sidebar } from './Sidebar.tsx';
 
@@ -12,219 +11,59 @@ const EMPTY_PREFS: ProviderPrefs = { include: [], exclude: [], primary: null };
 
 function setup(
   overrides: {
-    filters?: UserFilterState;
     prefs?: ProviderPrefs;
     knownProviders?: string[];
-    appliedFilters?: string[];
     disabled?: boolean;
-    collapsed?: boolean;
+    onLibraryOpen?: () => void;
   } = {},
 ) {
-  const onFiltersChange = vi.fn();
   const onPrefsChange = vi.fn();
-  const onCollapsedChange = vi.fn();
-  const onChipRemove = vi.fn();
+  const onLibraryOpen = overrides.onLibraryOpen ?? vi.fn();
   render(
     <Sidebar
-      filters={overrides.filters ?? EMPTY_FILTER_STATE}
-      onFiltersChange={onFiltersChange}
       prefs={overrides.prefs ?? EMPTY_PREFS}
       onPrefsChange={onPrefsChange}
       knownProviders={overrides.knownProviders ?? ['mock']}
-      appliedFilters={overrides.appliedFilters ?? []}
       disabled={overrides.disabled}
-      collapsed={overrides.collapsed ?? false}
-      onCollapsedChange={onCollapsedChange}
-      onChipRemove={onChipRemove}
+      onLibraryOpen={onLibraryOpen}
     />,
   );
-  return { onFiltersChange, onPrefsChange, onCollapsedChange, onChipRemove };
+  return { onPrefsChange, onLibraryOpen };
 }
 
-describe('Sidebar', () => {
-  it('renders every filter surface standalone with mocked props', () => {
-    setup({
-      filters: { ...EMPTY_FILTER_STATE, maxPrice: '250', excludeSponsored: true },
-      prefs: { include: [], exclude: [], primary: 'mock' },
-      appliedFilters: ['user-restrictions'],
-    });
+describe('Sidebar utilities rail', () => {
+  it('renders library shortcut, URL requests, and provider prefs without filters', () => {
+    setup({ prefs: { include: [], exclude: [], primary: 'mock' } });
 
-    expect(screen.getByTestId('sidebar-panel')).toHaveClass('ol-glass-sidebar');
-    expect(screen.getByRole('button', { name: 'Hide filters' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
-    // Sponsored toggle + panel fields (exact labels so the
-    // chip remove buttons, e.g. "Remove Max price 250", do not match).
-    expect(screen.getByLabelText(/exclude sponsored/i)).toBeChecked();
-    for (const label of [
-      'Max price',
-      'Location',
-      'Facilities',
-      'Sort',
-      'Prefer domains (comma-separated)',
-      'Prefer topics (comma-separated)',
-      'Site category',
-      'Safety preset',
-      'Blocked domain',
-      'Allowed domain',
-      'Exclude term',
-    ]) {
-      expect(screen.getByLabelText(label)).toBeInTheDocument();
-    }
-    // Provider prefs + backend attribution + user chips.
+    expect(screen.getByTestId('sidebar')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('library-open')).toHaveTextContent('Open library');
+    // No filter surface lives here anymore: QuickFilters owns filters.
+    expect(screen.queryByTestId('sidebar-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-panel')).not.toBeNull();
+    expect(screen.queryByLabelText(/exclude sponsored/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('user-filter-chips')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('applied-filters')).not.toBeInTheDocument();
+    // Provider prefs + URL request affordances remain.
     expect(screen.getByLabelText(/only these providers/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/exclude these providers/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/primary provider/i)).toHaveValue('mock');
-    expect(screen.getByTestId('applied-filters')).toHaveTextContent(
-      'Applied filters: user-restrictions',
-    );
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Max price 250');
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Excludes sponsored');
+    expect(screen.getByTestId('crawl-request-form')).toBeInTheDocument();
+    expect(screen.getByTestId('crawl-request-submit')).toHaveTextContent('Request crawl');
   });
 
-  it('renders the empty attribution text and no chips when nothing is set', () => {
-    setup();
-    expect(screen.getByTestId('applied-filters')).toHaveTextContent('No filters applied');
-    expect(screen.queryByTestId('user-filter-chips')).not.toBeInTheDocument();
+  it('opens the library through the shell hook', () => {
+    const onLibraryOpen = vi.fn();
+    setup({ onLibraryOpen });
+
+    fireEvent.click(screen.getByTestId('library-open'));
+    expect(onLibraryOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('collapses to a lone toggle button and reports toggle clicks', () => {
-    const { onCollapsedChange } = setup({ collapsed: true });
-
-    const toggle = screen.getByRole('button', { name: 'Show filters' });
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveAttribute('aria-controls', 'ol-sidebar-panel');
-    const panel = screen.getByTestId('sidebar-panel');
-    expect(panel).not.toBeVisible();
-    expect(screen.getByLabelText(/max price/i)).not.toBeVisible();
-
-    fireEvent.click(toggle);
-    expect(onCollapsedChange).toHaveBeenCalledWith(false);
-  });
-
-  it('expands the panel and reports collapse clicks', () => {
-    const { onCollapsedChange } = setup({ collapsed: false });
-    expect(screen.getByTestId('sidebar-panel')).toBeVisible();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }));
-    expect(onCollapsedChange).toHaveBeenCalledWith(true);
-  });
-
-  it('chip removal clears one field and preserves the rest', () => {
-    const filters: UserFilterState = {
-      ...EMPTY_FILTER_STATE,
-      maxPrice: '250',
-      location: 'Berlin',
-    };
-    const { onFiltersChange, onChipRemove } = setup({ filters });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Max price 250' }));
-    const cleared = { ...filters, maxPrice: '' };
-    expect(onFiltersChange).toHaveBeenCalledWith(cleared);
-    expect(onChipRemove).toHaveBeenCalledWith(cleared);
-  });
-
-  it('filter and prefs edits flow through the change callbacks', () => {
-    const { onFiltersChange, onPrefsChange } = setup();
-
-    fireEvent.change(screen.getByLabelText(/max price/i), { target: { value: '99' } });
-    expect(onFiltersChange).toHaveBeenCalledWith({ ...EMPTY_FILTER_STATE, maxPrice: '99' });
-
-    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
-    expect(onFiltersChange).toHaveBeenCalledWith({ ...EMPTY_FILTER_STATE, excludeSponsored: true });
+  it('prefs edits flow through the change callback', () => {
+    const { onPrefsChange } = setup();
 
     fireEvent.change(screen.getByLabelText(/primary provider/i), { target: { value: 'mock' } });
     expect(onPrefsChange).toHaveBeenCalledWith({ include: [], exclude: [], primary: 'mock' });
-  });
-
-  it('emits byte-identical wire keys via buildFilters', () => {
-    const full: UserFilterState = {
-      ...EMPTY_FILTER_STATE,
-      excludeSponsored: true,
-      maxPrice: '250',
-      minRating: '4',
-      location: 'Berlin',
-      facilities: 'wifi, pool',
-      brand: 'Acme',
-      style: 'casual',
-      size: 'M',
-      preferDomains: 'example.com',
-      preferTopics: 'science',
-      sortPreset: 'newest',
-      siteCategory: 'news',
-      blockedDomain: 'example.com',
-      allowedDomain: 'trusted.example',
-      mustNotTerm: 'advertisement',
-    };
-    expect(JSON.stringify(buildFilters(full))).toBe(
-      '{"exclude_sponsored":true,' +
-        '"must_not_terms":["advertisement"],' +
-        '"max_price":250,' +
-        '"min_rating":4,' +
-        '"location":"Berlin",' +
-        '"facilities":"wifi, pool",' +
-        '"brand":"Acme",' +
-        '"style":"casual",' +
-        '"size":"M",' +
-        '"prefer_domains":["example.com"],' +
-        '"prefer_topics":["science"],' +
-        '"sort":"newest",' +
-        '"site_category":"news",' +
-        '"blocked_domains":["example.com"],' +
-        '"allowed_domains":["trusted.example"]}',
-    );
-    // Blank panel state sends nothing.
-    expect(JSON.stringify(buildFilters(EMPTY_FILTER_STATE))).toBe('{}');
-  });
-
-  it('UI callback payloads shape into the expected wire bytes', () => {
-    const { onFiltersChange } = setup();
-    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
-    const payload = onFiltersChange.mock.calls[0][0] as UserFilterState;
-    expect(JSON.stringify(buildFilters(payload))).toBe('{"exclude_sponsored":true}');
-  });
-
-  it('renders chips for every set filter and clears them one by one', () => {
-    const filters: UserFilterState = {
-      ...EMPTY_FILTER_STATE,
-      excludeOverBudget: true,
-      occasion: 'wedding',
-      license: 'CC-BY',
-      author: 'Austen',
-      cuisine: 'Italian',
-      dietaryTags: 'vegan',
-      ingredients: 'tomato',
-      excludeAllergens: 'peanuts',
-      personalize: false,
-      safetyPreset: 'strict',
-      sortPreset: 'newest',
-      siteCategory: 'news',
-      datePreset: 'past-week',
-    };
-    const { onFiltersChange, onChipRemove } = setup({ filters });
-    const chips = screen.getByTestId('user-filter-chips');
-    for (const text of [
-      'Date: past-week',
-      'Excludes over-budget',
-      'Occasion: wedding',
-      'License: CC-BY',
-      'Author: Austen',
-      'Cuisine: Italian',
-      'Dietary: vegan',
-      'Ingredients: tomato',
-      'Excludes allergens: peanuts',
-      'Sort: newest',
-      'Category: news',
-      'Personalization off',
-      'Safety: strict',
-    ]) {
-      expect(chips).toHaveTextContent(text);
-    }
-
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Safety: strict' }));
-    const cleared = { ...filters, safetyPreset: '' };
-    expect(onFiltersChange).toHaveBeenCalledWith(cleared);
-    expect(onChipRemove).toHaveBeenCalledWith(cleared);
   });
 });

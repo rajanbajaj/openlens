@@ -22,6 +22,8 @@ describe('ModeSelector', () => {
       'shopping',
       'travel',
       'events',
+      'tech',
+      'software',
       'agent',
     ]);
   });

@@ -9,6 +9,8 @@ export const SEARCH_MODES: SearchMode[] = [
   'shopping',
   'travel',
   'events',
+  'tech',
+  'software',
   'agent',
 ];
 

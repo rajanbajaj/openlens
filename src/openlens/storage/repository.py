@@ -12,6 +12,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from typing import Any, Optional
 from urllib.parse import urldefrag, urlsplit
 
@@ -25,6 +26,11 @@ _DOMAIN_SCAN_CAP = 50000
 
 #: Bounded wait for the SQLite write lock before surfacing UNAVAILABLE.
 _BUSY_TIMEOUT_MS = 5000
+
+#: Short TTL (seconds) for the ``list_domains`` instance cache: the
+#: bounded URL scan stays, but repeats within the window are free.
+#: Cached ranks may be stale (documented on ``list_domains``).
+_DOMAINS_CACHE_TTL_S = 30.0
 
 
 def content_hash_of(content: str) -> str:
@@ -86,6 +92,7 @@ SITE_CATEGORY_VALUES: tuple[str, ...] = (
     "video",
     "reference",
     "tech",
+    "software",
     "finance",
     "health",
     "government",
@@ -243,6 +250,9 @@ class DocumentRepository(DocumentStore):
         # documented safe pattern for sqlite3.
         self._lock = threading.Lock()
         self._closed = False
+        # Short-TTL cache for list_domains: limit -> (cached_at, ranks).
+        # Best-effort only; entries expire after _DOMAINS_CACHE_TTL_S.
+        self._domains_cache: dict[int, tuple[float, list[tuple[str, int]]]] = {}
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
@@ -786,6 +796,10 @@ class DocumentRepository(DocumentStore):
 
         Hosts parse from stored URLs in Python (SQLite has no URL
         parser); the scan is capped so a large index stays bounded.
+        Repeats with the same ``limit`` within ``_DOMAINS_CACHE_TTL_S``
+        seconds return the cached ranking without rescanning, so those
+        ranks may be stale (writes inside the window stay invisible
+        until the entry expires).
         """
         try:
             limit = int(limit)
@@ -796,6 +810,12 @@ class DocumentRepository(DocumentStore):
         limit = min(limit, 1000)
         try:
             with self._lock:
+                cached = self._domains_cache.get(limit)
+                if (
+                    cached is not None
+                    and time.monotonic() - cached[0] < _DOMAINS_CACHE_TTL_S
+                ):
+                    return list(cached[1])
                 rows = self._conn.execute(
                     "SELECT url FROM documents WHERE url IS NOT NULL"  # noqa: S608
                     f" AND url != '' LIMIT {_DOMAIN_SCAN_CAP}",
@@ -815,7 +835,10 @@ class DocumentRepository(DocumentStore):
             if host:
                 counts[host] = counts.get(host, 0) + 1
         ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        return ranked[:limit]
+        result = ranked[:limit]
+        with self._lock:
+            self._domains_cache[limit] = (time.monotonic(), list(result))
+        return result
 
     def list_documents(self, limit: int = 500, offset: int = 0) -> list[Document]:
         """Return one page of documents in stable id order (export seam)."""
@@ -846,6 +869,7 @@ class DocumentRepository(DocumentStore):
         Best-effort read for the query-assistance path: a closed store or
         any SQLite failure yields ``[]`` rather than raising, so suggest
         degrades to its static fallback instead of failing the request.
+        Ordered by title so the vocabulary is deterministic.
         """
         if (
             not isinstance(limit, int)
@@ -857,7 +881,8 @@ class DocumentRepository(DocumentStore):
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT title FROM documents LIMIT ?", (limit,)
+                    "SELECT title FROM documents ORDER BY title ASC LIMIT ?",
+                    (limit,),
                 ).fetchall()
         except Exception:
             return []

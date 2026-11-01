@@ -1,0 +1,7 @@
+# Keep local build contexts small: exclude dev artifacts, VCS metadata,
+# dependency trees, build output, and local data volumes.
+.venv/
+.git/
+node_modules/
+dist/
+data/

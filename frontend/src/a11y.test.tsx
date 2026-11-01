@@ -173,14 +173,13 @@ describe('accessibility', () => {
       '25 results for “wireless headphones”',
     );
 
-    // Filter: keyboard-toggle the sponsored checkbox; the chip appears at once
-    // and the edit re-runs page 1 immediately.
+    // Filter: keyboard-toggle the sponsored checkbox; the edit re-runs
+    // page 1 immediately.
     const sponsored = screen.getByLabelText(/exclude sponsored/i);
     sponsored.focus();
     expect(document.activeElement).toBe(sponsored);
     fireEvent.click(sponsored); // Space-key activation equivalent on a checkbox.
     expect(sponsored).toBeChecked();
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Excludes sponsored');
     await waitFor(() => {
       expect(searchCalls(fetchStub)).toHaveLength(2);
     });
@@ -230,7 +229,8 @@ describe('accessibility', () => {
       screen.getByRole('button', { name: /^search$/i }),
       screen.getByLabelText(/search mode/i),
       screen.getByLabelText(/exclude sponsored/i),
-      screen.getByLabelText(/max price/i),
+      screen.getByLabelText('Date'),
+      screen.getByLabelText('Sort by'),
       screen.getByRole('button', { name: /show score breakdown/i }),
       await screen.findByRole('button', { name: /show diagnostics/i }),
     ];

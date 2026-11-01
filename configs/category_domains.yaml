@@ -419,17 +419,6 @@ news_allow:
   - cbssports.com
   - si.com
   - theathletic.com
-  - techcrunch.com
-  - theverge.com
-  - wired.com
-  - arstechnica.com
-  - engadget.com
-  - cnet.com
-  - zdnet.com
-  - gizmodo.com
-  - mashable.com
-  - theregister.com
-  - venturebeat.com
   - semafor.com
   - 404media.co
   - statnews.com
@@ -1569,16 +1558,13 @@ reference_allow:
   - codecademy.com
   - freecodecamp.org
   - w3schools.com
-  - geeksforgeeks.org
   - tutorialspoint.com
-  - javatpoint.com
   - programiz.com
   - leetcode.com
   - hackerrank.com
   - hackerearth.com
   - codeforces.com
   - codechef.com
-  - kaggle.com
   - brilliant.org
   - duolingo.com
   - memrise.com
@@ -1630,7 +1616,11 @@ reference_allow:
   - ac.jp
   - edu.cn
 
-tech_allow:
+# - software_allow: programming and software — code hosting, language/framework
+#   docs, package registries, dev tools, cloud/dev platforms, open-source
+#   projects, developer Q&A and security advisories. (Formerly tech_allow;
+#   gadget/hardware review sites were dropped from it.)
+software_allow:
   # --- Code hosting / dev platforms ---
   - github.com
   - github.io
@@ -1853,7 +1843,6 @@ tech_allow:
   - hetzner.com
   - supabase.com
   - planetscale.com
-  - stripe.com
   - twilio.com
   - sendgrid.com
   - auth0.com
@@ -1869,25 +1858,10 @@ tech_allow:
   - langchain.com
   - llamaindex.ai
   # --- Tech news / reviews ---
-  - slashgear.com
-  - tomshardware.com
-  - anandtech.com
-  - notebookcheck.net
-  - gsmarena.com
-  - androidauthority.com
-  - androidcentral.com
-  - 9to5mac.com
-  - 9to5google.com
-  - macrumors.com
-  - xda-developers.com
   - phoronix.com
   - lwn.net
   - hackaday.com
   - thenewstack.io
-  - techradar.com
-  - pcmag.com
-  - pcworld.com
-  - digitaltrends.com
   - bleepingcomputer.com
   - krebsonsecurity.com
   - thehackernews.com
@@ -1896,6 +1870,385 @@ tech_allow:
   - cve.org
   - nvd.nist.gov
   - exploit-db.com
+
+  # --- More languages / runtimes / compilers ---
+  - cppreference.com
+  - cplusplus.com
+  - llvm.org
+  - gcc.gnu.org
+  - clang.llvm.org
+  - ocaml.org
+  - clojure.org
+  - racket-lang.org
+  - nim-lang.org
+  - dlang.org
+  - crystal-lang.org
+  - dart.dev
+  - flutter.dev
+  - lua.org
+  - luarocks.org
+  - tcl.tk
+  - webassembly.org
+  - wasmer.io
+  - graalvm.org
+  - gleam.run
+  - odin-lang.org
+  # --- Frameworks / libraries / tooling ---
+  - reactnative.dev
+  - expo.dev
+  - electronjs.org
+  - tauri.app
+  - nestjs.com
+  - fastify.dev
+  - koajs.com
+  - hono.dev
+  - solidjs.com
+  - preactjs.com
+  - qwik.dev
+  - emberjs.com
+  - backbonejs.org
+  - alpinejs.dev
+  - htmx.org
+  - threejs.org
+  - d3js.org
+  - chartjs.org
+  - lodash.com
+  - momentjs.com
+  - rollupjs.org
+  - esbuild.github.io
+  - swc.rs
+  - turbo.build
+  - nx.dev
+  - pnpm.io
+  - yarnpkg.com
+  - gradle.org
+  - maven.apache.org
+  - bazel.build
+  - cmake.org
+  - ninja-build.org
+  - conan.io
+  - vcpkg.io
+  - poetry.eustace.io
+  - python-poetry.org
+  - pipenv.pypa.io
+  - pip.pypa.io
+  - packaging.python.org
+  - docs.pytest.org
+  - pytest.org
+  - pydantic.dev
+  - docs.pydantic.dev
+  - sqlalchemy.org
+  - celeryproject.org
+  - gunicorn.org
+  - uvicorn.org
+  - scrapy.org
+  - beautiful-soup-4.readthedocs.io
+  - requests.readthedocs.io
+  - readthedocs.io
+  - readthedocs.org
+  - sphinx-doc.org
+  - mkdocs.org
+  - docusaurus.io
+  - gohugo.io
+  - jekyllrb.com
+  - gatsbyjs.com
+  - 11ty.dev
+  - rubocop.org
+  - rspec.info
+  - hibernate.org
+  - quarkus.io
+  - micronaut.io
+  - ktor.io
+  - gin-gonic.com
+  - gofiber.io
+  - tokio.rs
+  - actix.rs
+  - serde.rs
+  - diesel.rs
+  - rocket.rs
+  - bevyengine.org
+  - godotengine.org
+  - unity.com
+  - unrealengine.com
+  - blender.org
+  # --- AI / ML tooling ---
+  - jax.readthedocs.io
+  - lightning.ai
+  - wandb.ai
+  - mlflow.org
+  - dvc.org
+  - ray.io
+  - vllm.ai
+  - ollama.com
+  - lmstudio.ai
+  - gradio.app
+  - streamlit.io
+  - spacy.io
+  - nltk.org
+  - gensim.org
+  - xgboost.ai
+  - lightgbm.readthedocs.io
+  - statsmodels.org
+  - seaborn.pydata.org
+  - plotly.com
+  - dash.plotly.com
+  - polars.rs
+  - pola.rs
+  - duckdb.org
+  - arrow.apache.org
+  - dask.org
+  - modal.com
+  - replicate.com
+  - together.ai
+  - groq.com
+  - perplexity.ai
+  - pinecone.io
+  - weaviate.io
+  - qdrant.tech
+  - milvus.io
+  - trychroma.com
+  - faiss.ai
+  - sbert.net
+  - langfuse.com
+  - promptfoo.dev
+  # --- Databases / data engineering ---
+  - timescale.com
+  - questdb.io
+  - starrocks.io
+  - doris.apache.org
+  - druid.apache.org
+  - pinot.apache.org
+  - flink.apache.org
+  - beam.apache.org
+  - hadoop.apache.org
+  - hive.apache.org
+  - iceberg.apache.org
+  - parquet.apache.org
+  - trino.io
+  - prestodb.io
+  - debezium.io
+  - airbyte.com
+  - fivetran.com
+  - dagster.io
+  - prefect.io
+  - metabase.com
+  - superset.apache.org
+  - redash.io
+  - cube.dev
+  - dbeaver.io
+  - valkey.io
+  - memcached.org
+  - rabbitmq.com
+  - nats.io
+  - pulsar.apache.org
+  - zookeeper.apache.org
+  - etcd.io
+  - consul.io
+  - vitess.io
+  - tidb.net
+  - pingcap.com
+  - yugabyte.com
+  - scylladb.com
+  - couchbase.com
+  - arangodb.com
+  - surrealdb.com
+  - edgedb.com
+  - prisma.io
+  - drizzle.team
+  - typeorm.io
+  - knexjs.org
+  - flywaydb.org
+  - liquibase.org
+  # --- DevOps / infra / observability ---
+  - podman.io
+  - containerd.io
+  - opencontainers.org
+  - istio.io
+  - linkerd.io
+  - argoproj.github.io
+  - argo-cd.readthedocs.io
+  - fluxcd.io
+  - pulumi.com
+  - opentofu.org
+  - packer.io
+  - vagrantup.com
+  - puppet.com
+  - chef.io
+  - saltproject.io
+  - openstack.org
+  - proxmox.com
+  - vmware.com
+  - virtualbox.org
+  - qemu.org
+  - systemd.io
+  - jaegertracing.io
+  - opentelemetry.io
+  - fluentd.org
+  - fluentbit.io
+  - vector.dev
+  - victoriametrics.com
+  - thanos.io
+  - pagerduty.com
+  - statuspage.io
+  - honeycomb.io
+  - splunk.com
+  - dynatrace.com
+  - sonarqube.org
+  - sonarsource.com
+  - snyk.io
+  - dependabot.com
+  - renovatebot.com
+  - codecov.io
+  - coveralls.io
+  - buildkite.com
+  - drone.io
+  - gitea.io
+  - gitea.com
+  - forgejo.org
+  - gitbook.com
+  - gitkraken.com
+  - sourcetreeapp.com
+  - tower.com
+  - fork.dev
+  # --- Security ---
+  - cwe.mitre.org
+  - attack.mitre.org
+  - mitre.org
+  - cisa.gov
+  - us-cert.gov
+  - first.org
+  - portswigger.net
+  - hackerone.com
+  - bugcrowd.com
+  - rapid7.com
+  - tenable.com
+  - crowdstrike.com
+  - paloaltonetworks.com
+  - fortinet.com
+  - sans.org
+  - hackthebox.com
+  - tryhackme.com
+  - kali.org
+  - metasploit.com
+  - wireshark.org
+  - nmap.org
+  - openssl.org
+  - letsencrypt.org
+  - bitwarden.com
+  - 1password.com
+  - keepass.info
+  # --- Software downloads / open-source projects / apps ---
+  - fosshub.com
+  - softpedia.com
+  - filehippo.com
+  - chocolatey.org
+  - community.chocolatey.org
+  - brew.sh
+  - formulae.brew.sh
+  - snapcraft.io
+  - flathub.org
+  - appimage.org
+  - f-droid.org
+  - alternativeto.net
+  - libreoffice.org
+  - gimp.org
+  - inkscape.org
+  - krita.org
+  - audacityteam.org
+  - videolan.org
+  - obsproject.com
+  - handbrake.fr
+  - ffmpeg.org
+  - imagemagick.org
+  - 7-zip.org
+  - notepad-plus-plus.org
+  - sublimetext.com
+  - zed.dev
+  - cursor.com
+  - cursor.sh
+  - windsurf.com
+  - codeium.com
+  - tabnine.com
+  - github.blog
+  - blog.jetbrains.com
+  - devblogs.microsoft.com
+  - engineering.fb.com
+  - netflixtechblog.com
+  - eng.uber.com
+  - dropbox.tech
+  - blog.cloudflare.com
+  - stackoverflow.blog
+  - martinfowler.com
+  - joelonsoftware.com
+  - paulgraham.com
+  - jvns.ca
+  - brendangregg.com
+  - danluu.com
+  - blog.pragmaticengineer.com
+  - pragmaticengineer.com
+  - highscalability.com
+  - refactoring.guru
+  - roadmap.sh
+  - developer.roadmap.sh
+  - exercism.org
+  - codewars.com
+  - projecteuler.net
+  - adventofcode.com
+  - kattis.com
+  - atcoder.jp
+  - topcoder.com
+  - spoj.com
+  - interviewbit.com
+  - neetcode.io
+  - algoexpert.io
+  - educative.io
+  - frontendmasters.com
+  - egghead.io
+  - scrimba.com
+  - theodinproject.com
+  - cs50.harvard.edu
+  - cs.stanford.edu
+  - nand2tetris.org
+  - teachyourselfcs.com
+  - missing.csail.mit.edu
+  - beej.us
+  - eloquentjavascript.net
+  - javascript.info
+  - exploringjs.com
+  - learnxinyminutes.com
+  - rosettacode.org
+  - godbolt.org
+  - regex101.com
+  - jsonlint.com
+  - crontab.guru
+  - caniuse.com
+  - bundlephobia.com
+  - shields.io
+  - devdocs.io
+  - zealdocs.org
+  - man7.org
+  - manpages.debian.org
+  - tldr.sh
+  - explainshell.com
+  - ss64.com
+  - linuxhandbook.com
+  - ostechnix.com
+  - tecmint.com
+  - howtoforge.com
+  - phoenixnap.com
+  - dataquest.io
+  - datacamp.com
+  - pythontutor.com
+  - pymotw.com
+  - rust-lang.github.io
+  - doc.rust-lang.org
+  - gobyexample.com
+  - tour.golang.org
+  - docs.oracle.com
+  - jdk.java.net
+  - mkyong.com
+  - javatpoint.com
+  - journaldev.com
 
 finance_allow:
   # --- Markets / data (global) ---
@@ -2408,7 +2761,6 @@ travel_allow:
 
 forums_allow:
   - quora.com
-  - stackexchange.com
   - answers.com
   - ask.com
   - answers.yahoo.com
@@ -2417,11 +2769,7 @@ forums_allow:
   - instructables.com
   - hackster.io
   - discourse.org
-  - xda-developers.com
-  - head-fi.org
   - overclock.net
-  - anandtech.com
-  - tomshardware.com
   - avsforum.com
   - resetera.com
   - neogaf.com
@@ -2460,7 +2808,6 @@ forums_allow:
   - producthunt.com
   - indiehackers.com
   - crunchbase.com
-  - techcrunch.com
   - g2.com
   - capterra.com
   - trustpilot.com
@@ -2540,7 +2887,6 @@ events_allow:
   - lyyti.com
   - tickets.com
   # --- India ---
-  - hopzyx.com
   - bookmyshow.com
   - insider.in
   - paytminsider.com
@@ -2609,7 +2955,6 @@ events_allow:
   - events.google.com
   - io.google
   - build.microsoft.com
-  - developer.apple.com
   - ignite.microsoft.com
   - kubecon.io
   - cncf.io
@@ -2641,7 +2986,6 @@ events_allow:
   - confs.tech
   - dev.events
   - allconferencealert.net
-  - allconferencealert.com
   - conferenceindex.org
   - 10times.com
   - nasscom.in
@@ -2760,3 +3104,188 @@ events_allow:
   - indianfestivals.in
   - nationaltoday.com
   - daysoftheyear.com
+
+# - tech_allow: consumer tech — gadgets, hardware, phones, PCs, tech news and
+#   reviews. Time-sensitive; separate from software_allow (programming/dev).
+tech_allow:
+  # --- Tech news / magazines ---
+  - theverge.com
+  - engadget.com
+  - cnet.com
+  - wired.com
+  - zdnet.com
+  - techcrunch.com
+  - arstechnica.com
+  - gizmodo.com
+  - mashable.com
+  - venturebeat.com
+  - techradar.com
+  - pcmag.com
+  - pcworld.com
+  - digitaltrends.com
+  - slashgear.com
+  - tomsguide.com
+  - tomshardware.com
+  - anandtech.com
+  - theregister.com
+  - thenextweb.com
+  - siliconangle.com
+  - protocol.com
+  - 9to5mac.com
+  - 9to5google.com
+  - 9to5toys.com
+  - macrumors.com
+  - appleinsider.com
+  - macworld.com
+  - imore.com
+  - androidcentral.com
+  - androidauthority.com
+  - androidpolice.com
+  - xda-developers.com
+  - phonearena.com
+  - sammobile.com
+  - windowscentral.com
+  - neowin.net
+  - howtogeek.com
+  - makeuseof.com
+  - lifehacker.com
+  - tech.hindustantimes.com
+  - gadgets360.com
+  - digit.in
+  - smartprix.com
+  - 91wheels.com
+  - gizbot.com
+  - beebom.com
+  - telecomtalk.info
+  - fonearena.com
+  - techpp.com
+  - techgenyz.com
+  - entrackr.com
+  - medianama.com
+  - pocket-lint.com
+  - trustedreviews.com
+  - stuff.tv
+  - what-hifi.com
+  - t3.com
+  - expertreviews.co.uk
+  - which.co.uk
+  - techadvisor.com
+  - notebookcheck.net
+  - gsmarena.com
+  - nanoreview.net
+  - kimovil.com
+  - phonescoop.com
+  - dxomark.com
+  - rtings.com
+  - displaymate.com
+  - soundguys.com
+  - headphonesty.com
+  - head-fi.org
+  - dpreview.com
+  - petapixel.com
+  - fstoppers.com
+  - digitalcameraworld.com
+  - photographylife.com
+  - imaging-resource.com
+  # --- Hardware / PC building ---
+  - pcpartpicker.com
+  - techpowerup.com
+  - guru3d.com
+  - overclock3d.net
+  - eteknix.com
+  - hardwarezone.com.sg
+  - videocardz.com
+  - wccftech.com
+  - tweaktown.com
+  - hothardware.com
+  - legitreviews.com
+  - servethehome.com
+  - storagereview.com
+  - cpubenchmark.net
+  - passmark.com
+  - gpuboss.com
+  - userbenchmark.com
+  - geekbench.com
+  - benchmarks.ul.com
+  - 3dmark.com
+  - notebookcheck.com
+  - laptopmag.com
+  - ultrabookreview.com
+  - laptopmedia.com
+  - ifixit.com
+  - badcaps.net
+  - tomshw.it
+  - computerbase.de
+  - heise.de
+  - golem.de
+  - hardwareluxx.de
+  - pcgameshardware.de
+  # --- Phones / device makers ---
+  - samsung.com
+  - apple.com
+  - oneplus.com
+  - oneplus.in
+  - mi.com
+  - xiaomi.com
+  - realme.com
+  - oppo.com
+  - vivo.com
+  - motorola.com
+  - nothing.tech
+  - in.nothing.tech
+  - huawei.com
+  - honor.com
+  - asus.com
+  - acer.com
+  - msi.com
+  - gigabyte.com
+  - razer.com
+  - logitech.com
+  - corsair.com
+  - steelseries.com
+  - hyperx.com
+  - sennheiser.com
+  - bose.com
+  - jbl.com
+  - sony.com
+  - noise.com
+  - garmin.com
+  - gopro.com
+  - dji.com
+  - canon.com
+  - nikon.com
+  - fujifilm.com
+  - sonyalpha.com
+  - tesla.com
+  - dyson.com
+  - lg.com
+  - panasonic.com
+  - sharp.com
+  - tcl.com
+  - hisense.com
+  # --- Chips / semiconductors / telecom ---
+  - intel.com
+  - amd.com
+  - nvidia.com
+  - qualcomm.com
+  - arm.com
+  - mediatek.com
+  - tsmc.com
+  - micron.com
+  - westerndigital.com
+  - seagate.com
+  - kingston.com
+  - crucial.com
+  - gsma.com
+  - 3gpp.org
+  - 5gamericas.org
+  - ookla.com
+  - speedtest.net
+  - opensignal.com
+  - cellmapper.net
+  - trai.gov.in
+  - dot.gov.in
+  - airtel.in
+  - jio.com
+  - myvi.in
+  - bsnl.co.in

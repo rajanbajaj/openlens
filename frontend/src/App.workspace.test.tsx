@@ -98,7 +98,6 @@ describe('search workspace', () => {
     const filters = body.filters as Record<string, unknown>;
     expect(typeof filters['date_from']).toBe('string');
     expect(typeof filters['date_to']).toBe('string');
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Date: past-day');
   });
 
   it('renders the perspectives section in the right rail when the backend sends views', async () => {
@@ -132,11 +131,11 @@ describe('search workspace', () => {
     expect(screen.getAllByTestId('result-card').length).toBeGreaterThan(0);
   });
 
-  it('sends advanced panel filters and offers removable chips', async () => {
+  it('sends quick-row filters without a sidebar panel', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
     render(<App />);
-    // Google-style landing: the filter panel only exists after the
-    // first search, so search first, then refine and resubmit.
+    // Google-style landing: filters only exist after the first search,
+    // so search first, then refine. The sidebar carries no filter UI.
     fireEvent.change(screen.getByLabelText(/search query/i), {
       target: { value: 'wireless headphones' },
     });
@@ -144,40 +143,37 @@ describe('search workspace', () => {
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('sidebar-panel')).not.toBeNull();
+    expect(screen.queryByLabelText(/max price/i)).not.toBeInTheDocument();
 
-    // Every filter edit re-runs the search immediately: each change
+    // Every quick-row edit re-runs the search immediately: each change
     // below issues its own request, no manual resubmit needed.
-    fireEvent.change(screen.getByLabelText(/max price/i), { target: { value: '250' } });
+    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });
     expect(searchBodies(fetchStub)[1]).toMatchObject({
-      filters: { max_price: 250 },
+      filters: { exclude_sponsored: true },
     });
 
-    fireEvent.change(screen.getByLabelText(/location/i), { target: { value: 'Berlin' } });
+    fireEvent.change(screen.getByLabelText('Safe search'), {
+      target: { value: 'strict' },
+    });
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(3);
     });
     const bodies = searchBodies(fetchStub);
-    expect(bodies[2]?.filters).toEqual({ max_price: 250, location: 'Berlin' });
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Max price 250');
-
-    fireEvent.click(screen.getByRole('button', { name: /remove max price 250/i }));
-    await waitFor(() => {
-      expect(searchBodies(fetchStub)).toHaveLength(4);
-    });
-    expect(searchBodies(fetchStub)[3]?.filters).toEqual({ location: 'Berlin' });
+    expect(bodies[2]?.filters).toEqual({ exclude_sponsored: true, safety_preset: 'strict' });
   });
 
-  it('re-runs immediately on sort, category, and mode changes', async () => {
+  it('re-runs immediately on sort, sponsored, and mode changes', async () => {
     const fetchStub = mockFetchEnvelope(BASE_ENVELOPE);
     await submitQuery();
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'newest' } });
+    fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'newest' } });
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });
@@ -185,28 +181,25 @@ describe('search workspace', () => {
       filters: { sort: 'newest' },
       offset: 0,
     });
-    expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Sort: newest');
 
-    fireEvent.change(screen.getByLabelText(/site category/i), {
-      target: { value: 'news' },
-    });
+    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(3);
     });
     expect(searchBodies(fetchStub)[2]).toMatchObject({
-      filters: { sort: 'newest', site_category: 'news' },
+      filters: { sort: 'newest', exclude_sponsored: true },
     });
 
     fireEvent.change(screen.getByLabelText(/search mode/i), {
-      target: { value: 'news' },
+      target: { value: 'software' },
     });
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(4);
     });
     const modeBody = searchBodies(fetchStub)[3] as Record<string, unknown>;
-    expect(modeBody.mode).toBe('news');
+    expect(modeBody.mode).toBe('software');
     expect(modeBody).toMatchObject({
-      filters: { sort: 'newest', site_category: 'news' },
+      filters: { sort: 'newest', exclude_sponsored: true },
     });
   });
 
@@ -288,17 +281,22 @@ describe('search workspace', () => {
     expect(screen.queryByTestId('diagnostics-query')).not.toBeInTheDocument();
   });
 
-  it('mounts the shell grid: sidebar filters, results column, lazy rail', async () => {
+  it('mounts the shell grid: sidebar tools, results column, lazy rail', async () => {
     mockFetchEnvelope(BASE_ENVELOPE);
     render(<App />);
     // Google-style landing: no sidebar before the first search.
     expect(screen.queryByTestId('sidebar-mount')).not.toBeInTheDocument();
     await submitQueryRerun();
     const sidebar = screen.getByTestId('sidebar-mount');
-    expect(sidebar).toHaveAttribute('aria-label', 'Search filters');
+    expect(sidebar).toHaveAttribute('aria-label', 'Search tools');
     expect(sidebar.tagName).toBe('ASIDE');
     expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
     expect(screen.getByLabelText(/search results/i)).toBeInTheDocument();
+    // The sidebar carries no filter UI: the quick row owns filters and
+    // the sidebar carries no collapse toggle.
+    expect(
+      screen.queryByRole('button', { name: /show filters|hide filters/i }),
+    ).not.toBeInTheDocument();
     // Diagnostics rail is dev-gated: hidden by default, even with a
     // diagnostics payload on the envelope.
     expect(screen.queryByRole('button', { name: /show diagnostics/i })).not.toBeInTheDocument();
@@ -383,7 +381,7 @@ describe('search workspace', () => {
     }
   });
 
-  it('starts with filters collapsed behind the icon on narrow screens', async () => {
+  it('shows quick filters inline on narrow screens with no sidebar toggle', async () => {
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockImplementation((query: string) => ({
@@ -402,9 +400,13 @@ describe('search workspace', () => {
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
-    // Collapsed: the icon button names the action, the panel stays hidden.
-    expect(screen.getByRole('button', { name: 'Show filters' })).toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-panel')).not.toBeVisible();
+    // No collapse toggle anywhere: the quick row is always visible and
+    // the sidebar panel is always mounted.
+    expect(
+      screen.queryByRole('button', { name: /show filters|hide filters/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('quick-filters')).toBeVisible();
+    expect(screen.getByTestId('sidebar-panel')).toBeVisible();
   });
 
   it('leaves focus on a live node (never a detached one) across result updates', async () => {

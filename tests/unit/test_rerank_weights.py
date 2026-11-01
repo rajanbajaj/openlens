@@ -139,7 +139,16 @@ def test_yaml_and_builtins_carry_identical_rerank_weights() -> None:
 
 
 def test_absent_rerank_signals_keep_existing_orderings() -> None:
-    for mode in ("default", "child-safe", "news", "shopping", "travel", "events"):
+    for mode in (
+        "default",
+        "child-safe",
+        "news",
+        "shopping",
+        "travel",
+        "events",
+        "tech",
+        "software",
+    ):
         ranker = Ranker()
         profile = get_profile(mode)
         first = _hit("first", "Alpha", original=2.0)

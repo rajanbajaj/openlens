@@ -85,14 +85,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [announcement, setAnnouncement] = useState('');
-  // Filters start collapsed on narrow screens (filter icon), expanded
-  // on desktop. Guarded for non-DOM harnesses (jsdom lacks matchMedia).
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () =>
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(max-width: 48rem)').matches,
-  );
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<'search' | 'chat'>('search');
   const [savedIds, setSavedIds] = useState<string[]>(() =>
@@ -345,18 +337,13 @@ export default function App() {
               <aside
                 className="ol-shell-sidebar min-w-0"
                 data-testid="sidebar-mount"
-                aria-label="Search filters"
+                aria-label="Search tools"
               >
                 <Sidebar
-                  filters={userFilters}
-                  onFiltersChange={handleFiltersChange}
                   prefs={prefs}
                   onPrefsChange={handlePrefsChange}
                   knownProviders={knownProviders}
-                  appliedFilters={response?.applied_filters ?? []}
                   disabled={loading}
-                  collapsed={sidebarCollapsed}
-                  onCollapsedChange={setSidebarCollapsed}
                   onLibraryOpen={() => setLibraryOpen(true)}
                 />
                 {libraryOpen ? (

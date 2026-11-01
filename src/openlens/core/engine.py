@@ -55,12 +55,20 @@ _MODE_SITE_CATEGORY: dict[str, str] = {
     "shopping": "shopping",
     "travel": "travel",
     "events": "events",
+    "tech": "tech",
+    "software": "software",
 }
 
 #: Deepest fetch window the pagination fill loop may open while covering
 #: a page past post-retrieval filters. Bounds worst-case cost; pages past
 #: a heavily filtered corpus still degrade to the pre-filter total.
 _FILL_DEPTH_CAP = 2000
+
+#: TTL for the per-engine suggest-vocabulary cache (``suggest_terms`` /
+#: ``suggest_term_weights``). Vocabulary scans can touch thousands of
+#: titles, so repeat ``/search`` + ``/suggest`` traffic reuses one snapshot
+#: instead of re-reading the index on every call.
+_SUGGEST_CACHE_TTL_S = 60
 
 
 def _mode_site_category(mode: Any) -> str | None:
@@ -169,6 +177,10 @@ class SearchEngine(Engine):
         self._ranking_profile = "default"
         self._providers = list(providers)
         self._feedback_counts: dict[tuple[str, str], int] = {}
+        # Per-instance TTL cache for suggest snapshots, keyed per
+        # method (namespace + limit). Lives on the instance (never a
+        # class attribute or module global) so engines stay isolated.
+        self._suggest_cache: dict[str, tuple[float, Any]] = {}
         self._propagate_models()
         plugin_list = list(plugins)
         if self._model_manager is not None:
@@ -227,22 +239,62 @@ class SearchEngine(Engine):
                 with suppress(Exception):
                     hook(self._model_manager)
 
+    def _suggest_cache_get(self, key: str) -> Any | None:
+        """Return the cached snapshot for ``key`` when still fresh.
+
+        Freshness uses :func:`time.monotonic` so wall-clock jumps never
+        extend or cut the TTL. A missing or expired entry degrades to
+        ``None`` (cache miss); expired entries are dropped lazily.
+        """
+        entry = self._suggest_cache.get(key)
+        if entry is None:
+            return None
+        stored_at, value = entry
+        if time.monotonic() - stored_at >= _SUGGEST_CACHE_TTL_S:
+            with suppress(KeyError):
+                del self._suggest_cache[key]
+            return None
+        return value
+
+    def _suggest_cache_set(self, key: str, value: Any) -> None:
+        """Store one snapshot under ``key`` with a monotonic timestamp.
+
+        Thread-safety: the swap is a single dict-item assignment, which
+        is atomic under the GIL, so concurrent readers always see either
+        the previous snapshot or the new one — never a torn value. No
+        lock is taken; at worst two racing threads both recompute and
+        the last store wins, which only wastes one provider scan.
+        Empty results (including failure fallbacks) are cached too, so
+        a repeated miss costs no provider work; the bound on staleness
+        is one TTL (60s): fresh index terms appear at most 60s late.
+        """
+        self._suggest_cache[key] = (time.monotonic(), value)
+
     def suggest_terms(self, limit: int = 200) -> list[str]:
         """Live index vocabulary for query assistance (``[]`` when none).
 
         Aggregates provider vocabularies via the manager (or the legacy
         provider list); the API layer prefers this hook over its static
         fallback. Never raises: provider failures degrade to ``[]``.
+        Results (including ``[]``) are cached per instance for
+        ``_SUGGEST_CACHE_TTL_S``.
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             return []
+        cache_key = f"suggest_terms:{limit}"
+        cached = self._suggest_cache_get(cache_key)
+        if isinstance(cached, list):
+            return list(cached)
         collected: list[str] = []
         seen: set[str] = set()
         if self._manager is not None:
             try:
-                return self._manager.suggest_terms(limit=limit)
+                manager_terms = self._manager.suggest_terms(limit=limit)
             except Exception:
-                return []
+                manager_terms = []
+            result = manager_terms if isinstance(manager_terms, list) else []
+            self._suggest_cache_set(cache_key, list(result))
+            return list(result)
         for provider in self._providers:
             hook = getattr(provider, "suggest_terms", None)
             if not callable(hook):
@@ -261,7 +313,9 @@ class SearchEngine(Engine):
                 seen.add(key)
                 collected.append(term.strip())
         collected.sort(key=str.casefold)
-        return collected[:limit]
+        result = collected[:limit]
+        self._suggest_cache_set(cache_key, list(result))
+        return list(result)
 
     def suggest_term_weights(self, limit: int = 2000) -> dict[str, int]:
         """Live index term popularity for query assistance (``{}`` when none).
@@ -269,16 +323,23 @@ class SearchEngine(Engine):
         Aggregates provider document-frequency counts via the manager
         (or the legacy provider list); the API layer prefers this hook
         for popularity ranking and degrades to unweighted order without
-        it. Never raises.
+        it. Never raises. Results (including ``{}``) are cached per
+        instance for ``_SUGGEST_CACHE_TTL_S``.
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             return {}
+        cache_key = f"suggest_term_weights:{limit}"
+        cached = self._suggest_cache_get(cache_key)
+        if isinstance(cached, dict):
+            return dict(cached)
         if self._manager is not None:
             try:
                 weights = self._manager.suggest_term_weights(limit=limit)
             except Exception:
-                return {}
-            return weights if isinstance(weights, dict) else {}
+                weights = {}
+            result_w = weights if isinstance(weights, dict) else {}
+            self._suggest_cache_set(cache_key, dict(result_w))
+            return dict(result_w)
         totals: dict[str, int] = {}
         display: dict[str, str] = {}
         for provider in self._providers:
@@ -298,7 +359,9 @@ class SearchEngine(Engine):
                 key = term.strip().casefold()
                 display.setdefault(key, term.strip())
                 totals[key] = totals.get(key, 0) + max(0, int(count))
-        return {display[key]: total for key, total in totals.items()}
+        result_w = {display[key]: total for key, total in totals.items()}
+        self._suggest_cache_set(cache_key, dict(result_w))
+        return dict(result_w)
 
     def fetch_documents(self, doc_ids: list[str]) -> dict[str, Document]:
         """Bulk-fetch documents by id for agent grounding (read-only).
@@ -592,6 +655,7 @@ class SearchEngine(Engine):
 
     def invalidate_cache(self) -> None:
         """Drop every cached entry; backend failures are swallowed (fail open)."""
+        self._suggest_cache.clear()
         if self._cache is None:
             return
         try:

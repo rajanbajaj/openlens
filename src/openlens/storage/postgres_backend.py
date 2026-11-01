@@ -62,6 +62,7 @@ import json
 import queue
 import re
 import threading
+import time
 import urllib.parse
 from collections.abc import Iterator, Mapping
 from typing import Any
@@ -130,6 +131,11 @@ def _backfill_category_metadata(
         metadata["news_domain_hit"] = news_hit
     return metadata
 
+
+#: Short TTL (seconds) for the ``list_domains`` instance cache:
+#: repeats within the window skip the GROUP BY query entirely.
+#: Cached ranks may be stale (documented on ``list_domains``).
+_DOMAINS_CACHE_TTL_S = 30.0
 
 _PROVIDER_NAME = "custom_index"
 
@@ -267,6 +273,9 @@ class PostgresDocumentStore(DocumentStore):
         }
         self._state_lock = threading.Lock()
         self._closed = False
+        # Short-TTL cache for list_domains: limit -> (cached_at, ranks).
+        # Best-effort only; entries expire after _DOMAINS_CACHE_TTL_S.
+        self._domains_cache: dict[int, tuple[float, list[tuple[str, int]]]] = {}
         # Eager pool: construction proves connectivity, so an
         # unreachable-but-configured DB fails here (UNAVAILABLE), not
         # mid-request. The driver import below is the lazy seam: it is
@@ -484,6 +493,11 @@ class PostgresDocumentStore(DocumentStore):
             f'CREATE INDEX IF NOT EXISTS "idx_{self._table}_published"'  # noqa: S608
             f" ON {qualified} (published)"
         )
+        site_category_idx = f"idx_{self._table}_site_category"
+        ddl_site_category_idx = (
+            f'CREATE INDEX IF NOT EXISTS "{site_category_idx}"'  # noqa: S608
+            f" ON {qualified} (site_category)"
+        )
         backfill = (
             f"UPDATE {qualified} SET search_tsv ="  # noqa: S608
             " to_tsvector('english', coalesce(title, '')"
@@ -514,6 +528,7 @@ class PostgresDocumentStore(DocumentStore):
                     cur.execute(ddl_content_type_idx)
                     cur.execute(ddl_published_idx)
                     cur.execute(ddl_content_hash_idx)
+                    cur.execute(ddl_site_category_idx)
                     cur.execute(backfill)
                 conn.commit()
             except Exception as exc:
@@ -784,7 +799,13 @@ class PostgresDocumentStore(DocumentStore):
         return updated
 
     def list_domains(self, limit: int = 100) -> list[tuple[str, int]]:
-        """(host, doc count) pairs, most-indexed first (read-only)."""
+        """(host, doc count) pairs, most-indexed first (read-only).
+
+        Repeats with the same ``limit`` within ``_DOMAINS_CACHE_TTL_S``
+        seconds return the cached ranking without querying, so those
+        ranks may be stale (writes inside the window stay invisible
+        until the entry expires).
+        """
         try:
             limit = int(limit)
         except (TypeError, ValueError):
@@ -792,6 +813,18 @@ class PostgresDocumentStore(DocumentStore):
         if isinstance(limit, bool) or limit <= 0:
             return []
         limit = min(limit, 1000)
+        # Test doubles may bypass __init__ (no cache attrs): degrade to
+        # the uncached scan instead of raising.
+        state_lock = getattr(self, "_state_lock", None)
+        domains_cache = getattr(self, "_domains_cache", None)
+        if state_lock is not None and domains_cache is not None:
+            with state_lock:
+                cached = domains_cache.get(limit)
+                if (
+                    cached is not None
+                    and time.monotonic() - cached[0] < _DOMAINS_CACHE_TTL_S
+                ):
+                    return list(cached[1])
         # S608 false positives below: validated identifiers, a static
         # regexp, and a bound limit — no user input is interpolated.
         sql = (
@@ -811,7 +844,11 @@ class PostgresDocumentStore(DocumentStore):
                     provider_name=_PROVIDER_NAME,
                     code=ProviderError.UNAVAILABLE,
                 ) from exc
-        return [(str(row[0]), int(row[1])) for row in rows if row[0]]
+        result = [(str(row[0]), int(row[1])) for row in rows if row[0]]
+        if state_lock is not None and domains_cache is not None:
+            with state_lock:
+                domains_cache[limit] = (time.monotonic(), list(result))
+        return result
 
     def count(self) -> int:
         with self._connection() as conn:
@@ -859,6 +896,7 @@ class PostgresDocumentStore(DocumentStore):
         Best-effort read for the query-assistance path: a closed store or
         any failure yields ``[]`` rather than raising, so suggest
         degrades to its static fallback instead of failing the request.
+        Ordered by title so the vocabulary is deterministic.
         Mirrors ``storage/repository.py::DocumentRepository.list_titles``.
         """
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
@@ -871,7 +909,8 @@ class PostgresDocumentStore(DocumentStore):
                 with conn.cursor() as cur:
                     # S608 false positive: validated identifiers, bound %s.
                     cur.execute(
-                        f"SELECT title FROM {self._qualified()} LIMIT %s",  # noqa: S608
+                        f"SELECT title FROM {self._qualified()}"  # noqa: S608
+                        " ORDER BY title ASC LIMIT %s",
                         (limit,),
                     )
                     rows = cur.fetchall()

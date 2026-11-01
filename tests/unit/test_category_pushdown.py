@@ -114,6 +114,22 @@ def test_engine_events_mode_total_matches_results() -> None:
     assert all(r.metadata.get("site_category") == "events" for r in response.results)
 
 
+def test_engine_tech_and_software_modes_total_matches_results() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    docs = [_doc(f"t{i}", "tech") for i in range(2)]
+    docs += [_doc(f"s{i}", "software") for i in range(4)]
+    docs += [_doc(f"o{i}", "other") for i in range(5)]
+    provider._repository.add_documents(docs)
+    engine = SearchEngine(providers=[provider], plugins=[])
+    tech = engine.search(SearchRequest(query="python", mode="tech", limit=10))
+    assert tech.total == 2
+    assert all(r.metadata.get("site_category") == "tech" for r in tech.results)
+    software = engine.search(SearchRequest(query="python", mode="software", limit=10))
+    assert software.total == 4
+    assert all(r.metadata.get("site_category") == "software" for r in software.results)
+
+
 def test_engine_news_mode_total_matches_results() -> None:
     engine = SearchEngine(providers=[_provider()], plugins=[])
     response = engine.search(SearchRequest(query="python", mode="news", limit=10))

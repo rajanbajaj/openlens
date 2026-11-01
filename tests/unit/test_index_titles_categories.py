@@ -301,6 +301,7 @@ NEW_DOMAINS: dict[str, frozenset[str]] = {
     "video_allow": frozenset({"video.example"}),
     "reference_allow": frozenset({"ref.example"}),
     "tech_allow": frozenset({"tech.example"}),
+    "software_allow": frozenset({"soft.example"}),
     "finance_allow": frozenset({"money.example"}),
     "health_allow": frozenset({"health.example"}),
     "government_allow": frozenset({"gov.example", "gov.in"}),
@@ -317,6 +318,7 @@ def test_new_allow_lists_default_their_category() -> None:
         "https://video.example/watch": "video",
         "https://ref.example/wiki": "reference",
         "https://tech.example/docs": "tech",
+        "https://soft.example/lib": "software",
         "https://money.example/market": "finance",
         "https://health.example/guide": "health",
         "https://portal.gov.example/service": "government",
@@ -436,6 +438,7 @@ def test_category_domains_yaml_loads() -> None:
         "video_allow",
         "reference_allow",
         "tech_allow",
+        "software_allow",
         "finance_allow",
         "health_allow",
         "government_allow",
@@ -446,12 +449,14 @@ def test_category_domains_yaml_loads() -> None:
     assert "amazon.com" in domains["shopping_allow"]
     assert "bbc.com" in domains["news_allow"]
     assert "timeout.com" in domains["events_allow"]
-    assert "allconferencealert.com" in domains["events_allow"]
-    assert "developer.apple.com" in domains["events_allow"]
+    assert "allconferencealert.net" in domains["events_allow"]
+    assert "developer.apple.com" in domains["software_allow"]
     assert "pbskids.org" in domains["kids_allow"]
     assert "youtube.com" in domains["video_allow"]
     assert "wikipedia.org" in domains["reference_allow"]
-    assert "github.com" in domains["tech_allow"]
+    assert "github.com" in domains["software_allow"]
+    assert "theverge.com" in domains["tech_allow"]
+    assert "github.com" not in domains["tech_allow"]
     assert "reddit.com" in domains["social_block"]
 
 

@@ -1,10 +1,11 @@
 import type { UserFilterState } from '../api/filters.ts';
 import { DATE_PRESET_OPTIONS, SAFETY_PRESETS } from '../api/filters.ts';
+import FilterToggle from './FilterToggle.tsx';
 import { Select } from './ui/Select.tsx';
 import { TextInput } from './ui/TextInput.tsx';
 
 export interface QuickFiltersProps {
-  /** Raw panel state, controlled by the parent (shared with the sidebar). */
+  /** Raw filter state, controlled by the parent. */
   value: UserFilterState;
   /** Called with the next state on every field edit. */
   onChange: (next: UserFilterState) => void;
@@ -13,14 +14,12 @@ export interface QuickFiltersProps {
 }
 
 /**
- * DuckDuckGo-style inline filter row: date, safe-search, and sort
- * dropdowns directly under the results header instead of hidden in the
- * sidebar. Bound to the same `UserFilterState` as `FilterPanel`, so
- * both surfaces stay in sync and re-run page 1 through the same
- * parent handler. Labels intentionally differ from the sidebar
- * (`Date`, `Safe search`, `Sort by`) so label queries stay
- * unambiguous. The custom date inputs only render for the custom
- * preset; full date editing lives in the sidebar panel.
+ * DuckDuckGo-style inline filter row: date, safe-search, sort, and
+ * the sponsored toggle directly under the results header. This row is
+ * the only filter surface; the sidebar carries non-filter utilities
+ * only (library, URL requests, provider prefs). Edits re-run page 1
+ * through the parent handler. The custom date inputs only render for
+ * the custom preset.
  */
 export function QuickFilters({ value, onChange, disabled = false }: QuickFiltersProps) {
   const set = (patch: Partial<UserFilterState>) => onChange({ ...value, ...patch });
@@ -87,6 +86,11 @@ export function QuickFilters({ value, onChange, disabled = false }: QuickFilters
           { value: 'newest', label: 'Newest' },
           { value: 'most-trusted', label: 'Most trusted' },
         ]}
+      />
+      <FilterToggle
+        checked={value.excludeSponsored}
+        onChange={(checked) => set({ excludeSponsored: checked })}
+        disabled={disabled}
       />
     </div>
   );

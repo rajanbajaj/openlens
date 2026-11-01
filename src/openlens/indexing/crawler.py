@@ -76,6 +76,14 @@ DEFAULT_USER_AGENT = "OpenLensBot/1.0 (+https://github.com/rajanbajaj/openlens)"
 #: No per-domain policy configured: unlimited depth, global delay only.
 DEFAULT_MAX_DEPTH: int | None = None
 
+#: BoundedFrontier sidecar batching: rewrite the on-disk file after
+#: this many queued mutations ...
+_PERSIST_DIRTY_THRESHOLD = 100
+
+#: ... or after this many seconds since the last rewrite, whichever
+#: comes first (plus on explicit flush/close).
+_PERSIST_MAX_AGE_S = 5.0
+
 #: Allowed per-domain policy keys inside ``domain_policies``.
 ALLOWED_DOMAIN_POLICY_KEYS = frozenset({"allow", "rate_limit_s", "max_depth"})
 
@@ -271,10 +279,17 @@ class CrawlStats:
 class BoundedFrontier:
     """FIFO URL queue with on-disk backing and oldest-first eviction.
 
-    Every mutation is persisted to a sibling file (one URL per line) so
-    the queue survives a process restart within a crawl; the in-memory
-    deque is capped at ``maxsize`` and pushing past the cap evicts the
-    oldest entry while counting evictions.
+    Mutations land in the in-memory deque first; the sibling sidecar
+    file (one URL per line, for restart-within-a-crawl recovery) is
+    rewritten in batches — every ``_PERSIST_DIRTY_THRESHOLD`` mutations
+    or ``_PERSIST_MAX_AGE_S`` seconds, whichever comes first, plus on
+    explicit :meth:`flush` and :meth:`close`. Batching trades a bounded
+    crash-safety window (at most 100 recent mutations or 5 seconds of
+    queue state is lost when the process dies between rewrites — the
+    sidecar is only a restart aid, never the source of truth mid-crawl,
+    so a crash replays at most that window) for avoiding one disk
+    rewrite per URL. The deque is capped at ``maxsize``; pushing past
+    the cap evicts the oldest entry while counting evictions.
     """
 
     def __init__(self, maxsize: int, *, path: Path | None = None) -> None:
@@ -291,7 +306,9 @@ class BoundedFrontier:
             tmp.close()
         else:
             self._path = Path(path)
-        self._persist()
+        self._dirty = 0
+        self._last_persist = time.monotonic()
+        self.flush()
 
     def __len__(self) -> int:
         return len(self._items)
@@ -305,20 +322,37 @@ class BoundedFrontier:
             self._items.popleft()
             self.evicted += 1
         self._items.append(url)
-        self._persist()
+        self._note_mutation()
 
     def pop(self) -> str | None:
         if not self._items:
             return None
         url = self._items.popleft()
-        self._persist()
+        self._note_mutation()
         return url
+
+    def flush(self) -> None:
+        """Rewrite the sidecar file now; resets batching counters."""
+        self._persist()
+        self._dirty = 0
+        self._last_persist = time.monotonic()
+
+    def _note_mutation(self) -> None:
+        self._dirty += 1
+        if self._dirty >= _PERSIST_DIRTY_THRESHOLD:
+            self.flush()
+        elif time.monotonic() - self._last_persist >= _PERSIST_MAX_AGE_S:
+            self.flush()
 
     def _persist(self) -> None:
         self._path.write_text("\n".join(self._items) + "\n", encoding="utf-8")
 
     def close(self) -> None:
-        self._path.unlink(missing_ok=True)
+        """Flush pending mutations, then remove the sidecar file."""
+        try:
+            self.flush()
+        finally:
+            self._path.unlink(missing_ok=True)
 
 
 def decay_child_priority(parent_priority: Any) -> int:
@@ -756,6 +790,7 @@ SITE_CATEGORIES: tuple[str, ...] = (
     "video",
     "reference",
     "tech",
+    "software",
     "finance",
     "health",
     "government",
@@ -778,6 +813,7 @@ _CATEGORY_DOMAIN_KEYS: tuple[str, ...] = (
     "video_allow",
     "reference_allow",
     "tech_allow",
+    "software_allow",
     "finance_allow",
     "health_allow",
     "government_allow",
@@ -911,9 +947,9 @@ def classify_site_category(
     - blocked categories: ``social_block``/``gambling_block`` hits
       label the page ``social``/``gambling`` -> 1.0 (and veto kids).
       ``adult_block`` only vetoes (no ``adult`` value exists).
-    - allow categories: ``video``/``reference``/``tech``/``finance``/
-      ``health``/``government``/``travel``/``events``/``forums`` domain
-      hits default the page to that category -> 1.0.
+    - allow categories: ``video``/``reference``/``tech``/``software``/
+      ``finance``/``health``/``government``/``travel``/``events``/
+      ``forums`` domain hits default the page to that category -> 1.0.
     - otherwise -> ("other", 1.0).
 
     Always returns all five keys: ``site_category``,
@@ -941,6 +977,7 @@ def classify_site_category(
             "video",
             "reference",
             "tech",
+            "software",
             "finance",
             "health",
             "government",
@@ -1009,12 +1046,13 @@ def classify_site_category(
         "video": 5,
         "reference": 6,
         "tech": 7,
-        "finance": 8,
-        "health": 9,
-        "government": 10,
-        "travel": 11,
-        "events": 12,
-        "forums": 13,
+        "software": 8,
+        "finance": 9,
+        "health": 10,
+        "government": 11,
+        "travel": 12,
+        "events": 13,
+        "forums": 14,
     }
     best: tuple[str, float] | None = None
     for category, confidence in candidates:
@@ -2035,6 +2073,11 @@ class PoliteCrawler:
             frontier: Any = PersistentFrontier(
                 store, self.max_queued_urls, on_push=on_link
             )
+            # No BoundedFrontier is constructed on this path, so no temp
+            # sidecar file exists to close/unlink here; queue rows persist
+            # in the store (PersistentFrontier.close is a no-op by design)
+            # and the ``finally`` below only closes the temp-owned
+            # BoundedFrontier of the in-memory path.
             try:
                 preloaded = store.pending(
                     limit=self.max_queued_urls + len(seed_urls) + 1

@@ -32,6 +32,8 @@ MODE_CATEGORY: dict[str, str] = {
     "shopping": "shopping",
     "travel": "travel",
     "events": "events",
+    "tech": "tech",
+    "software": "software",
 }
 
 #: Text fallback for ``travel`` (mirrors the travel ranking keywords).
@@ -46,11 +48,31 @@ EVENTS_KEYWORDS: tuple[str, ...] = (
     "show",
 )
 
+#: Text fallback for ``tech`` (mirrors the tech ranking keywords).
+TECH_KEYWORDS: tuple[str, ...] = (
+    "smartphone",
+    "laptop",
+    "gadget",
+    "review",
+    "chipset",
+)
+
+#: Text fallback for ``software`` (mirrors the software ranking keywords).
+SOFTWARE_KEYWORDS: tuple[str, ...] = (
+    "code",
+    "api",
+    "sdk",
+    "github",
+    "framework",
+)
+
 #: Modes with a keyword fallback for untagged pages, keyed to the keyword
 #: set used for that fallback.
 _FALLBACK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "travel": TRAVEL_KEYWORDS,
     "events": EVENTS_KEYWORDS,
+    "tech": TECH_KEYWORDS,
+    "software": SOFTWARE_KEYWORDS,
 }
 
 

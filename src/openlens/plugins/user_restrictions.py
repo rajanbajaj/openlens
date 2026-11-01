@@ -183,6 +183,7 @@ SITE_CATEGORY_VALUES: frozenset[str] = frozenset(
         "video",
         "reference",
         "tech",
+        "software",
         "finance",
         "health",
         "government",

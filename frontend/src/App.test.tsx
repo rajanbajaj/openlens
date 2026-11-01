@@ -103,13 +103,10 @@ describe('App wiring', () => {
 
     await waitForResults();
     expect(screen.getByText(/showing 1 of 1 result/i)).toBeInTheDocument();
-    expect(screen.getByTestId('applied-filters')).toHaveTextContent(
-      'Applied filters: user-restrictions, safety-filter, privacy-filter',
-    );
 
     // Filters exist only after the first search (Google-style landing):
-    // the toggle in the now-mounted sidebar re-runs the search
-    // immediately, so assert the wire call without resubmitting.
+    // the quick-row sponsored toggle re-runs the search immediately,
+    // so assert the wire call without resubmitting.
     // The sponsored toggle sends only the backend `exclude_sponsored`
     // reserved flag (hard-excludes crawler-truth sponsored hits).
     fireEvent.click(screen.getByLabelText(/exclude sponsored/i));

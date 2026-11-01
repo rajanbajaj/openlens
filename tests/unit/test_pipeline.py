@@ -229,6 +229,8 @@ def test_ranking_yaml_loads_six_profiles():
         "shopping",
         "travel",
         "events",
+        "tech",
+        "software",
     }
     assert set(list_profiles()) == set(profiles)
     with pytest.raises(ConfigError):

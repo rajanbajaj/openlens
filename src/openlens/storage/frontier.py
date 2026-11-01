@@ -1235,23 +1235,31 @@ class SqliteFrontierStore(FrontierStore):
         return total
 
     def evict_oldest(self, limit: int) -> int:
-        """Drop oldest queued rows past ``limit`` (oldest-first eviction)."""
+        """Drop oldest queued rows past ``limit`` (oldest-first eviction).
+
+        Single-statement eviction: one ``COUNT`` sizes the overflow, then
+        one ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT ?)``
+        moves the victims. Victims match the old per-row loop exactly
+        (oldest ``queued`` rows by ``discovered_at``, ``rowid`` tiebreak).
+        """
+        cap = max(0, limit)
         try:
             with self._lock, self._conn:
-                rows = self._conn.execute(
-                    "SELECT url FROM frontier_queue WHERE status = 'queued'"
-                    " ORDER BY discovered_at ASC, rowid ASC"
-                ).fetchall()
-                overflow = len(rows) - max(0, limit)
+                count_row = self._conn.execute(
+                    "SELECT COUNT(*) FROM frontier_queue WHERE status = 'queued'"
+                ).fetchone()
+                overflow = int(count_row[0]) - cap
                 if overflow <= 0:
                     return 0
-                for row in rows[:overflow]:
-                    self._conn.execute(
-                        "UPDATE frontier_queue SET status = 'skipped',"
-                        " last_error = 'evicted: queue cap exceeded' WHERE url = ?",
-                        (row["url"],),
-                    )
-                return overflow
+                cursor = self._conn.execute(
+                    "UPDATE frontier_queue SET status = 'skipped',"
+                    " last_error = 'evicted: queue cap exceeded'"
+                    " WHERE url IN (SELECT url FROM frontier_queue"
+                    " WHERE status = 'queued'"
+                    " ORDER BY discovered_at ASC, rowid ASC LIMIT ?)",
+                    (overflow,),
+                )
+                return cursor.rowcount
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to evict frontier URLs: {exc}",
@@ -2330,28 +2338,39 @@ class PostgresFrontierStore(FrontierStore):
         return total
 
     def evict_oldest(self, limit: int) -> int:
+        """Drop oldest queued rows past ``limit`` (oldest-first eviction).
+
+        Single-statement eviction: one ``COUNT`` sizes the overflow, then
+        one ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT %s)``
+        moves the victims. Victims match the old per-row loop exactly
+        (oldest ``queued`` rows by ``discovered_at``).
+        """
         table = self._qualified("frontier_queue")
+        cap = max(0, limit)
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"SELECT url FROM {table} WHERE status = 'queued'"  # noqa: S608
-                        " ORDER BY discovered_at ASC"
+                        f"SELECT COUNT(*) FROM {table}"  # noqa: S608
+                        " WHERE status = 'queued'"
                     )
-                    urls = [str(r[0]) for r in cur.fetchall()]
-                    overflow = len(urls) - max(0, limit)
+                    count_row = cur.fetchone()
+                    count = int(count_row[0]) if count_row else 0
+                    overflow = count - cap
                     if overflow <= 0:
                         conn.commit()
                         return 0
-                    for victim in urls[:overflow]:
-                        cur.execute(
-                            f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
-                            " last_error = 'evicted: queue cap exceeded'"
-                            " WHERE url = %s",
-                            (victim,),
-                        )
+                    cur.execute(
+                        f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
+                        " last_error = 'evicted: queue cap exceeded'"
+                        f" WHERE url IN (SELECT url FROM {table}"  # noqa: S608
+                        " WHERE status = 'queued'"
+                        " ORDER BY discovered_at ASC LIMIT %s)",
+                        (overflow,),
+                    )
+                    evicted = cur.rowcount or 0
                 conn.commit()
-                return overflow
+                return int(evicted)
         except Exception as exc:
             raise ProviderError(
                 f"failed to evict frontier URLs: {exc}",

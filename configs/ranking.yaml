@@ -107,6 +107,48 @@ profiles:
     authority_weight: 0.5
     performance_weight: 0.25
     sponsored_weight: 1.0
+  tech:
+    description: "Boosts hits mentioning gadget/hardware/tech-news keywords."
+    relevance_weight: 1.0
+    warning_penalty: 0.5
+    trust_boost: 0.25
+    recency_boost: 0.0
+    keyword_boost: 0.5
+    keywords: ["smartphone", "laptop", "gadget", "review", "chipset"]
+    trust_weight: 0.25
+    freshness_weight: 0.0
+    preference_weight: 1.0
+    diversity_weight: 0.25
+    perspective_weight: 0.0
+    commerce_weight: 1.0
+    safety_weight: 0.5
+    privacy_weight: 0.25
+    fairness_weight: 0.25
+    news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
+    sponsored_weight: 1.0
+  software:
+    description: "Boosts hits mentioning programming/software keywords."
+    relevance_weight: 1.0
+    warning_penalty: 0.5
+    trust_boost: 0.25
+    recency_boost: 0.0
+    keyword_boost: 0.5
+    keywords: ["code", "api", "sdk", "github", "framework"]
+    trust_weight: 0.25
+    freshness_weight: 0.0
+    preference_weight: 1.0
+    diversity_weight: 0.25
+    perspective_weight: 0.0
+    commerce_weight: 1.0
+    safety_weight: 0.5
+    privacy_weight: 0.25
+    fairness_weight: 0.25
+    news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
+    sponsored_weight: 1.0
   events:
     description: "Boosts hits mentioning event-oriented keywords."
     relevance_weight: 1.0
