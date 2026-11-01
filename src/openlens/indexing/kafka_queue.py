@@ -45,7 +45,14 @@ DEFAULT_POLL_TIMEOUT_S = 1.0
 DEFAULT_MAX_POLL_INTERVAL_MS = 900_000
 #: Default cap on pages crawled per consumed message: keeps the
 #: poll -> process -> commit cycle frequent on slow domains.
-DEFAULT_MAX_PAGES_PER_POLL = 5
+#:
+#: Sized so the worst case still fits comfortably inside
+#: ``max_poll_interval_ms`` (900s): even if every page burns the full
+#: 5s fetch timeout plus parse/index overhead (~3s), 25 pages take
+#: ~200s < 900s, so the broker never mistakes a busy consumer for a
+#: dead one. Raise per-poll throughput here, not by stretching this
+#: past ~1/4 of ``max_poll_interval_ms``.
+DEFAULT_MAX_PAGES_PER_POLL = 25
 
 
 @dataclass(frozen=True)
@@ -348,22 +355,58 @@ class KafkaQueue:
         """
         if not isinstance(url, str) or not url.strip():
             return False
+        future = self._send_one(url, depth, priority)
+        try:
+            future.get(timeout=self._publish_timeout_s)
+        except Exception as exc:
+            raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
+        return True
+
+    def _send_one(self, url: str, depth: int = 0, priority: int | None = None) -> Any:
+        """Queue one URL send; the caller decides when to wait on it."""
         cleaned = url.strip()
         payload: dict[str, Any] = {"url": cleaned, "depth": int(depth)}
         if priority is not None:
             payload["priority"] = int(priority)
         try:
-            future = self._producer.send(
+            return self._producer.send(
                 self._topic,
                 key=normalize_url(cleaned),
                 value=payload,
             )
-            future.get(timeout=self._publish_timeout_s)
         except Exception as exc:
-            if isinstance(exc, self._kafka_error):
-                raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
             raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
-        return True
+
+    def publish_many(self, items: list[tuple[str, int, int | None]]) -> int:
+        """Publish many URLs with a single broker flush; returns count sent.
+
+        Blank URLs are skipped. Throughput equivalent of :meth:`publish`
+        for link-heavy pages: one flush waits on every send instead of
+        one round-trip per link. Raises ``ProviderError(UNAVAILABLE)``
+        when the broker rejects or the flush times out, so callers can
+        fall back to the store queue.
+        """
+        pending: list[tuple[Any, str]] = []
+        for url, depth, priority in items:
+            if not isinstance(url, str) or not url.strip():
+                continue
+            pending.append((self._send_one(url, depth, priority), url.strip()))
+        if not pending:
+            return 0
+        try:
+            self._producer.flush(timeout=self._publish_timeout_s)
+        except Exception as exc:
+            raise _error(
+                f"Kafka publish batch to '{self._topic}' failed: {exc}"
+            ) from exc
+        for future, cleaned in pending:
+            try:
+                future.get(timeout=self._publish_timeout_s)
+            except Exception as exc:
+                raise _error(
+                    f"Kafka publish batch to '{self._topic}' failed on {cleaned}: {exc}"
+                ) from exc
+        return len(pending)
 
     # -- consume ----------------------------------------------------------
 

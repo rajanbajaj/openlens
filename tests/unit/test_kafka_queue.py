@@ -57,6 +57,7 @@ class _FakeFuture:
 class _FakeProducer:
     def __init__(self, fail: bool = False) -> None:
         self.sent: list[tuple[str, str | None, dict[str, Any]]] = []
+        self.flushes = 0
         self._fail = fail
 
     def send(
@@ -66,6 +67,7 @@ class _FakeProducer:
         return _FakeFuture(fail=self._fail)
 
     def flush(self, timeout: float | None = None) -> None:
+        self.flushes += 1
         return None
 
     def close(self, timeout: float | None = None) -> None:
@@ -234,7 +236,7 @@ def test_validate_kafka_section_servers_shapes() -> None:
 def test_validate_kafka_section_poll_knobs() -> None:
     normalized = validate_kafka_section({})
     assert normalized["max_poll_interval_ms"] == 900_000
-    assert normalized["max_pages_per_poll"] == 5
+    assert normalized["max_pages_per_poll"] == 25
     section = validate_kafka_section(
         {"max_poll_interval_ms": 600_000, "max_pages_per_poll": 2}
     )
@@ -344,6 +346,40 @@ def test_publish_carries_priority_only_when_explicit() -> None:
     assert queue.publish("https://example.com/zero", 0, priority=0) is True
     assert producer.sent[2][2]["priority"] == 0
     queue.close()
+
+
+def test_publish_many_flushes_once_for_the_batch() -> None:
+    producer = _FakeProducer()
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=producer
+    )
+    sent = queue.publish_many(
+        [
+            ("https://example.com/a", 1, None),
+            ("https://example.com/b", 2, 7),
+            ("   ", 0, None),
+        ]
+    )
+    assert sent == 2
+    assert [value["url"] for _, _, value in producer.sent] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert producer.sent[1][2]["priority"] == 7
+    # One broker flush for the whole batch, not one wait per link.
+    assert producer.flushes == 1
+    assert queue.publish_many([]) == 0
+    assert producer.flushes == 1  # empty batch never touches the broker
+    queue.close()
+
+
+def test_publish_many_failure_surfaces_unavailable() -> None:
+    producer = _FakeProducer(fail=True)
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=producer
+    )
+    with pytest.raises(ProviderError):
+        queue.publish_many([("https://example.com/a", 0, None)])
 
 
 def test_poll_parses_priority_and_tolerates_garbage() -> None:
@@ -543,9 +579,17 @@ def test_run_kafka_worker_reports_claimed_and_discovery(
     first = calls[0]
     assert first["crawl_id"] == "default"
     assert isinstance(first["claimed"], int) and first["claimed"] >= 0
-    discovery = first.get("discovery")
-    assert isinstance(discovery, dict)
-    assert set(discovery) >= {"feeds_checked", "new_urls", "refreshed"}
+    # The startup beat fires before the first drain/discovery pass, so it
+    # carries no summary; a post-pass beat does (omitted until a pass
+    # completes, per the heartbeat contract).
+    assert first.get("discovery") is None
+    with_discovery = [c for c in calls if isinstance(c.get("discovery"), dict)]
+    assert with_discovery, "expected a post-pass heartbeat with discovery"
+    assert set(with_discovery[0]["discovery"]) >= {
+        "feeds_checked",
+        "new_urls",
+        "refreshed",
+    }
 
 
 def test_run_kafka_worker_passes_message_priority_to_store(

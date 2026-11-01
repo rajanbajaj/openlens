@@ -28,6 +28,36 @@ only after crawl + index; the Postgres seen-set dedupes twins.
 `POST /api/v1/frontier/clear` pauses, deletes queued rows, and
 purges the topic so published messages cannot refill the queue.
 
+## Scaling crawler throughput
+
+Each worker fetches pages sequentially, so per-worker rate is ~1 page
+per (fetch + politeness wait + index writes). Scale in this order:
+
+1. **Replicas** (no code change): `--scale crawler=N`, up to **12**
+   (one per `crawl.urls` partition; more replicas idle). On the
+   release host this is `CRAWLER_SCALE` in `release.env`. Watch
+   `kafka_lag_total` first — scale only when lag grows.
+2. **Per-poll budget** (config): `kafka.max_pages_per_poll`
+   (default 25) amortizes poll/commit overhead. Keep worst-case poll
+   work under ~1/4 of `kafka.max_poll_interval_ms` (900s); past that
+   the broker mistakes a busy consumer for a dead one and rebalances.
+3. **Link fan-out** is already batched: one broker flush per drain,
+   not one round-trip per link.
+
+**Connection math** (Postgres is the ceiling): each process holds ~2
+pools × `OPENLENS_PG_POOL_SIZE` (default 5 → ~10 server connections),
+backend included. Provision
+`(replicas + 1) × 2 × pool_size + headroom` via
+`POSTGRES_MAX_CONNECTIONS` (compose default 200 — covers 12 replicas
+at pool 5). We hit `sorry, too many clients` before this knob
+existed; do not scale replicas without it. Lowering pool size helps
+only past this; a sequential worker rarely needs 5 concurrent
+connections.
+
+While scaling, watch PG CPU/IO and `pg_stat_activity` wait events —
+every page costs upserts plus index maintenance, and search latency
+(`custom_index` provider time) degrades if the DB saturates.
+
 ## Ops checklist
 
 - Size Postgres `max_connections` for ~10 per process × workers.

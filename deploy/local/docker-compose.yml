@@ -336,6 +336,11 @@ services:
     mem_limit: 1G
     cpus: 1.0
     logging: *default-logging
+    # Connection headroom for crawler scale-out: each backend/crawler
+    # process holds ~2 pools x OPENLENS_PG_POOL_SIZE connections
+    # (default 5 -> ~10). 200 covers 12 crawler replicas + backend
+    # with margin; raise with replicas (see Crawler-and-Frontier-Ops).
+    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-openlens}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}

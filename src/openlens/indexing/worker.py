@@ -962,9 +962,28 @@ def run_kafka_worker(
         pass
     counts = {"received": 0, "added": 0, "updated": 0}
 
+    # Discovered links buffer here and go out as one batch per drain:
+    # per-link blocking publishes cost a broker round-trip each, which
+    # dominates link-heavy pages. Draining the store first also keeps
+    # publish failures from aborting the crawl (fail-open, like before).
+    pending_links: list[tuple[str, int, int | None]] = []
+
     def _publish_link(url: str, depth: int, priority: int | None = None) -> None:
+        if isinstance(url, str) and url.strip():
+            pending_links.append((url.strip(), int(depth), priority))
+
+    def _flush_links() -> None:
+        if not pending_links:
+            return
+        batch = list(pending_links)
+        pending_links.clear()
+        publish_many = getattr(kafka, "publish_many", None)
         with contextlib.suppress(Exception):
-            kafka.publish(url, depth, priority=priority)
+            if callable(publish_many):
+                publish_many(batch)
+            else:  # pragma: no cover - pre-batch queue fakes in old tests
+                for url, depth, priority in batch:
+                    kafka.publish(url, depth, priority=priority)
 
     def _drain_once() -> None:
         worker.refresh_limits()
@@ -981,6 +1000,7 @@ def run_kafka_worker(
             crawl_id=crawl_id,
             on_link=_publish_link,
         )
+        _flush_links()
         counts["added"] += int(getattr(drain_stats, "added", 0) or 0)
         counts["updated"] += int(getattr(drain_stats, "updated", 0) or 0)
 
@@ -1024,6 +1044,18 @@ def run_kafka_worker(
                 discovery=discovery,
             )
 
+    # Startup banner + first beat BEFORE any drain: the initial
+    # _drain_once() can run for many minutes on a deep backlog, and
+    # until it returns nothing is printed and no heartbeat is sent, so
+    # a healthy worker looks dead (silent logs, zero workers row).
+    # The beat is fail-open like all reporting.
+    print(
+        f"[worker {worker.worker_id}] crawl={crawl_id} queue=kafka "
+        f"api={api_url} seeds={len(seed_urls)}",
+        flush=True,
+    )
+    with contextlib.suppress(Exception):
+        _report_progress(force=True)
     try:
         for seed in seed_urls:
             if isinstance(seed, str) and seed.strip():
@@ -1113,12 +1145,14 @@ def run_kafka_worker(
                     worker.crawler.max_pages = full_budget
             counts["added"] += int(getattr(stats, "added", 0) or 0)
             counts["updated"] += int(getattr(stats, "updated", 0) or 0)
+            _flush_links()
             kafka.commit()
             with contextlib.suppress(Exception):
                 worker.maybe_run_discovery()
             with contextlib.suppress(Exception):
                 _report_progress()
     finally:
+        _flush_links()
         with contextlib.suppress(Exception):
             _report_progress(force=True)
         with contextlib.suppress(Exception):
