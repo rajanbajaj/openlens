@@ -1,0 +1,24 @@
+# Sidebar
+
+- [Home](Home)
+- Customer
+  - [Getting Started](Getting-Started)
+  - [Search Modes](Search-Modes)
+  - [AI Mode](AI-Mode)
+  - [Perspectives](Perspectives)
+  - [Accessibility](Accessibility)
+  - [Feedback](Feedback)
+  - [FAQ](FAQ)
+- Developer
+  - [Architecture](Architecture)
+  - [Backend Setup](Backend-Setup)
+  - [Frontend Setup](Frontend-Setup)
+  - [API Reference](API-Reference)
+  - [Testing and CI](Testing-and-CI)
+  - [Crawler and Frontier Ops](Crawler-and-Frontier-Ops)
+  - [Contributing](Contributing)
+- Product
+  - [Vision and Values](Vision-and-Values)
+  - [Release Process](Release-Process)
+  - [Roadmap](Roadmap)
+  - [Glossary](Glossary)
