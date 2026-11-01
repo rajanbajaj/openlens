@@ -148,7 +148,9 @@ describe('search workspace', () => {
 
     // Every quick-row edit re-runs the search immediately: each change
     // below issues its own request, no manual resubmit needed.
-    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
+    // findBy: the quick-filter row remounts after every refetch, so
+    // wait for it instead of assuming it survived the loading gap.
+    fireEvent.click(await screen.findByLabelText(/exclude sponsored/i));
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });
@@ -156,7 +158,7 @@ describe('search workspace', () => {
       filters: { exclude_sponsored: true },
     });
 
-    fireEvent.change(screen.getByLabelText('Safe search'), {
+    fireEvent.change(await screen.findByLabelText('Safe search'), {
       target: { value: 'strict' },
     });
     await waitFor(() => {
@@ -173,7 +175,7 @@ describe('search workspace', () => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'newest' } });
+    fireEvent.change(await screen.findByLabelText('Sort by'), { target: { value: 'newest' } });
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });
@@ -182,7 +184,7 @@ describe('search workspace', () => {
       offset: 0,
     });
 
-    fireEvent.click(screen.getByLabelText(/exclude sponsored/i));
+    fireEvent.click(await screen.findByLabelText(/exclude sponsored/i));
     await waitFor(() => {
       expect(searchBodies(fetchStub)).toHaveLength(3);
     });
