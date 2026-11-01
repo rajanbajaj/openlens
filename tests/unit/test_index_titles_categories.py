@@ -397,6 +397,9 @@ def test_category_domains_yaml_loads() -> None:
     }
     assert "amazon.com" in domains["shopping_allow"]
     assert "bbc.com" in domains["news_allow"]
+    assert "timeout.com" in domains["events_allow"]
+    assert "allconferencealert.com" in domains["events_allow"]
+    assert "developer.apple.com" in domains["events_allow"]
     assert "pbskids.org" in domains["kids_allow"]
     assert "youtube.com" in domains["video_allow"]
     assert "wikipedia.org" in domains["reference_allow"]

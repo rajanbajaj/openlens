@@ -2519,6 +2519,7 @@ events_allow:
   - todaytix.com
   - fever.co
   - feverup.com
+  - timeout.com
   - designmynight.com
   - ents24.com
   - wegottickets.com
@@ -2608,6 +2609,7 @@ events_allow:
   - events.google.com
   - io.google
   - build.microsoft.com
+  - developer.apple.com
   - ignite.microsoft.com
   - kubecon.io
   - cncf.io
@@ -2639,6 +2641,7 @@ events_allow:
   - confs.tech
   - dev.events
   - allconferencealert.net
+  - allconferencealert.com
   - conferenceindex.org
   - 10times.com
   - nasscom.in
