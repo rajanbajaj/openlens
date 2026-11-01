@@ -5,6 +5,7 @@ import App from './App.tsx';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const BASE_ENVELOPE = {
@@ -100,7 +101,7 @@ describe('search workspace', () => {
     expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Date: past-day');
   });
 
-  it('renders the perspectives section above results when the backend sends views', async () => {
+  it('renders the perspectives section in the right rail when the backend sends views', async () => {
     mockFetchEnvelope({
       ...BASE_ENVELOPE,
       perspectives: [
@@ -124,10 +125,11 @@ describe('search workspace', () => {
       expect(screen.getByTestId('perspectives-section')).toBeInTheDocument();
     });
     expect(screen.getByText('Headphones sound great')).toBeInTheDocument();
-    // The section renders before the result list in the results column.
-    const section = screen.getByTestId('perspectives-section');
-    const cards = screen.getAllByTestId('result-card');
-    expect(section.compareDocumentPosition(cards[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    // The section lives in the right rail (beside results on wide
+    // screens, stacked below on narrow ones), not above the list.
+    const rail = screen.getByTestId('results-rail');
+    expect(rail).toContainElement(screen.getByTestId('perspectives-section'));
+    expect(screen.getAllByTestId('result-card').length).toBeGreaterThan(0);
   });
 
   it('sends advanced panel filters and offers removable chips', async () => {
@@ -274,6 +276,7 @@ describe('search workspace', () => {
   });
 
   it('degrades gracefully on envelopes without the new diagnostic keys', async () => {
+    vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     mockFetchEnvelope(BASE_ENVELOPE);
     await submitQuery();
     await waitFor(() => {
@@ -296,8 +299,9 @@ describe('search workspace', () => {
     expect(sidebar.tagName).toBe('ASIDE');
     expect(screen.getByTestId('sidebar-mount')).toBeInTheDocument();
     expect(screen.getByLabelText(/search results/i)).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
-    expect(screen.getByTestId('diagnostics-panel')).toBeInTheDocument();
+    // Diagnostics rail is dev-gated: hidden by default, even with a
+    // diagnostics payload on the envelope.
+    expect(screen.queryByRole('button', { name: /show diagnostics/i })).not.toBeInTheDocument();
   });
 
   it('paginates server-side with limit-bound offsets', async () => {

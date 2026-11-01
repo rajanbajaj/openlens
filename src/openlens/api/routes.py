@@ -23,6 +23,7 @@ import os
 import secrets
 import time
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from fastapi import (
     APIRouter,
@@ -40,6 +41,8 @@ from openlens.api.errors import EngineUnavailableError, error_body
 from openlens.api import frontier_state
 from openlens.api.rate_limit import client_ip
 from openlens.api.schemas import AdminConfigDocResponseSchema, AdminConfigPutSchema
+from openlens.api.schemas import CrawlRequestListSchema, CrawlRequestSchema
+from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
@@ -1301,6 +1304,178 @@ def frontier_resume(
     return _overlay_store_status(
         _frontier_status_payload(), _frontier_read_store(request)
     )
+
+
+# -- user-requested crawl URLs (public submit, admin review) -------------
+
+
+def _crawl_request_store(request: Request) -> Any | None:
+    """Frontier store for crawl requests (None when unavailable)."""
+    return _frontier_read_store(request)
+
+
+def _valid_crawl_url(raw: str) -> str | None:
+    """Normalize a user-submitted URL; None when not http(s)."""
+    try:
+        from openlens.storage.frontier import normalize_frontier_url
+    except Exception:
+        return None
+    normalized = normalize_frontier_url(raw)
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return normalized
+
+
+@router.post("/crawl-requests", response_model=CrawlRequestSchema, status_code=201)
+def create_crawl_request(body: CrawlRequestSubmitSchema, request: Request) -> Any:
+    """Queue a user-requested URL for admin review (rate-limited).
+
+    Dedupes without writing: a URL the frontier already knows returns
+    a ``duplicate`` marker (200); an existing ``pending`` request is
+    returned as-is (200). Only genuinely new URLs insert a row (201).
+    """
+    normalized = _valid_crawl_url(body.url)
+    if normalized is None:
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "invalid_request", "url must be an absolute http(s) URL"
+            ),
+        )
+    store = _crawl_request_store(request)
+    if store is None:
+        return JSONResponse(
+            status_code=503,
+            content=error_body(
+                "provider_unavailable", "crawl-request store unavailable"
+            ),
+        )
+    if store.is_known(normalized):
+        # 200: the frontier already knows this URL; nothing to review.
+        return JSONResponse(
+            status_code=200,
+            content=CrawlRequestSchema(
+                id=None,
+                url=normalized,
+                status="duplicate",
+                created_at=None,
+                decided_at=None,
+            ).model_dump(),
+        )
+    for existing in store.list_crawl_requests(status="pending", limit=1000):
+        if existing.get("url") == normalized:
+            # 200: identical request already awaiting review.
+            return JSONResponse(status_code=200, content=existing)
+    record = store.submit_crawl_request(normalized)
+    if record.get("id") is None:
+        return JSONResponse(
+            status_code=503,
+            content=error_body(
+                "provider_unavailable", "crawl-request store unavailable"
+            ),
+        )
+    return CrawlRequestSchema(**record)
+
+
+@router.get("/frontier/crawl-requests", response_model=CrawlRequestListSchema)
+def frontier_list_crawl_requests(request: Request, status: str | None = None) -> Any:
+    """Admin review queue for user-requested crawl URLs."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    if status is not None and status not in (
+        "pending",
+        "approved",
+        "declined",
+    ):
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "unknown request status"),
+        )
+    store = _crawl_request_store(request)
+    if store is None:
+        return JSONResponse(
+            status_code=503,
+            content=error_body(
+                "provider_unavailable", "crawl-request store unavailable"
+            ),
+        )
+    records = store.list_crawl_requests(status=status, limit=200)
+    return CrawlRequestListSchema(
+        requests=[CrawlRequestSchema(**record) for record in records],
+        total=len(records),
+    )
+
+
+@router.post(
+    "/frontier/crawl-requests/{request_id}/approve",
+    response_model=CrawlRequestSchema,
+)
+def frontier_approve_crawl_request(request_id: int, request: Request) -> Any:
+    """Admin approves a crawl request: marks approved + enqueues the URL."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    store = _crawl_request_store(request)
+    if store is None:
+        return JSONResponse(
+            status_code=503,
+            content=error_body(
+                "provider_unavailable", "crawl-request store unavailable"
+            ),
+        )
+    pending = {
+        record.get("id"): record
+        for record in store.list_crawl_requests(status="pending", limit=1000)
+    }
+    record = pending.get(request_id)
+    if record is None:
+        return JSONResponse(
+            status_code=404,
+            content=error_body("not_found", "no pending crawl request"),
+        )
+    if not store.set_crawl_request_status(request_id, "approved"):
+        return JSONResponse(
+            status_code=404,
+            content=error_body("not_found", "no pending crawl request"),
+        )
+    app_config = getattr(request.app.state, "config", None)
+    _publish_seeds(app_config, [str(record.get("url") or "")])
+    with suppress(Exception):
+        store.reseed(str(record.get("url") or ""))
+    record["status"] = "approved"
+    return CrawlRequestSchema(**record)
+
+
+@router.post(
+    "/frontier/crawl-requests/{request_id}/decline",
+    response_model=CrawlRequestSchema,
+)
+def frontier_decline_crawl_request(request_id: int, request: Request) -> Any:
+    """Admin declines a crawl request (row stays for audit)."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    store = _crawl_request_store(request)
+    if store is None:
+        return JSONResponse(
+            status_code=503,
+            content=error_body(
+                "provider_unavailable", "crawl-request store unavailable"
+            ),
+        )
+    if not store.set_crawl_request_status(request_id, "declined"):
+        return JSONResponse(
+            status_code=404,
+            content=error_body("not_found", "no pending crawl request"),
+        )
+    decided = {
+        record.get("id"): record
+        for record in store.list_crawl_requests(status="declined", limit=1000)
+    }
+    record = decided.get(request_id, {"id": request_id, "status": "declined"})
+    return CrawlRequestSchema(**record)
 
 
 @router.get("/frontier/settings", response_model=FrontierSettingsResponseSchema)

@@ -59,6 +59,7 @@ services:
       dockerfile: deploy/local/Dockerfile.frontend
       args:
         VITE_OPENLENS_API_URL: ${VITE_OPENLENS_API_URL:-}
+        VITE_OPENLENS_DEV_MODE: ${VITE_OPENLENS_DEV_MODE:-}
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:

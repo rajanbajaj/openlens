@@ -6,6 +6,7 @@ import {
   sendChat,
   validateChatMessage,
 } from '../api/chat.ts';
+import { isDevMode } from '../api/client.ts';
 import { readChatResponse } from '../api/guard.ts';
 import type { ChatCitation, ChatResponse, ChatTrace } from '../api/types.ts';
 import { ResultList } from './ResultList.tsx';
@@ -298,8 +299,27 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
     void send(input);
   }
 
+  function startNewChat() {
+    if (loading) return;
+    setTranscript([]);
+    setInput('');
+    setValidationError(null);
+    // The persist effect below writes the emptied transcript, so a
+    // fresh mount reloads to the empty state through loadTranscript.
+  }
+
   return (
     <section aria-label="AI chat" data-testid="chat-view" className="flex min-w-0 flex-col gap-4">
+      <div className="flex justify-end">
+        <Button
+          variant="ghost"
+          data-testid="chat-new"
+          onClick={startNewChat}
+          disabled={loading || transcript.length === 0}
+        >
+          New chat
+        </Button>
+      </div>
       {transcript.length === 0 && !loading ? (
         <p data-testid="chat-empty" className="text-ol-s text-ol-ink-soft m-0">
           Ask a question in plain language. Answers are grounded in retrieved sources — every claim
@@ -397,7 +417,7 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
                       />
                     </details>
                   ) : null}
-                  <ChatTraceView trace={entry.response.trace} />
+                  {isDevMode() ? <ChatTraceView trace={entry.response.trace} /> : null}
                 </>
               ) : null}
             </div>

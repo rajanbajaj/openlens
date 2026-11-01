@@ -187,6 +187,21 @@ export interface FrontierWorkersResponse {
   worker_count: number;
 }
 
+/** One user-requested crawl URL (`crawl_requests` row). */
+export interface CrawlRequest {
+  id: number | null;
+  url: string;
+  status: 'pending' | 'approved' | 'declined' | 'duplicate';
+  created_at: string | null;
+  decided_at: string | null;
+}
+
+/** Admin review queue for user-requested crawl URLs. */
+export interface CrawlRequestList {
+  requests: CrawlRequest[];
+  total: number;
+}
+
 /** GET /api/v1/frontier/status response body. */
 export interface FrontierStatus {
   paused: boolean;

@@ -22,6 +22,16 @@ export const API_BASE_URL: string =
   (import.meta.env.VITE_OPENLENS_API_URL as string | undefined)?.trim().replace(/\/+$/, '') ||
   (import.meta.env.DEV ? DEFAULT_API_BASE_URL : '');
 
+/**
+ * Dev-mode gate for diagnostic surfaces (search diagnostics rail, chat
+ * agent trace). Opt-in only: `VITE_OPENLENS_DEV_MODE=true` at build
+ * time. Unset/empty/anything else hides diagnostics, so production
+ * builds stay clean without a rebuild per environment.
+ */
+export function isDevMode(): boolean {
+  return (import.meta.env.VITE_OPENLENS_DEV_MODE as string | undefined)?.trim() === 'true';
+}
+
 /** Backend default page size (`DEFAULT_LIMIT` in `schemas.py`). */
 export const DEFAULT_LIMIT = 10;
 
@@ -267,6 +277,50 @@ export async function sendFeedback(
   } catch {
     // Fire-and-forget: feedback must never break rendering.
   }
+}
+
+export type CrawlRequestOutcome =
+  { ok: true; status: 'pending' | 'duplicate'; url: string } | { ok: false; message: string };
+
+/**
+ * `POST {API_URL}/api/v1/crawl-requests`: queue a user URL for admin
+ * review. Unlike feedback this is *not* fire-and-forget — the caller
+ * surfaces the outcome (`pending` queued, `duplicate` already known).
+ * Transport failures and rate limits resolve to `{ ok: false }` with a
+ * human-readable message instead of throwing into rendering.
+ */
+export async function requestCrawlUrl(
+  url: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<CrawlRequestOutcome> {
+  const trimmed = url.trim();
+  if (!trimmed) return { ok: false, message: 'Enter a URL first.' };
+  let response: Response;
+  try {
+    response = await fetchImpl(`${API_BASE_URL}/api/v1/crawl-requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: trimmed }),
+    });
+  } catch {
+    return { ok: false, message: 'Could not reach the search service.' };
+  }
+  if (response.status === 429) {
+    return { ok: false, message: 'Too many requests — try again later.' };
+  }
+  let payload: { status?: unknown; url?: unknown };
+  try {
+    payload = (await response.json()) as { status?: unknown; url?: unknown };
+  } catch {
+    return { ok: false, message: 'Unexpected response from the search service.' };
+  }
+  if (response.ok && (payload.status === 'pending' || payload.status === 'duplicate')) {
+    return { ok: true, status: payload.status, url: String(payload.url ?? trimmed) };
+  }
+  if (response.status === 422) {
+    return { ok: false, message: 'That does not look like an http(s) URL.' };
+  }
+  return { ok: false, message: 'Could not queue the URL for review.' };
 }
 
 /**

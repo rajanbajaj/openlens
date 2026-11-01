@@ -5,6 +5,7 @@ import App from './App.tsx';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const SHOPPING_ENVELOPE = {
@@ -96,6 +97,7 @@ describe('App wiring', () => {
   });
 
   it('shopping-mode query renders results, applied filters, and diagnostics', async () => {
+    vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     const fetchStub = mockFetchOnce(SHOPPING_ENVELOPE);
     await runShoppingSearch();
 
@@ -135,6 +137,15 @@ describe('App wiring', () => {
     fireEvent.click(await screen.findByRole('button', { name: /show diagnostics/i }));
     expect(screen.getByTestId('diagnostics-panel')).toBeInTheDocument();
     expect(screen.getByTestId('diagnostics-fallback')).toHaveTextContent('Live');
+  });
+
+  it('hides the diagnostics rail unless dev mode is enabled', async () => {
+    const fetchStub = mockFetchOnce(SHOPPING_ENVELOPE);
+    await runShoppingSearch();
+    await waitForResults();
+    expect(screen.getByText(/showing 1 of 1 result/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show diagnostics/i })).not.toBeInTheDocument();
+    expect(fetchStub.mock.calls.length).toBeGreaterThan(0);
   });
 
   it('renders the sticky header (not the hero) once the first search runs', async () => {

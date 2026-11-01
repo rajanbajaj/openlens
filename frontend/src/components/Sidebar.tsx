@@ -1,6 +1,7 @@
 import type { UserFilterState } from '../api/filters.ts';
 import type { ProviderPrefs } from '../api/types.ts';
 import { AppliedFilters } from './AppliedFilters.tsx';
+import { CrawlRequestForm } from './CrawlRequestForm.tsx';
 import { FilterPanel } from './FilterPanel.tsx';
 import FilterToggle from './FilterToggle.tsx';
 import { ProviderPrefsControl } from './ProviderPrefsControl.tsx';
@@ -338,6 +339,10 @@ export function Sidebar({
           disabled={disabled}
         />
         <FilterPanel value={filters} onChange={onFiltersChange} disabled={disabled} />
+        <div>
+          <h3>Request a URL</h3>
+          <CrawlRequestForm disabled={disabled} />
+        </div>
         <ProviderPrefsControl
           value={prefs}
           onChange={onPrefsChange}

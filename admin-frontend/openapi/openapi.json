@@ -378,6 +378,184 @@
         }
       }
     },
+    "/api/v1/crawl-requests": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Create Crawl Request",
+        "description": "Queue a user-requested URL for admin review (rate-limited).\n\nDedupes without writing: a URL the frontier already knows returns\na ``duplicate`` marker (200); an existing ``pending`` request is\nreturned as-is (200). Only genuinely new URLs insert a row (201).",
+        "operationId": "create_crawl_request_api_v1_crawl_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrawlRequestSubmitSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlRequestSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/crawl-requests": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier List Crawl Requests",
+        "description": "Admin review queue for user-requested crawl URLs.",
+        "operationId": "frontier_list_crawl_requests_api_v1_frontier_crawl_requests_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlRequestListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/crawl-requests/{request_id}/approve": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Approve Crawl Request",
+        "description": "Admin approves a crawl request: marks approved + enqueues the URL.",
+        "operationId": "frontier_approve_crawl_request_api_v1_frontier_crawl_requests__request_id__approve_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlRequestSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/crawl-requests/{request_id}/decline": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Decline Crawl Request",
+        "description": "Admin declines a crawl request (row stays for audit).",
+        "operationId": "frontier_decline_crawl_request_api_v1_frontier_crawl_requests__request_id__decline_post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlRequestSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/settings": {
       "get": {
         "tags": [
@@ -1187,6 +1365,96 @@
         ],
         "title": "ClusterMapSchema",
         "description": "Live Kafka reachability for workers (strict PUT body)."
+      },
+      "CrawlRequestListSchema": {
+        "properties": {
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/CrawlRequestSchema"
+            },
+            "type": "array",
+            "title": "Requests"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CrawlRequestListSchema",
+        "description": "Admin review queue for user-requested crawl URLs."
+      },
+      "CrawlRequestSchema": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url",
+          "status"
+        ],
+        "title": "CrawlRequestSchema",
+        "description": "One stored crawl request; ``duplicate`` is never persisted."
+      },
+      "CrawlRequestSubmitSchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "CrawlRequestSubmitSchema",
+        "description": "POST /api/v1/crawl-requests body (public, rate-limited)."
       },
       "DiagnosticsSchema": {
         "properties": {

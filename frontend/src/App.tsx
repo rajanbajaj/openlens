@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_LIMIT,
   buildSearchBody,
+  isDevMode,
   offsetForPage,
   prefetchPage,
   searchLens,
@@ -399,10 +400,6 @@ export default function App() {
                         </Button>
                       </p>
                     ) : null}
-                    <PerspectivesSection
-                      views={readPerspectives(response)}
-                      results={response.results}
-                    />
                     <QuickFilters
                       value={userFilters}
                       onChange={handleFiltersChange}
@@ -430,8 +427,14 @@ export default function App() {
                   </section>
                 ) : null}
               </div>
-              <div className="ol-shell-rail min-w-0">
+              <div className="ol-shell-rail min-w-0" data-testid="results-rail">
                 {!loading && !error && response ? (
+                  <PerspectivesSection
+                    views={readPerspectives(response)}
+                    results={response.results}
+                  />
+                ) : null}
+                {!loading && !error && response && isDevMode() ? (
                   <Suspense fallback={<p>Loading diagnostics…</p>}>
                     <DiagnosticsRail
                       diagnostics={response.diagnostics}

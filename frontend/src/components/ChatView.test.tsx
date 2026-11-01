@@ -5,6 +5,7 @@ import ChatView, { CHAT_STORAGE_KEY, capTranscript } from './ChatView.tsx';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 beforeEach(() => {
@@ -58,6 +59,7 @@ async function sendMessage(message: string) {
 
 describe('ChatView send/render flow', () => {
   it('posts the contract body and renders the answer with trace', async () => {
+    vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     const fetchStub = stubChat(CHAT_OK);
     render(<ChatView />);
     expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
@@ -234,6 +236,42 @@ describe('ChatView persistence', () => {
     const capped = capTranscript(entries);
     expect(capped).toHaveLength(10);
     expect(capped[0]?.content).toBe('turn 4');
+  });
+});
+
+describe('ChatView dev gating', () => {
+  it('hides the agent trace unless dev mode is enabled', async () => {
+    stubChat(CHAT_OK);
+    render(<ChatView />);
+    await sendMessage('what does it cost?');
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('chat-trace')).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatView new chat', () => {
+  it('is disabled on an empty transcript and clears answers, input, and storage', async () => {
+    stubChat(CHAT_OK);
+    render(<ChatView />);
+    expect(screen.getByTestId('chat-new')).toBeDisabled();
+
+    await sendMessage('what does it cost?');
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('chat-new')).not.toBeDisabled();
+    expect(localStorage.getItem(CHAT_STORAGE_KEY)).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('chat-new'));
+    expect(screen.queryByTestId('chat-answer')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-message-user')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/chat message/i)).toHaveValue('');
+    expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-new')).toBeDisabled();
+    // Persisted as an empty transcript: a fresh mount reloads empty.
+    expect(JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) as string)).toEqual([]);
   });
 });
 

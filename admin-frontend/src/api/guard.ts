@@ -8,6 +8,8 @@ import type {
   AdminConfigDoc,
   AiCitation,
   CacheStatus,
+  CrawlRequest,
+  CrawlRequestList,
   Diagnostics,
   ErrorEnvelope,
   FeedbackResponse,
@@ -308,4 +310,29 @@ export function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   if (!isRecord(value)) return false;
   if (!isRecord(value.error)) return false;
   return typeof value.error.code === 'string' && typeof value.error.message === 'string';
+}
+
+/** One `crawl_requests` row. */
+export function isCrawlRequest(value: unknown): value is CrawlRequest {
+  if (!isRecord(value)) return false;
+  if (typeof value.url !== 'string') return false;
+  if (
+    value.status !== 'pending' &&
+    value.status !== 'approved' &&
+    value.status !== 'declined' &&
+    value.status !== 'duplicate'
+  ) {
+    return false;
+  }
+  if (value.id !== null && typeof value.id !== 'number') return false;
+  if (value.created_at !== null && typeof value.created_at !== 'string') return false;
+  if (value.decided_at !== null && typeof value.decided_at !== 'string') return false;
+  return true;
+}
+
+/** `GET /api/v1/frontier/crawl-requests` response shape. */
+export function isCrawlRequestList(value: unknown): value is CrawlRequestList {
+  if (!isRecord(value)) return false;
+  if (!Array.isArray(value.requests) || !value.requests.every(isCrawlRequest)) return false;
+  return typeof value.total === 'number';
 }

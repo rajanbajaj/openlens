@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
   clearFrontier,
+  decideCrawlRequest,
   frontierLiveUrl,
+  listCrawlRequests,
   pauseFrontier,
   resumeFrontier,
   saveFrontierSettings,
@@ -19,7 +21,12 @@ import {
   readFrontierSettings,
   readFrontierWorkers,
 } from '../api/guard.ts';
-import type { FrontierSettings, FrontierStatus, FrontierWorker } from '../api/types.ts';
+import type {
+  CrawlRequest,
+  FrontierSettings,
+  FrontierStatus,
+  FrontierWorker,
+} from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
@@ -119,6 +126,19 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     staleTime: Infinity,
   });
 
+  // User-requested crawl URLs awaiting review. Loaded with the
+  // snapshot when the drawer opens; decisions refetch the pending
+  // list plus the status so an approved URL appears in the queue.
+  const requestsQuery = useQuery({
+    queryKey: ['frontier', 'crawl-requests', adminToken],
+    queryFn: () => listCrawlRequests(adminToken, 'pending'),
+    enabled: open,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const crawlRequests: CrawlRequest[] = requestsQuery.data?.requests ?? [];
+
   const [workers, setWorkers] = useState<FrontierWorker[]>([]);
 
   useEffect(() => {
@@ -180,9 +200,27 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const loading = snapshot.isPending;
 
   async function refresh() {
-    const result = await snapshot.refetch();
-    if (result.isError) {
+    const [result, requestsResult] = await Promise.all([
+      snapshot.refetch(),
+      requestsQuery.refetch(),
+    ]);
+    if (result.isError || requestsResult.isError) {
       pushToast('Refresh failed.', 'error');
+    }
+  }
+
+  async function handleDecideCrawlRequest(id: number, decision: 'approve' | 'decline') {
+    try {
+      const decided = await decideCrawlRequest(id, decision, adminToken);
+      pushToast(
+        decision === 'approve'
+          ? `Approved — ${decided.url} queued for crawling.`
+          : `Declined — ${decided.url} will not be crawled.`,
+        'success',
+      );
+      await Promise.all([requestsQuery.refetch(), snapshot.refetch()]);
+    } catch {
+      pushToast(decision === 'approve' ? 'Approve failed.' : 'Decline failed.', 'error');
     }
   }
 
@@ -454,6 +492,43 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 {newUrls.map((entry) => (
                   <li key={entry.url} className="break-all">
                     <Badge>{entry.status}</Badge> {entry.url}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl requests ({crawlRequests.length})</h4>
+            {crawlRequests.length === 0 ? (
+              <p className="my-ol-s text-ol-s">No URLs awaiting review</p>
+            ) : (
+              <ul
+                data-testid="frontier-crawl-requests"
+                aria-label="Crawl requests awaiting review"
+                className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
+              >
+                {crawlRequests.map((entry) => (
+                  <li key={entry.id ?? entry.url} className="break-all">
+                    <span className="text-ol-s">{entry.url}</span>{' '}
+                    <Button
+                      variant="secondary"
+                      data-testid={`crawl-request-approve-${entry.id}`}
+                      onClick={() =>
+                        entry.id !== null && void handleDecideCrawlRequest(entry.id, 'approve')
+                      }
+                      disabled={entry.id === null}
+                    >
+                      Approve
+                    </Button>{' '}
+                    <Button
+                      variant="ghost"
+                      data-testid={`crawl-request-decline-${entry.id}`}
+                      onClick={() =>
+                        entry.id !== null && void handleDecideCrawlRequest(entry.id, 'decline')
+                      }
+                      disabled={entry.id === null}
+                    >
+                      Decline
+                    </Button>
                   </li>
                 ))}
               </ul>

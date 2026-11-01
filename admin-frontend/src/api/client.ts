@@ -8,6 +8,8 @@
 
 import {
   isAdminConfigDoc,
+  isCrawlRequest,
+  isCrawlRequestList,
   isErrorEnvelope,
   isFrontierSettingsResponse,
   isFrontierStatus,
@@ -15,9 +17,16 @@ import {
   isSearchResponse,
   isSuggestResponse,
 } from './guard.ts';
+import {
+  frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
+  frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
+  frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet,
+} from './generated/openlens.ts';
 import type {
   AdminConfigDoc,
   AdminConfigName,
+  CrawlRequest,
+  CrawlRequestList,
   FeedbackRequest,
   FrontierSettings,
   FrontierSettingsResponse,
@@ -551,6 +560,64 @@ export async function fetchAdminConfig(
  * when the store is down. Pass `adminToken` when the backend sets
  * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
  */
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/crawl-requests` (admin-only
+ * read). Resolves to `null` on transport or shape failures so the
+ * review section degrades to an empty view. Pass `adminToken` when
+ * the backend sets `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function listCrawlRequests(
+  adminToken: string = '',
+  status: 'pending' | 'approved' | 'declined' = 'pending',
+): Promise<CrawlRequestList | null> {
+  let res;
+  try {
+    res = await frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet(
+      { status },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isCrawlRequestList(res.data) ? res.data : null;
+}
+
+/**
+ * Decide one crawl request (`approve` enqueues the URL, `decline`
+ * parks it). Throws {@link SearchApiError} on failure so the drawer
+ * can toast the backend message.
+ */
+export async function decideCrawlRequest(
+  requestId: number,
+  decision: 'approve' | 'decline',
+  adminToken: string = '',
+): Promise<CrawlRequest> {
+  let res;
+  try {
+    res =
+      decision === 'approve'
+        ? await frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost(
+            requestId,
+            { headers: { ...frontierAdminHeaders(adminToken) } },
+          )
+        : await frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost(
+            requestId,
+            { headers: { ...frontierAdminHeaders(adminToken) } },
+          );
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  if (res.status === 200 && isCrawlRequest(res.data)) return res.data;
+  if (isErrorEnvelope(res.data)) {
+    throw new SearchApiError(res.data.error.code, res.data.error.message);
+  }
+  throw new SearchApiError('invalid_response', 'Unexpected response shape.');
+}
+
 export async function saveAdminConfig(
   name: AdminConfigName,
   body: Record<string, unknown> | unknown[],

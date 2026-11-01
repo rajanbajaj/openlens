@@ -5,6 +5,7 @@ import App from './App.tsx';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const AGENT_ENVELOPE = {
@@ -57,6 +58,7 @@ function mockFetchOnce(payload: unknown) {
 
 describe('App agent mode', () => {
   it('sends mode "agent" and renders the returned trace in diagnostics', async () => {
+    vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     const fetchStub = mockFetchOnce(AGENT_ENVELOPE);
     render(<App />);
 
@@ -88,6 +90,7 @@ describe('App agent mode', () => {
   });
 
   it('renders no trace section when the backend omits agent_trace', async () => {
+    vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     mockFetchOnce({ ...AGENT_ENVELOPE, metadata: undefined });
     render(<App />);
 

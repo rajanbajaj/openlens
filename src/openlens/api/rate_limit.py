@@ -16,6 +16,8 @@ rebuilds (``<limit>/<window_seconds>`` per scope, all optional):
 - ``OPENLENS_RATE_LIMIT_CHAT`` — default ``30/60`` (agent turns burn
   rewrite + search + fetch + synthesis model calls).
 - ``OPENLENS_RATE_LIMIT_FEEDBACK`` — default ``20/60``.
+- ``OPENLENS_RATE_LIMIT_CRAWL_REQUEST`` — default ``10/3600`` (public
+  URL submissions; duplicates never write).
 - ``OPENLENS_RATE_LIMIT_ADMIN`` — default ``60/60``.
 - ``OPENLENS_RATE_LIMIT_WS`` — default ``30/60``.
 
@@ -39,6 +41,7 @@ _DEFAULTS: dict[str, tuple[int, float]] = {
     "suggest": (120, 60.0),
     "chat": (30, 60.0),
     "feedback": (20, 60.0),
+    "crawl_request": (10, 3600.0),
     "admin": (60, 60.0),
     "ws": (30, 60.0),
 }
@@ -85,6 +88,8 @@ def scope_for_request(method: str, path: str) -> str | None:
         return "chat"
     if method == "POST" and path == "/api/v1/feedback":
         return "feedback"
+    if method == "POST" and path == "/api/v1/crawl-requests":
+        return "crawl_request"
     if method in ("POST", "PUT", "DELETE", "PATCH") and (
         path.startswith("/api/v1/frontier/") or path.startswith("/api/v1/admin/")
     ):

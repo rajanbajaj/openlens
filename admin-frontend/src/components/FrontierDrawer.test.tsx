@@ -419,3 +419,76 @@ describe('FrontierDrawer skip domains', () => {
     expect(container.querySelector('.break-all')).toHaveTextContent(longUrl.slice(0, 32));
   });
 });
+
+describe('FrontierDrawer crawl-request review', () => {
+  const REQUESTS = {
+    requests: [
+      {
+        id: 7,
+        url: 'https://example.com/user-page',
+        status: 'pending',
+        created_at: '2026-11-01T00:00:00Z',
+        decided_at: null,
+      },
+    ],
+    total: 1,
+  };
+
+  function stubReviewBackend() {
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      if (url.includes('/api/v1/frontier/crawl-requests/7/approve')) {
+        return { ...REQUESTS.requests[0], status: 'approved' };
+      }
+      if (url.includes('/api/v1/frontier/crawl-requests/7/decline')) {
+        return { ...REQUESTS.requests[0], status: 'declined' };
+      }
+      if (url.includes('/api/v1/frontier/crawl-requests')) return REQUESTS;
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+  }
+
+  it('lists pending requests and toasts on approve', async () => {
+    stubReviewBackend();
+    render(<FrontierDrawer adminToken="secret" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-crawl-requests')).toHaveTextContent(
+        'example.com/user-page',
+      );
+    });
+    fireEvent.click(screen.getByTestId('crawl-request-approve-7'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(/Approved/);
+    });
+  });
+
+  it('toasts on decline', async () => {
+    stubReviewBackend();
+    render(<FrontierDrawer adminToken="secret" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('crawl-request-decline-7')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('crawl-request-decline-7'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(/Declined/);
+    });
+  });
+
+  it('shows the empty state when nothing awaits review', async () => {
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      if (url.includes('/api/v1/frontier/crawl-requests')) {
+        return { requests: [], total: 0 };
+      }
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="secret" />);
+    await waitFor(() => {
+      expect(screen.getByText('No URLs awaiting review')).toBeInTheDocument();
+    });
+  });
+});

@@ -380,6 +380,35 @@ class FrontierStatusSchema(BaseModel):
     discovery: Optional[FrontierDiscoverySchema] = None
 
 
+class CrawlRequestSubmitSchema(BaseModel):
+    """POST /api/v1/crawl-requests body (public, rate-limited)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class CrawlRequestSchema(BaseModel):
+    """One stored crawl request; ``duplicate`` is never persisted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int | None = None
+    url: str
+    status: str
+    created_at: str | None = None
+    decided_at: str | None = None
+
+
+class CrawlRequestListSchema(BaseModel):
+    """Admin review queue for user-requested crawl URLs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requests: list[CrawlRequestSchema] = Field(default_factory=list)
+    total: int = 0
+
+
 class FrontierSettingsSchema(BaseModel):
     """Frontier crawl settings (strict: unknown keys rejected)."""
 

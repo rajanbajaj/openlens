@@ -71,6 +71,16 @@ _VALID_STATUSES = frozenset(
     {STATUS_QUEUED, STATUS_ACTIVE, STATUS_DONE, STATUS_FAILED, STATUS_SKIPPED}
 )
 
+#: User-requested crawl URL states (``crawl_requests`` table).
+CRAWL_REQUEST_PENDING = "pending"
+CRAWL_REQUEST_APPROVED = "approved"
+CRAWL_REQUEST_DECLINED = "declined"
+
+#: Terminal decision states accepted by ``set_crawl_request_status``.
+VALID_CRAWL_REQUEST_DECISIONS = frozenset(
+    {CRAWL_REQUEST_APPROVED, CRAWL_REQUEST_DECLINED}
+)
+
 #: Checkpoint phases.
 PHASE_RUNNING = "running"
 PHASE_PAUSED = "paused"
@@ -295,6 +305,41 @@ class FrontierStore(ABC):
         URL already finished once; plain ``enqueue`` is insert-only and
         would no-op. Resets attempts and clears the error. Concrete
         default (False) so older/test doubles keep working.
+        """
+        return False
+
+    # -- user-requested crawl URLs (concrete defaults) -------------------
+    # Shipped stores persist these in ``crawl_requests``; the concrete
+    # defaults below keep older/test doubles instantiable. ``submit``
+    # returns an unpersisted marker (``id`` None) on doubles — routes
+    # treat that as unavailable (503) instead of inventing an id.
+
+    def submit_crawl_request(self, url: str) -> dict[str, Any]:
+        """Record a user-requested crawl URL as ``pending`` (deduped).
+
+        Returns the stored record (``id``, ``url``, ``status``,
+        ``created_at``, ``decided_at``); an existing ``pending`` row
+        for the URL is returned unchanged.
+        """
+        return {
+            "id": None,
+            "url": url,
+            "status": CRAWL_REQUEST_PENDING,
+            "created_at": None,
+            "decided_at": None,
+        }
+
+    def list_crawl_requests(
+        self, status: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List crawl requests, newest first, optionally by status."""
+        return []
+
+    def set_crawl_request_status(self, request_id: int, status: str) -> bool:
+        """Move a request to ``approved``/``declined`` (stamps decided_at).
+
+        Returns True when a row changed; False for unknown ids,
+        non-pending rows, or statuses outside the pair.
         """
         return False
 
@@ -753,8 +798,17 @@ CREATE TABLE IF NOT EXISTS frontier_settings (
     payload TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+CREATE TABLE IF NOT EXISTS crawl_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    decided_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_frontier_status_depth
 ON frontier_queue(status, depth, discovered_at);
+CREATE INDEX IF NOT EXISTS idx_crawl_requests_status
+ON crawl_requests(status, id);
 """
 
 
@@ -811,10 +865,19 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         " payload JSONB NOT NULL DEFAULT '{}'::jsonb,"
         " updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ")",
+        f"CREATE TABLE IF NOT EXISTS {q}.crawl_requests ("  # noqa: S608
+        "id SERIAL PRIMARY KEY,"
+        " url TEXT NOT NULL,"
+        " status TEXT NOT NULL DEFAULT 'pending',"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " decided_at TIMESTAMPTZ NULL"
+        ")",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_status_depth"
         f" ON {q}.frontier_queue (status, depth, discovered_at)",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_owner"
         f" ON {q}.frontier_queue (owner, status)",
+        f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
+        f" ON {q}.crawl_requests (status, id)",
     ]
 
 
@@ -853,8 +916,17 @@ def postgres_frontier_coordination_migrations(
         " delay_s DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ")",
+        f"CREATE TABLE IF NOT EXISTS {q}.crawl_requests ("  # noqa: S608
+        "id SERIAL PRIMARY KEY,"
+        " url TEXT NOT NULL,"
+        " status TEXT NOT NULL DEFAULT 'pending',"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " decided_at TIMESTAMPTZ NULL"
+        ")",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_owner"  # noqa: S608
         f" ON {q}.frontier_queue (owner, status)",
+        f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
+        f" ON {q}.crawl_requests (status, id)",
     ]
 
 
@@ -874,6 +946,40 @@ def ordered_postgres_frontier_schema(schema: str = "public") -> list[str]:
     tables = [s for s in ddl if s.lstrip().upper().startswith("CREATE TABLE")]
     indexes = [s for s in ddl if not s.lstrip().upper().startswith("CREATE TABLE")]
     return tables + postgres_frontier_coordination_migrations(schema) + indexes
+
+
+def _request_from_row(row: Any) -> dict[str, Any]:
+    """Normalize a ``crawl_requests`` row to a JSON-ready record."""
+
+    def _get(key: str) -> Any:
+        try:
+            value = row.get(key) if isinstance(row, dict) else row[key]
+        except (KeyError, IndexError, TypeError):
+            return None
+        return value
+
+    def _iso(value: Any) -> str | None:
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            try:
+                return str(value.isoformat())
+            except Exception:
+                return None
+        return str(value)
+
+    raw_id = _get("id")
+    try:
+        request_id = int(raw_id) if raw_id is not None else None
+    except (TypeError, ValueError):
+        request_id = None
+    return {
+        "id": request_id,
+        "url": str(_get("url") or ""),
+        "status": str(_get("status") or CRAWL_REQUEST_PENDING),
+        "created_at": _iso(_get("created_at")),
+        "decided_at": _iso(_get("decided_at")),
+    }
 
 
 def _entry_from_row(row: Any) -> FrontierEntry:
@@ -1670,6 +1776,94 @@ class SqliteFrontierStore(FrontierStore):
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to count frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def submit_crawl_request(self, url: str) -> dict[str, Any]:
+        if not isinstance(url, str) or not url.strip():
+            raise ProviderError(
+                "crawl request URL must not be blank",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.INVALID_REQUEST,
+            )
+        norm = normalize_frontier_url(url)
+        try:
+            with self._lock, self._conn:
+                existing = self._conn.execute(
+                    "SELECT id, url, status, created_at, decided_at"
+                    " FROM crawl_requests WHERE url = ? AND status = 'pending'"
+                    " ORDER BY id DESC LIMIT 1",
+                    (norm,),
+                ).fetchone()
+                if existing is not None:
+                    return _request_from_row(existing)
+                cursor = self._conn.execute(
+                    "INSERT INTO crawl_requests (url, status) VALUES (?, 'pending')",
+                    (norm,),
+                )
+                row = self._conn.execute(
+                    "SELECT id, url, status, created_at, decided_at"
+                    " FROM crawl_requests WHERE id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                return _request_from_row(row)
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to submit crawl request: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def list_crawl_requests(
+        self, status: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        base = (
+            "SELECT id, url, status, created_at, decided_at"
+            " FROM crawl_requests ORDER BY id DESC LIMIT ? OFFSET ?"
+        )
+        filtered = (
+            "SELECT id, url, status, created_at, decided_at"
+            " FROM crawl_requests WHERE status = ?"
+            " ORDER BY id DESC LIMIT ? OFFSET ?"
+        )
+        try:
+            with self._lock:
+                if status is not None:
+                    rows = self._conn.execute(
+                        filtered, (status, max(0, limit), max(0, offset))
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        base, (max(0, limit), max(0, offset))
+                    ).fetchall()
+                return [_request_from_row(row) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list crawl requests: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def set_crawl_request_status(self, request_id: int, status: str) -> bool:
+        if status not in VALID_CRAWL_REQUEST_DECISIONS:
+            return False
+        try:
+            request_id = int(request_id)
+        except (TypeError, ValueError):
+            return False
+        try:
+            with self._lock, self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE crawl_requests SET status = ?,"
+                    " decided_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+                    " WHERE id = ? AND status = 'pending'",
+                    (status, request_id),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to decide crawl request: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -2731,6 +2925,109 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to count frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def submit_crawl_request(self, url: str) -> dict[str, Any]:
+        if not isinstance(url, str) or not url.strip():
+            raise ProviderError(
+                "crawl request URL must not be blank",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.INVALID_REQUEST,
+            )
+        norm = normalize_frontier_url(url)
+        table = self._qualified("crawl_requests")
+        cols = ("id", "url", "status", "created_at", "decided_at")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT id, url, status, created_at, decided_at"  # noqa: S608
+                        f" FROM {table} WHERE url = %s AND status = 'pending'"
+                        " ORDER BY id DESC LIMIT 1",
+                        (norm,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        cur.execute(
+                            f"INSERT INTO {table} (url, status)"  # noqa: S608
+                            " VALUES (%s, 'pending') RETURNING id",
+                            (norm,),
+                        )
+                        new_id = cur.fetchone()[0]
+                        cur.execute(
+                            f"SELECT id, url, status, created_at, decided_at"  # noqa: S608
+                            f" FROM {table} WHERE id = %s",
+                            (new_id,),
+                        )
+                        row = cur.fetchone()
+                    record = _request_from_row(dict(zip(cols, row)))
+                conn.commit()
+                return record
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to submit crawl request: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def list_crawl_requests(
+        self, status: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        table = self._qualified("crawl_requests")
+        cols = ("id", "url", "status", "created_at", "decided_at")
+        where = "WHERE status = %s" if status is not None else ""
+        params: tuple[Any, ...] = (
+            (status, max(0, limit), max(0, offset))
+            if status is not None
+            else (max(0, limit), max(0, offset))
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT id, url, status, created_at, decided_at"  # noqa: S608
+                        f" FROM {table} {where}"
+                        " ORDER BY id DESC LIMIT %s OFFSET %s",
+                        params,
+                    )
+                    records = [
+                        _request_from_row(dict(zip(cols, row)))
+                        for row in cur.fetchall()
+                    ]
+                conn.commit()
+                return records
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to list crawl requests: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def set_crawl_request_status(self, request_id: int, status: str) -> bool:
+        if status not in VALID_CRAWL_REQUEST_DECISIONS:
+            return False
+        try:
+            request_id = int(request_id)
+        except (TypeError, ValueError):
+            return False
+        table = self._qualified("crawl_requests")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {table} SET status = %s,"  # noqa: S608
+                        " decided_at = now()"
+                        " WHERE id = %s AND status = 'pending'",
+                        (status, request_id),
+                    )
+                    changed = bool(cur.rowcount and cur.rowcount > 0)
+                conn.commit()
+                return changed
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to decide crawl request: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

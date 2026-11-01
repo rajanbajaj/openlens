@@ -11,9 +11,13 @@ import type {
   ChatResponseSchema,
   ClusterMapResponseSchema,
   ClusterMapSchema,
+  CrawlRequestListSchema,
+  CrawlRequestSchema,
+  CrawlRequestSubmitSchema,
   FeedbackRequestSchema,
   FeedbackResponseSchema,
   FeedbackSummarySchema,
+  FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
   FrontierResumeSchema,
   FrontierSettingsResponseSchema,
   FrontierSettingsSchema,
@@ -640,6 +644,261 @@ export const frontierResumeApiV1FrontierResumePost = async (
     status: res.status,
     headers: res.headers,
   } as frontierResumeApiV1FrontierResumePostResponse;
+};
+
+export type createCrawlRequestApiV1CrawlRequestsPostResponse201 = {
+  data: CrawlRequestSchema;
+  status: 201;
+};
+
+export type createCrawlRequestApiV1CrawlRequestsPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type createCrawlRequestApiV1CrawlRequestsPostResponseSuccess =
+  createCrawlRequestApiV1CrawlRequestsPostResponse201 & {
+    headers: Headers;
+  };
+export type createCrawlRequestApiV1CrawlRequestsPostResponseError =
+  createCrawlRequestApiV1CrawlRequestsPostResponse422 & {
+    headers: Headers;
+  };
+
+export type createCrawlRequestApiV1CrawlRequestsPostResponse =
+  | createCrawlRequestApiV1CrawlRequestsPostResponseSuccess
+  | createCrawlRequestApiV1CrawlRequestsPostResponseError;
+
+export const getCreateCrawlRequestApiV1CrawlRequestsPostUrl = () => {
+  return `/api/v1/crawl-requests`;
+};
+
+/**
+ * Queue a user-requested URL for admin review (rate-limited).
+ *
+ * Dedupes without writing: a URL the frontier already knows returns
+ * a ``duplicate`` marker (200); an existing ``pending`` request is
+ * returned as-is (200). Only genuinely new URLs insert a row (201).
+ * @summary Create Crawl Request
+ */
+export const createCrawlRequestApiV1CrawlRequestsPost = async (
+  crawlRequestSubmitSchema: CrawlRequestSubmitSchema,
+  options?: RequestInit,
+): Promise<createCrawlRequestApiV1CrawlRequestsPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getCreateCrawlRequestApiV1CrawlRequestsPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(crawlRequestSubmitSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createCrawlRequestApiV1CrawlRequestsPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as createCrawlRequestApiV1CrawlRequestsPostResponse;
+};
+
+export type frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse200 = {
+  data: CrawlRequestListSchema;
+  status: 200;
+};
+
+export type frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponseSuccess =
+  frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponseError =
+  frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse =
+  | frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponseSuccess
+  | frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponseError;
+
+export const getFrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetUrl = (
+  params?: FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/crawl-requests?${stringifiedParams}`
+    : `/api/v1/frontier/crawl-requests`;
+};
+
+/**
+ * Admin review queue for user-requested crawl URLs.
+ * @summary Frontier List Crawl Requests
+ */
+export const frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet = async (
+  params?: FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
+  options?: RequestInit,
+): Promise<frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse> => {
+  const res = await fetch(getFrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetResponse;
+};
+
+export type frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse200 = {
+  data: CrawlRequestSchema;
+  status: 200;
+};
+
+export type frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponseSuccess =
+  frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponseError =
+  frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse =
+  | frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponseSuccess
+  | frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponseError;
+
+export const getFrontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostUrl = (
+  requestId: number,
+) => {
+  return `/api/v1/frontier/crawl-requests/${requestId}/approve`;
+};
+
+/**
+ * Admin approves a crawl request: marks approved + enqueues the URL.
+ * @summary Frontier Approve Crawl Request
+ */
+export const frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost = async (
+  requestId: number,
+  options?: RequestInit,
+): Promise<frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse> => {
+  const res = await fetch(
+    getFrontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostUrl(requestId),
+    {
+      ...options,
+      method: 'POST',
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse['data'] =
+    body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePostResponse;
+};
+
+export type frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse200 = {
+  data: CrawlRequestSchema;
+  status: 200;
+};
+
+export type frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponseSuccess =
+  frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponseError =
+  frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse =
+  | frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponseSuccess
+  | frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponseError;
+
+export const getFrontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostUrl = (
+  requestId: number,
+) => {
+  return `/api/v1/frontier/crawl-requests/${requestId}/decline`;
+};
+
+/**
+ * Admin declines a crawl request (row stays for audit).
+ * @summary Frontier Decline Crawl Request
+ */
+export const frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost = async (
+  requestId: number,
+  options?: RequestInit,
+): Promise<frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse> => {
+  const res = await fetch(
+    getFrontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostUrl(requestId),
+    {
+      ...options,
+      method: 'POST',
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse['data'] =
+    body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePostResponse;
 };
 
 export type frontierGetSettingsApiV1FrontierSettingsGetResponse200 = {

@@ -1,11 +1,19 @@
 import axe from 'axe-core';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.tsx';
+
+beforeEach(() => {
+  // This suite exercises the diagnostic surfaces themselves (rail,
+  // drawer, trace-adjacent controls), so dev mode stays on file-wide.
+  // Hidden-by-default coverage lives in App.test/App.workspace/ChatView.
+  vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
+});
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 const ENVELOPE = {
