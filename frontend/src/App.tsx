@@ -30,6 +30,7 @@ import { Button } from './components/ui/Button.tsx';
 import { Logo } from './components/Logo.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 import ModeSelector from './components/ModeSelector.tsx';
+import AiSummaryPanel from './components/AiSummaryPanel.tsx';
 import ChatView from './components/ChatView.tsx';
 import { Pagination } from './components/Pagination.tsx';
 import { PerspectivesSection } from './components/PerspectivesSection.tsx';
@@ -399,6 +400,13 @@ export default function App() {
                           Try {showSuggestion} mode
                         </Button>
                       </p>
+                    ) : null}
+                    {response.results.length > 0 ? (
+                      <AiSummaryPanel
+                        key={`${mode}:${page}:${query}`}
+                        query={query}
+                        onContinueInChat={() => setView('chat')}
+                      />
                     ) : null}
                     <QuickFilters
                       value={userFilters}

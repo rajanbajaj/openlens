@@ -49,6 +49,28 @@ export function capTranscript(entries: ChatTranscriptEntry[]): ChatTranscriptEnt
   return entries.slice(-MAX_CHAT_HISTORY);
 }
 
+/**
+ * Append turns to the persisted transcript so a fresh ChatView mount
+ * (e.g. after switching to the chat tab) continues the conversation.
+ * Malformed turns drop; storage failures degrade to an empty start.
+ */
+export function seedChatTranscript(entries: ChatTranscriptEntry[]): void {
+  const clean = entries.filter(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      (entry.role === 'user' || entry.role === 'assistant') &&
+      typeof entry.content === 'string',
+  );
+  if (clean.length === 0) return;
+  try {
+    const merged = capTranscript([...loadTranscript(), ...clean]);
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(merged));
+  } catch {
+    // Private-mode storage failures: the chat simply starts empty.
+  }
+}
+
 /** Latest serving-model label reported in the transcript, if any. */
 export function transcriptModel(entries: ChatTranscriptEntry[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
