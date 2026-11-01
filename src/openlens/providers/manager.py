@@ -406,6 +406,37 @@ class ProviderManager:
         collected.sort(key=str.casefold)
         return collected[:limit]
 
+    def suggest_term_weights(self, limit: int = 2000) -> dict[str, int]:
+        """Aggregate live index term popularity for query assistance.
+
+        Sums per-term document counts from every provider exposing
+        ``suggest_terms_with_counts`` (first-seen spelling wins).
+        Returns ``{}`` when no provider offers counts, so callers
+        degrade to unweighted ranking. Never raises.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return {}
+        totals: dict[str, int] = {}
+        display: dict[str, str] = {}
+        for name in sorted(self._providers):
+            hook = getattr(self._providers[name], "suggest_terms_with_counts", None)
+            if not callable(hook):
+                continue
+            counts: Any = None
+            with suppress(Exception):
+                counts = hook(limit=limit)
+            if not isinstance(counts, dict):
+                continue
+            for term, count in counts.items():
+                if not isinstance(term, str) or not term.strip():
+                    continue
+                if isinstance(count, bool) or not isinstance(count, (int, float)):
+                    continue
+                key = term.strip().casefold()
+                display.setdefault(key, term.strip())
+                totals[key] = totals.get(key, 0) + max(0, int(count))
+        return {display[key]: total for key, total in totals.items()}
+
     def fetch_documents(self, doc_ids: list[str]) -> dict[str, Any]:
         """Bulk-fetch documents by id (read-only agent grounding).
 

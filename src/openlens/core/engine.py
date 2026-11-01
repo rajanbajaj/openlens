@@ -262,6 +262,43 @@ class SearchEngine(Engine):
         collected.sort(key=str.casefold)
         return collected[:limit]
 
+    def suggest_term_weights(self, limit: int = 2000) -> dict[str, int]:
+        """Live index term popularity for query assistance (``{}`` when none).
+
+        Aggregates provider document-frequency counts via the manager
+        (or the legacy provider list); the API layer prefers this hook
+        for popularity ranking and degrades to unweighted order without
+        it. Never raises.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return {}
+        if self._manager is not None:
+            try:
+                weights = self._manager.suggest_term_weights(limit=limit)
+            except Exception:
+                return {}
+            return weights if isinstance(weights, dict) else {}
+        totals: dict[str, int] = {}
+        display: dict[str, str] = {}
+        for provider in self._providers:
+            hook = getattr(provider, "suggest_terms_with_counts", None)
+            if not callable(hook):
+                continue
+            counts: Any = None
+            with suppress(Exception):
+                counts = hook(limit=limit)
+            if not isinstance(counts, dict):
+                continue
+            for term, count in counts.items():
+                if not isinstance(term, str) or not term.strip():
+                    continue
+                if isinstance(count, bool) or not isinstance(count, (int, float)):
+                    continue
+                key = term.strip().casefold()
+                display.setdefault(key, term.strip())
+                totals[key] = totals.get(key, 0) + max(0, int(count))
+        return {display[key]: total for key, total in totals.items()}
+
     def fetch_documents(self, doc_ids: list[str]) -> dict[str, Document]:
         """Bulk-fetch documents by id for agent grounding (read-only).
 

@@ -74,18 +74,48 @@ def _clean_query(query: Any) -> Optional[str]:
 _TYPO_MIN_PREFIX_LEN = 4
 
 
-def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[str]:
+def _weight_of(weights: Any, key: str) -> int:
+    """Best-effort popularity weight for a casefolded term (0 when absent)."""
+    if not isinstance(weights, Mapping):
+        return 0
+    try:
+        value = weights.get(key, 0)
+    except Exception:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
+def _clean_boost(boost: Any) -> list[str]:
+    """Best-effort coercion of own-history queries to usable strings."""
+    return _clean_terms(boost)
+
+
+def complete(
+    prefix: Any,
+    terms: Any,
+    *,
+    limit: int = _DEFAULT_LIMIT,
+    weights: Any = None,
+    boost: Any = (),
+) -> list[str]:
     """Prefix completion over an injectable term list.
 
     Case-insensitive prefix match; results are deduplicated (keeping the
     first-seen spelling). Ranking mirrors the search-engine convention
-    (Google ranks by query popularity; offline we have no query logs by
-    design, so completion length is the proxy): full-phrase matches
-    first, then synonym-variant phrases, then last-token matches (for
-    multi-word input, a candidate also matches when any of its words
-    starts with the last query token, e.g. ``js`` also completes
-    ``javascript`` terms), each tier ordered by minimal extension
-    (shortest first) with an alphabetical tiebreak for determinism.
+    (Google ranks by query popularity; offline we keep no query logs by
+    design, so per-term index document frequency passed via ``weights``
+    is the popularity proxy, replacing completion length as the primary
+    order): full-phrase matches first, then synonym-variant phrases,
+    then last-token matches (for multi-word input, a candidate also
+    matches when any of its words starts with the last query token,
+    e.g. ``js`` also completes ``javascript`` terms), each tier ordered
+    by weight (descending), then minimal extension (shortest first),
+    with an alphabetical tiebreak for determinism. ``boost`` carries
+    the caller's own recent queries (request-scoped history, never
+    logged); entries matching the prefix rank ahead of everything else
+    (at most two, mirroring Google surfacing your own searches first).
     When exact matches leave slots unfilled and the prefix is long
     enough to disambiguate, one-edit prefix slips (``wireles`` for
     ``wireless``) fill the rest, ranked after every exact match.
@@ -98,7 +128,20 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
     cleaned_terms = _clean_terms(terms)
     folded = cleaned_prefix.casefold()
     seen: set[str] = set()
-    tiered: list[tuple[int, str]] = []
+    # Own-history first (most recent first; history arrives oldest-first),
+    # at most two, mirroring Google surfacing your own searches first.
+    # Reserved up front so index matches never crowd them out.
+    boosted: list[str] = []
+    for candidate in reversed(_clean_boost(boost)):
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        if key.startswith(folded) or folded.startswith(key):
+            seen.add(key)
+            boosted.append(candidate)
+            if len(boosted) == 2:
+                break
+    tiered: list[tuple[int, int, str]] = []
     for variant in _prefix_variants(cleaned_prefix):
         lowered = variant.casefold()
         for term in cleaned_terms:
@@ -106,7 +149,8 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
             if key in seen or not key.startswith(lowered):
                 continue
             seen.add(key)
-            tiered.append((0 if lowered == folded else 1, term))
+            tier = 0 if lowered == folded else 1
+            tiered.append((tier, -_weight_of(weights, key), term))
     tokens = cleaned_prefix.split()
     if len(tokens) > 1:
         last_variants = {tokens[-1].casefold()} | _synonym_variants(tokens[-1])
@@ -117,9 +161,9 @@ def complete(prefix: Any, terms: Any, *, limit: int = _DEFAULT_LIMIT) -> list[st
             words = key.split()
             if any(word.startswith(last) for word in words for last in last_variants):
                 seen.add(key)
-                tiered.append((2, term))
-    tiered.sort(key=lambda item: (item[0], len(item[1]), item[1].casefold()))
-    matches = [term for _, term in tiered]
+                tiered.append((2, -_weight_of(weights, key), term))
+    tiered.sort(key=lambda item: (item[0], item[1], len(item[2]), item[2].casefold()))
+    matches = boosted + [term for _, _, term in tiered]
     if len(matches) < limit and len(folded) >= _TYPO_MIN_PREFIX_LEN:
         typo: list[str] = []
         for term in cleaned_terms:
@@ -154,35 +198,50 @@ def _edit_distance(left: str, right: str, ceiling: int) -> int:
 
 
 def _closest(
-    folded: str, unique: list[tuple[str, str]], max_distance: int
+    folded: str,
+    unique: list[tuple[str, str]],
+    max_distance: int,
+    weights: Any = None,
 ) -> Optional[str]:
-    """Closest vocabulary entry to ``folded`` within ``max_distance``."""
+    """Closest vocabulary entry to ``folded`` within ``max_distance``.
+
+    Ties on edit distance break toward the higher popularity weight
+    (index document frequency), then alphabetically for determinism.
+    """
     best: Optional[str] = None
     best_distance = max_distance + 1
+    best_weight = -1
     for key, original in unique:
         distance = _edit_distance(folded, key, max_distance)
-        if distance <= max_distance and (
-            best is None
-            or distance < best_distance
-            or (distance == best_distance and key < best.casefold())
-        ):
-            best = original
-            best_distance = distance
+        if distance > max_distance:
+            continue
+        weight = _weight_of(weights, key)
+        if best is not None and distance >= best_distance:
+            if distance != best_distance:
+                continue
+            if weight < best_weight:
+                continue
+            if weight == best_weight and key >= best.casefold():
+                continue
+        best = original
+        best_distance = distance
+        best_weight = weight
     return best
 
 
 def correct_spelling(
-    query: Any, vocabulary: Any, *, max_distance: int = 2
+    query: Any, vocabulary: Any, *, max_distance: int = 2, weights: Any = None
 ) -> Optional[str]:
     """Best spelling correction for ``query`` from an injectable vocabulary.
 
     Returns the closest vocabulary entry within ``max_distance`` edits, or
     ``None`` when the query is empty/malformed, the vocabulary is empty,
     the query already matches exactly (case-insensitively), or nothing is
-    close enough. Ties break alphabetically for determinism. Additive
-    upgrade: when the whole query has no close match, each whitespace
-    token is corrected individually and the joined result is returned if
-    any token changed.
+    close enough. Ties break toward the higher ``weights`` popularity
+    entry, then alphabetically for determinism. Additive upgrade: when
+    the whole query has no close match, each whitespace token is
+    corrected individually and the joined result is returned if any token
+    changed.
     """
     cleaned = _clean_query(query)
     if cleaned is None:
@@ -201,7 +260,7 @@ def correct_spelling(
     for key, _original in unique:
         if key == folded:
             return None
-    best = _closest(folded, unique, max_distance)
+    best = _closest(folded, unique, max_distance, weights)
     if best is not None:
         return best
     tokens = cleaned.split()
@@ -218,7 +277,7 @@ def correct_spelling(
         # of a 2-4 character token (me->aes, news->aes, give->bike) is
         # almost never a real correction, while longer tokens tolerate 2.
         token_ceiling = min(max_distance, max(1, len(token_folded) // 3))
-        fixed = _closest(token_folded, unique, token_ceiling)
+        fixed = _closest(token_folded, unique, token_ceiling, weights)
         if fixed is None:
             corrected.append(token)
         else:
@@ -272,17 +331,20 @@ def related_queries(
     *,
     vocabulary: Any = None,
     limit: int = _DEFAULT_LIMIT,
+    weights: Any = None,
 ) -> list[str]:
     """Related queries sharing a token with ``query``, ranked by count.
 
     When ``vocabulary`` (live index terms) is supplied, candidates come
     from vocabulary overlap with the input (normalized-token overlap:
     case and punctuation insensitive, hyphen- and synonym-aware,
-    excluding the input itself); ``counts`` then only orders them
-    (missing entries weigh 0), so live vocabulary is preferred and
-    static counts are just a fallback ordering. Without a vocabulary
-    the legacy path applies: candidates come from the ``counts`` map
-    itself (past query text to observed frequency), ordered by count
+    excluding the input itself); ``weights`` (live index document
+    frequency) then orders them: index support outranks everything
+    (document counts and static past-query counts live on different
+    scales, so they are never compared directly); ``counts`` only orders
+    terms when no live weights are supplied. Without a vocabulary the
+    legacy path applies: candidates come from the ``counts`` map itself
+    (past query text to observed frequency), ordered by count
     (descending), then alphabetically for determinism.
     """
     cleaned = _clean_query(query)
@@ -294,7 +356,8 @@ def related_queries(
     folded = cleaned.casefold()
     vocab_terms = _clean_terms(vocabulary) if vocabulary is not None else []
     if vocab_terms:
-        weights = _count_weights(counts)
+        index_weights = weights if isinstance(weights, Mapping) and weights else {}
+        fallback = {} if index_weights else _count_weights(counts)
         seen: set[str] = set()
         candidates: list[tuple[int, str]] = []
         for term in vocab_terms:
@@ -304,7 +367,11 @@ def related_queries(
             seen.add(key)
             if tokens.isdisjoint(_related_tokens(term)):
                 continue
-            candidates.append((weights.get(key, 0), term))
+            if index_weights:
+                weight = _weight_of(index_weights, key)
+            else:
+                weight = fallback.get(key, 0)
+            candidates.append((weight, term))
         candidates.sort(key=lambda item: (-item[0], item[1].casefold()))
         return [candidate for _, candidate in candidates[:limit]]
     if not isinstance(counts, Mapping):

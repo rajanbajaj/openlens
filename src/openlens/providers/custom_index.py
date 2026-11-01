@@ -233,6 +233,45 @@ class CustomIndexProvider(SearchProvider):
         terms.sort(key=str.casefold)
         return terms[:limit]
 
+    def suggest_terms_with_counts(self, limit: int = 2000) -> dict[str, int]:
+        """Live index term popularity for query assistance.
+
+        Counts, over recent titles from any backing store exposing
+        ``list_titles``, how many documents contain each term (full
+        titles plus title words longer than 2 chars; each title
+        contributes at most 1 per term). Keys are first-seen display
+        spellings, values are document counts — the offline popularity
+        proxy that ranks completions the way query popularity ranks
+        Google's. Any failure (store without the hook, closed store)
+        yields ``{}`` so callers degrade to unweighted ranking.
+        """
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return {}
+        try:
+            hook = getattr(self._repository, "list_titles", None)
+            if not callable(hook):
+                return {}
+            titles = hook(limit=limit)
+        except Exception:
+            return {}
+        if not isinstance(titles, list):
+            return {}
+        counts: dict[str, int] = {}
+        display: dict[str, str] = {}
+        for title in titles:
+            if not isinstance(title, str):
+                continue
+            per_doc: set[str] = set()
+            for candidate in [title, *title.split()]:
+                cleaned = candidate.strip()
+                if len(cleaned) <= 2:
+                    continue
+                per_doc.add(cleaned.casefold())
+                display.setdefault(cleaned.casefold(), cleaned)
+            for key in per_doc:
+                counts[key] = counts.get(key, 0) + 1
+        return {display[key]: count for key, count in counts.items()}
+
     def _enrich_inlink_counts(self, results: list[Any]) -> None:
         """Stamp ``metadata["inlink_count"]`` from the authority graph.
 

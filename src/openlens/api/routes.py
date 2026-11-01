@@ -332,23 +332,81 @@ def _resolve_terms(request: Request | None) -> list[str]:
     return list(_STATIC_SUGGEST_TERMS)
 
 
+def _coerce_weights(value: Any) -> dict[str, int]:
+    """Best-effort coercion of a popularity hook to casefolded weights."""
+    if callable(value):
+        try:
+            value = value()
+        except Exception:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    weights: dict[str, int] = {}
+    for term, count in value.items():
+        if not isinstance(term, str) or not term.strip():
+            continue
+        if isinstance(count, bool) or not isinstance(count, (int, float)):
+            continue
+        weights[term.strip().casefold()] = max(0, int(count))
+    return weights
+
+
+def _resolve_weights(request: Request | None) -> dict[str, int]:
+    """Return live index term popularity, else ``{}`` (unweighted order).
+
+    Prefers `app.state.suggest_term_weights` (set by server wiring/tests),
+    then duck-typed engine hooks (`suggest_term_weights`, unwrapping the
+    observability decorator). Never raises.
+    """
+    if request is not None:
+        try:
+            state_weights = getattr(request.app.state, "suggest_term_weights", None)
+        except Exception:
+            state_weights = None
+        weights = _coerce_weights(state_weights)
+        if weights:
+            return weights
+        try:
+            engine = getattr(request.app.state, "engine", None)
+        except Exception:
+            engine = None
+        candidates = (engine, getattr(engine, "_inner", None))
+        for candidate in candidates:
+            hook = getattr(candidate, "suggest_term_weights", None)
+            weights = _coerce_weights(hook)
+            if weights:
+                return weights
+    return {}
+
+
 def _assistance(
-    query: str, terms: list[str], *, total: int = 0
+    query: str,
+    terms: list[str],
+    *,
+    total: int = 0,
+    weights: dict[str, int] | None = None,
+    history: list[str] | tuple[str, ...] = (),
 ) -> tuple[list[str], Optional[str], list[str]]:
     """Build (suggestions, spelling, related) for a query; never raises.
 
     Spelling is offered only when the query returned no results: the
     engine always searches the original query, so hinting at a
-    correction alongside real results would mislead.
+    correction alongside real results would mislead. ``weights`` is the
+    live index popularity proxy (Google ranks by query popularity;
+    offline we rank by index document frequency); ``history`` carries
+    the caller's own recent queries, which rank first when they match
+    the prefix (request-scoped, never logged).
     """
     try:
-        suggestions = complete(query, terms, limit=ASSISTANCE_LIMIT)
+        suggestions = complete(
+            query, terms, limit=ASSISTANCE_LIMIT, weights=weights, boost=history
+        )
     except Exception:
         suggestions = []
     spelling: Optional[str] = None
     if total == 0:
         try:
-            spelling = correct_spelling(query, terms)
+            spelling = correct_spelling(query, terms, weights=weights)
         except Exception:
             spelling = None
     try:
@@ -357,6 +415,7 @@ def _assistance(
             _STATIC_QUERY_COUNTS,
             vocabulary=terms,
             limit=ASSISTANCE_LIMIT,
+            weights=weights,
         )
     except Exception:
         related = []
@@ -398,7 +457,11 @@ def search(
     core_response = engine.search(core_request)
     query_text = core_response.query or core_request.query
     suggestions, spelling, related = _assistance(
-        query_text, _resolve_terms(request), total=core_response.total
+        query_text,
+        _resolve_terms(request),
+        total=core_response.total,
+        weights=_resolve_weights(request),
+        history=body.history,
     )
     return SearchResponseSchema.from_core(
         core_response,
@@ -494,7 +557,9 @@ def suggest(
     if not q.strip():
         return SuggestResponseSchema(q=q, suggestions=[])
     try:
-        suggestions = complete(q, _resolve_terms(request), limit=limit)
+        suggestions = complete(
+            q, _resolve_terms(request), limit=limit, weights=_resolve_weights(request)
+        )
     except Exception:
         suggestions = []
     return SuggestResponseSchema(q=q, suggestions=suggestions)
