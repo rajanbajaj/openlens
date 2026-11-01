@@ -39,6 +39,7 @@ from openlens.ranking.profiles import (
 )
 from openlens.ranking.ranker import Ranker
 from openlens.retrieval.agent import AGENT_MODE, run_agent_search
+from openlens.retrieval.domain_groups import group_results
 from openlens.retrieval.perspectives import build_perspectives
 from openlens.retrieval.query_processor import ProcessedQuery, QueryProcessor
 
@@ -659,11 +660,15 @@ class SearchEngine(Engine):
         hits removed downstream. Only the first (original-depth) pass is
         cache-stored. When providers exhaust, the filtered window is the
         exact total; otherwise the provider-claimed count wins (never
-        below what is actually held).
+        below what is actually held). Domain grouping folds same-host
+        hits after ranking inside every pass, so coverage, totals, and
+        the cached window all count groups — a collapsed page refetches
+        deeper exactly like a filtered-thin one.
         """
         depth = fetch_request.limit
         exhausted = False
         first_pass = True
+        ungrouped = 0
         while True:
             raw = self._retrieve(fetch_request, context)
             exhausted = len(raw) < fetch_request.limit
@@ -681,6 +686,8 @@ class SearchEngine(Engine):
             context = self._pipeline.run(context)
             context = self._ranker.run(context)
             context = assemble_explanations(context)
+            ungrouped = len(context.results)
+            context.results = group_results(list(context.results))
             if len(context.results) >= need or exhausted:
                 break
             if depth >= _FILL_DEPTH_CAP:
@@ -696,8 +703,13 @@ class SearchEngine(Engine):
         claimed = sum(reported) if reported else len(context.results)
         if exhausted:
             total = len(context.results)
-        else:
+        elif len(context.results) >= ungrouped:
             total = max(claimed, len(context.results))
+        else:
+            # Provider-claimed counts are hit-scale; scale them to
+            # group-scale so pagination never offers empty group pages.
+            scaled = round(claimed * len(context.results) / ungrouped)
+            total = max(len(context.results), scaled)
         if first_pass and cache_key is not None and self._cache is not None:
             self._cache_store(cache_key, context, total)
         return total
@@ -725,7 +737,9 @@ class SearchEngine(Engine):
         # (offset=0, limit=offset+limit); the single slice below is the only
         # pagination applied, with total set to the pre-slice merged count.
         # Category modes pre-filter inside retrieval (exact totals); the
-        # downstream mode filter stays as a safety net.
+        # downstream mode filter stays as a safety net. Domain grouping
+        # folds same-host hits inside the fill loop, so coverage, totals,
+        # and the cached window all count groups.
         fetch_request = replace(
             provider_request,
             offset=0,

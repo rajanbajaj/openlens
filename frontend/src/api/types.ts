@@ -47,6 +47,13 @@ export interface SearchResult {
   reasons: string[];
   warnings: string[];
   metadata: Record<string, unknown>;
+  /**
+   * Domain grouping (backend folds same-host hits into one entry).
+   * All optional so old payloads keep working: absent means ungrouped.
+   */
+  group_count?: number;
+  group_summary?: string | null;
+  group_members?: SearchResult[];
 }
 
 /** One plugin-execution record inside diagnostics (opaque entries). */

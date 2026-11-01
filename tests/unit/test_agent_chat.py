@@ -46,7 +46,7 @@ def _hit(
         snippet=snippet or f"snippet-{doc_id} with some content",
         original_score=1.0,
         final_score=1.0,
-        url=f"https://example.com/{doc_id}",
+        url=f"https://{doc_id}.example.com/{doc_id}",
         provider="test",
         metadata=dict(metadata or {}),
     )
@@ -83,7 +83,7 @@ class _HitsProvider(BaseSearchProvider):
                 id=doc_id,
                 title=f"title-{doc_id}",
                 content=self._docs[doc_id],
-                url=f"https://example.com/{doc_id}",
+                url=f"https://{doc_id}.example.com/{doc_id}",
             )
             for doc_id in doc_ids
             if doc_id in self._docs
@@ -206,8 +206,8 @@ def test_chat_citations_match_hits() -> None:
     outcome = run_agent_chat("q", [], 2, engine)
     assert len(outcome["results"]) == 2
     assert outcome["citations"] == [
-        {"ref": 1, "title": "title-x", "url": "https://example.com/x"},
-        {"ref": 2, "title": "title-y", "url": "https://example.com/y"},
+        {"ref": 1, "title": "title-x", "url": "https://x.example.com/x"},
+        {"ref": 2, "title": "title-y", "url": "https://y.example.com/y"},
     ]
 
 
@@ -445,7 +445,7 @@ def test_chat_route_probe_model_missing_fails_closed() -> None:
     assert body["citations"][0] == {
         "ref": 1,
         "title": "title-a",
-        "url": "https://example.com/a",
+        "url": "https://a.example.com/a",
     }
 
 

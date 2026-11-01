@@ -93,9 +93,41 @@ class SearchResultSchema(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Domain grouping (retrieval/domain_groups.py): members folded into one
+    # entry per website. All default to "ungrouped" so old readers that
+    # ignore unknown fields keep working; only grouped entries carry them.
+    group_count: int = 0
+    group_summary: Optional[str] = None
+    group_members: list["SearchResultSchema"] = Field(default_factory=list)
 
     @classmethod
     def from_core(cls, result: CoreResult) -> "SearchResultSchema":
+        metadata = dict(result.metadata) if isinstance(result.metadata, dict) else {}
+        members: list["SearchResultSchema"] = []
+        raw_members = metadata.get("group_members")
+        if isinstance(raw_members, list):
+            for entry in raw_members[:10]:
+                if not isinstance(entry, dict):
+                    continue
+                url = entry.get("url")
+                members.append(
+                    cls(
+                        id=str(entry.get("id", "")),
+                        title=str(entry.get("title", "")),
+                        snippet=str(entry.get("snippet", "")),
+                        original_score=result.original_score,
+                        final_score=result.final_score,
+                        url=url if isinstance(url, str) else None,
+                        provider=str(entry.get("provider", "")),
+                    )
+                )
+        raw_count = metadata.get("group_count")
+        group_count = (
+            raw_count
+            if isinstance(raw_count, int) and not isinstance(raw_count, bool)
+            else (len(members) + 1 if members else 0)
+        )
+        summary = metadata.get("group_summary")
         return cls(
             id=result.id,
             title=result.title,
@@ -106,8 +138,14 @@ class SearchResultSchema(BaseModel):
             provider=result.provider,
             reasons=list(result.reasons),
             warnings=list(result.warnings),
-            metadata=dict(result.metadata),
+            metadata=metadata,
+            group_count=group_count,
+            group_summary=summary if isinstance(summary, str) and summary else None,
+            group_members=members,
         )
+
+
+SearchResultSchema.model_rebuild()
 
 
 class DiagnosticsSchema(BaseModel):

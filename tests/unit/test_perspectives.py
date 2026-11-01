@@ -33,7 +33,7 @@ def _hit(
         snippet=snippet,
         original_score=1.0,
         final_score=1.0,
-        url=url or f"https://example.com/{doc_id}",
+        url=url or f"https://{doc_id}.example.com/{doc_id}",
         provider="test",
         reasons=[],
         warnings=list(warnings or []),
@@ -84,12 +84,14 @@ def test_trust_caveats_and_missing_note() -> None:
             story_id="s1",
             warnings=["unverified source"],
             trusted=False,
+            url="https://example.com/a",
         ),
         _hit(
             "b",
             "Council budget approved",
             "Data shows the budget passed.",
             story_id="s1",
+            url="https://example.com/b",
         ),
     ]
     (view,) = build_perspectives(hits)

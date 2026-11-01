@@ -43,7 +43,7 @@ def _hit(doc_id: str) -> SearchResult:
         snippet=f"snippet-{doc_id} with some content",
         original_score=1.0,
         final_score=1.0,
-        url=f"https://example.com/{doc_id}",
+        url=f"https://{doc_id}.example.com/{doc_id}",
         provider="test",
     )
 
@@ -293,7 +293,7 @@ class _ToolEngine:
                 id=doc_id,
                 title=f"title-{doc_id}",
                 content=self._docs[doc_id],
-                url=f"https://example.com/{doc_id}",
+                url=f"https://{doc_id}.example.com/{doc_id}",
             )
             for doc_id in doc_ids
             if doc_id in self._docs
@@ -307,7 +307,7 @@ def _cat_hit(doc_id: str, category: str) -> SearchResult:
         snippet=f"snippet-{doc_id}",
         original_score=1.0,
         final_score=1.0,
-        url=f"https://example.com/{doc_id}",
+        url=f"https://{doc_id}.example.com/{doc_id}",
         provider="test",
         metadata={"site_category": category},
     )
@@ -386,7 +386,7 @@ def test_tool_read_page_resolves_urls_from_search() -> None:
     engine = _ToolEngine(hits=[_cat_hit("a", "news")], docs={"a": "stored full text"})
     state: dict[str, Any] = {"calls": 0, "refs": {}, "raw": {}}
     tool_search(engine, "q", _state=state)
-    page = tool_read_page(engine, "https://example.com/a", _state=state)
+    page = tool_read_page(engine, "https://a.example.com/a", _state=state)
     assert page["found"] is True
     assert page["text"].endswith("stored full text")
 

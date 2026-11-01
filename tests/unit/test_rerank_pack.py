@@ -132,7 +132,7 @@ def _news_hits() -> list[SearchResult]:
             "n5",
             "City council approves downtown stadium plan",
             "Next-day follow-up on the stadium plan.",
-            url="https://center.example.com/stadium-next-day",
+            url="https://wire.example.com/stadium-next-day",
             metadata={
                 "published": "2026-10-21",
                 "perspective": "center",
@@ -158,7 +158,7 @@ def _shopping_hits() -> list[SearchResult]:
             "Red silk dress buy now",
             "Comfortable fit in many sizes.",
             original=2.0,
-            url="https://shop.example.com/red-dress",
+            url="https://mall.example.com/red-dress",
             metadata={"price": 80, "currency": "USD"},
         ),
         _hit(

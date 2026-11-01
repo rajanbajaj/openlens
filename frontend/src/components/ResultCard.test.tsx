@@ -372,3 +372,60 @@ describe('ResultCard save toggle', () => {
     expect(screen.getByTestId('result-save')).toHaveAttribute('aria-pressed', 'true');
   });
 });
+
+describe('ResultCard domain grouping', () => {
+  const GROUPED_RESULT: SearchResult = {
+    ...RICH_RESULT,
+    id: 'g1',
+    title: 'Alpha Guide',
+    group_count: 3,
+    group_summary: 'Also from example.com: Beta Guide; Gamma Guide',
+    group_members: [
+      {
+        id: 'g2',
+        title: 'Beta Guide',
+        snippet: 'Second page',
+        original_score: 1,
+        final_score: 1,
+        url: 'https://example.com/beta',
+        provider: 'custom_index',
+        reasons: [],
+        warnings: [],
+        metadata: {},
+      },
+      {
+        id: 'g3',
+        title: 'Gamma Guide',
+        snippet: 'Third page',
+        original_score: 1,
+        final_score: 1,
+        url: null,
+        provider: 'custom_index',
+        reasons: [],
+        warnings: [],
+        metadata: {},
+      },
+    ],
+  };
+
+  it('shows the composite summary and expands members on demand', () => {
+    render(<ResultCard result={GROUPED_RESULT} />);
+    expect(screen.getByTestId('result-group-summary')).toHaveTextContent('Also from example.com');
+    expect(screen.queryByTestId('result-group-members')).not.toBeInTheDocument();
+    const toggle = screen.getByTestId('result-group-toggle');
+    expect(toggle).toHaveTextContent('Show 2 more from example.com');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    const members = screen.getByTestId('result-group-members');
+    expect(within(members).getByText('Beta Guide')).toBeInTheDocument();
+    expect(within(members).getByText('Gamma Guide')).toBeInTheDocument();
+    expect(screen.getByTestId('result-group-toggle')).toHaveTextContent('Show fewer');
+  });
+
+  it('renders nothing group-specific for ungrouped hits', () => {
+    render(<ResultCard result={RICH_RESULT} />);
+    expect(screen.queryByTestId('result-group-summary')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('result-group-toggle')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('result-group-members')).not.toBeInTheDocument();
+  });
+});

@@ -20,4 +20,7 @@ export interface SearchResultSchema {
   reasons?: string[];
   warnings?: string[];
   metadata?: SearchResultSchemaMetadata;
+  group_count?: number;
+  group_summary?: string | null;
+  group_members?: SearchResultSchema[];
 }

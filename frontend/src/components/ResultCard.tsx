@@ -111,6 +111,12 @@ export function ResultCard({
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showReasons, setShowReasons] = useState(false);
   const [showWarnings, setShowWarnings] = useState(false);
+  const [showGroup, setShowGroup] = useState(false);
+  const groupMembers = Array.isArray(result.group_members) ? result.group_members : [];
+  const extraCount =
+    typeof result.group_count === 'number' && result.group_count > 1
+      ? result.group_count - 1
+      : groupMembers.length;
 
   const signals = resultSignals(result.metadata);
   const alsoFrom = resultAlsoFrom(result.metadata);
@@ -230,6 +236,41 @@ export function ResultCard({
         <p data-testid="result-snippet" className="ol-result-snippet">
           {result.snippet}
         </p>
+        {result.group_summary ? (
+          <p data-testid="result-group-summary" className="text-ol-s text-ol-ink-soft">
+            {result.group_summary}
+          </p>
+        ) : null}
+        {groupMembers.length > 0 ? (
+          <div>
+            <Button
+              variant="ghost"
+              data-testid="result-group-toggle"
+              aria-expanded={showGroup}
+              aria-controls={`group-${result.id}`}
+              onClick={() => setShowGroup((v) => !v)}
+            >
+              {showGroup
+                ? 'Show fewer'
+                : `Show ${extraCount} more from ${domain || result.provider}`}
+            </Button>
+            {showGroup ? (
+              <ul id={`group-${result.id}`} data-testid="result-group-members">
+                {groupMembers.map((member) => (
+                  <li key={member.id}>
+                    {member.url ? (
+                      <a href={member.url} target="_blank" rel="noopener noreferrer">
+                        {member.title}
+                      </a>
+                    ) : (
+                      <span>{member.title}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {attributes.length > 0 ? (
           <p data-testid="result-attributes" className="text-ol-s text-ol-ink-soft">
             {attributes.join(' · ')}

@@ -29,7 +29,7 @@ def _hit(doc_id: str, provider: str, score: float = 1.0) -> SearchResult:
         snippet=f"snippet-{doc_id}",
         original_score=score,
         final_score=score,
-        url=f"https://example.com/{provider}/{doc_id}",
+        url=f"https://{doc_id}.example.com/{provider}/{doc_id}",
         provider=provider,
     )
 

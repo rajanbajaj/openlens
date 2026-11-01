@@ -21,7 +21,7 @@ def _doc(doc_id: str, category: str, text: str = "python guide") -> Document:
         id=doc_id,
         title=f"{text} {doc_id}",
         content=f"{text} content for {doc_id} with plenty of words " * 10,
-        url=f"https://example.com/{doc_id}",
+        url=f"https://{doc_id}.example.com/{doc_id}",
         metadata={"site_category": category},
     )
 
