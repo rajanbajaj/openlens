@@ -283,3 +283,44 @@ def test_build_engine_uses_manager_path() -> None:
     assert engine._manager is not None
     assert engine._manager.strategy == "single"
     assert engine._providers == []
+
+
+# ---------------------------------------------------------------------------
+# Rank-time newest sort
+# ---------------------------------------------------------------------------
+
+
+def _dated_hit(doc_id: str, published: str | None) -> SearchResult:
+    hit = _hit(doc_id, "a", score=1.0)
+    if published is not None:
+        hit.metadata["published_at"] = published
+    return hit
+
+
+def test_sort_newest_orders_held_window_by_date() -> None:
+    hits = [
+        _dated_hit("old", "2020-05-01"),
+        _dated_hit("new", "2026-10-25T12:00:00Z"),
+        _dated_hit("mid", "2024-01-15"),
+    ]
+    engine = SearchEngine(providers=[_FakeBackend("a", hits)])
+    page = engine.search(SearchRequest(query="q", filters={"sort": "newest"}))
+    assert [h.id for h in page.results] == ["new", "mid", "old"]
+    assert page.total == 3
+
+
+def test_sort_newest_undated_hits_sink_last() -> None:
+    hits = [_dated_hit("dated", "2026-10-25"), _dated_hit("undated", None)]
+    engine = SearchEngine(providers=[_FakeBackend("a", hits)])
+    page = engine.search(SearchRequest(query="q", filters={"sort": "newest"}))
+    assert [h.id for h in page.results] == ["dated", "undated"]
+
+
+def test_no_sort_filter_preserves_ranking_order() -> None:
+    hits = [
+        _dated_hit("old", "2020-05-01"),
+        _dated_hit("new", "2026-10-25T12:00:00Z"),
+    ]
+    engine = SearchEngine(providers=[_FakeBackend("a", hits)])
+    page = engine.search(SearchRequest(query="q"))
+    assert {h.id for h in page.results} == {"old", "new"}

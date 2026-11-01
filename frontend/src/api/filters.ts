@@ -35,6 +35,9 @@ export const RESERVED_FILTER_KEYS: readonly string[] = [
   'occasion',
   'license',
   'author',
+  'date_from',
+  'date_to',
+  'sort',
   'cuisine',
   'dietary_tags',
   'ingredients',
@@ -55,15 +58,42 @@ export const SAFETY_PRESETS: readonly string[] = ['standard', 'balanced', 'stric
 export const SITE_CATEGORIES: readonly string[] = ['shopping', 'news', 'kids', 'other'];
 
 /**
- * Sort presets offered by the sort select. Each non-default preset maps
- * to a `weight_overrides` dict keyed by an existing ranker weight field
- * (see `RankingProfile` in `src/openlens/ranking/profiles.py`), so the
- * backend ranker accepts it instead of failing closed.
+ * Sort presets offered by the sort select. `newest` maps to the `sort`
+ * wire key for a true rank-time date ordering in the engine; the
+ * remaining presets map to a `weight_overrides` dict keyed by an
+ * existing ranker weight field (see `RankingProfile` in
+ * `src/openlens/ranking/profiles.py`), so the backend ranker accepts
+ * them instead of failing closed.
  */
 export const SORT_PRESETS: Record<string, Record<string, number>> = {
-  newest: { freshness_weight: 2.0 },
   'most-trusted': { trust_weight: 2.0 },
 };
+
+/** Wire value emitted for the `newest` sort preset (engine date order). */
+export const NEWEST_SORT_VALUE = 'newest';
+
+/**
+ * Date-range presets offered by the date select. Each non-default,
+ * non-custom preset maps to a lookback in days; `buildFilters` turns it
+ * into an inclusive `date_from`/`date_to` window (UTC days) so the
+ * backend date-range filter accepts it instead of failing closed.
+ */
+export const DATE_PRESET_DAYS: Record<string, number> = {
+  'past-day': 1,
+  'past-week': 7,
+  'past-month': 30,
+  'past-year': 365,
+};
+
+/** Select labels for the date-range presets, in display order. */
+export const DATE_PRESET_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Any time' },
+  { value: 'past-day', label: 'Past day' },
+  { value: 'past-week', label: 'Past week' },
+  { value: 'past-month', label: 'Past month' },
+  { value: 'past-year', label: 'Past year' },
+  { value: 'custom', label: 'Custom range…' },
+];
 
 /** Prefix reserved for scoring-preference keys (`prefer_domains`, `prefer_topics`). */
 export const PREFER_PREFIX = 'prefer_';
@@ -90,8 +120,14 @@ export interface UserFilterState {
   preferDomains: string;
   /** Comma-separated preferred topics; blank means unset. */
   preferTopics: string;
-  /** Sort preset (`''` is Best match); non-default emits `weight_overrides`. */
+  /** Sort preset (`''` is Best match); `newest` emits `sort`, others emit `weight_overrides`. */
   sortPreset: string;
+  /** Date-range preset (`''` is Any time, `custom` uses `dateFrom`/`dateTo`). */
+  datePreset: string;
+  /** Custom range start (`YYYY-MM-DD` from the date input); blank unset. */
+  dateFrom: string;
+  /** Custom range end (`YYYY-MM-DD` from the date input); blank unset. */
+  dateTo: string;
   /** Named site category; blank means the backend default. */
   siteCategory: string;
   blockedDomain: string;
@@ -123,6 +159,9 @@ export const EMPTY_FILTER_STATE: UserFilterState = {
   preferDomains: '',
   preferTopics: '',
   sortPreset: '',
+  datePreset: '',
+  dateFrom: '',
+  dateTo: '',
   siteCategory: '',
   blockedDomain: '',
   allowedDomain: '',
@@ -206,8 +245,25 @@ export function buildFilters(state: UserFilterState): Record<string, unknown> {
   const preferTopics = parseStringList(state.preferTopics);
   if (preferTopics.length > 0) filters['prefer_topics'] = preferTopics;
   const sortPreset = state.sortPreset.trim().toLowerCase();
-  if (sortPreset && sortPreset in SORT_PRESETS) {
+  if (sortPreset === NEWEST_SORT_VALUE) {
+    filters['sort'] = NEWEST_SORT_VALUE;
+  } else if (sortPreset && sortPreset in SORT_PRESETS) {
     filters['weight_overrides'] = { ...SORT_PRESETS[sortPreset] };
+  }
+  const datePreset = state.datePreset.trim().toLowerCase();
+  if (datePreset === 'custom') {
+    // Raw `YYYY-MM-DD` strings go out untouched; the backend
+    // date-range filter validates and degrades malformed bounds.
+    const dateFrom = state.dateFrom.trim();
+    if (dateFrom) filters['date_from'] = dateFrom;
+    const dateTo = state.dateTo.trim();
+    if (dateTo) filters['date_to'] = dateTo;
+  } else if (datePreset && datePreset in DATE_PRESET_DAYS) {
+    const today = new Date();
+    const from = new Date(today);
+    from.setUTCDate(from.getUTCDate() - (DATE_PRESET_DAYS[datePreset] as number));
+    filters['date_from'] = from.toISOString().slice(0, 10);
+    filters['date_to'] = today.toISOString().slice(0, 10);
   }
   const siteCategory = state.siteCategory.trim().toLowerCase();
   if (siteCategory && (SITE_CATEGORIES as readonly string[]).includes(siteCategory)) {

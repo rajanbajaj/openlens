@@ -169,7 +169,7 @@ describe('Sidebar', () => {
         '"size":"M",' +
         '"prefer_domains":["example.com"],' +
         '"prefer_topics":["science"],' +
-        '"weight_overrides":{"freshness_weight":2},' +
+        '"sort":"newest",' +
         '"site_category":"news",' +
         '"blocked_domains":["example.com"],' +
         '"allowed_domains":["trusted.example"]}',
@@ -200,10 +200,12 @@ describe('Sidebar', () => {
       safetyPreset: 'strict',
       sortPreset: 'newest',
       siteCategory: 'news',
+      datePreset: 'past-week',
     };
     const { onFiltersChange, onChipRemove } = setup({ filters });
     const chips = screen.getByTestId('user-filter-chips');
     for (const text of [
+      'Date: past-week',
       'Excludes over-budget',
       'Occasion: wedding',
       'License: CC-BY',

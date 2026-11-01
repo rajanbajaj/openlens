@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from openlens.core.interfaces import Document
 from openlens.storage.postgres_backend import (
     PostgresDocumentStore,
+    _doc_to_row,
     _row_to_document,
 )
 
@@ -207,3 +209,84 @@ def test_list_domains_groups_by_host() -> None:
 def test_search_blank_query_returns_empty_without_io() -> None:
     store = _store_with_rows([])
     assert store.search("   ") == ([], 0)
+
+
+def test_doc_to_row_carries_description_last() -> None:
+    doc = Document(
+        id="d1",
+        title="t",
+        content="c",
+        url="https://x.test/a",
+        metadata={"description": "meta desc here"},
+    )
+    assert _doc_to_row(doc)[-1] == "meta desc here"
+
+
+def test_doc_to_row_empty_description_without_metadata() -> None:
+    doc = Document(id="d1", title="t", content="c", url="https://x.test/a")
+    assert _doc_to_row(doc)[-1] == ""
+
+
+class _WriteCursor(_StubCursor):
+    def executemany(self, sql: str, params: Any = None) -> None:
+        self.calls.append((sql, params))
+
+
+def _write_store() -> PostgresDocumentStore:
+    store = PostgresDocumentStore.__new__(PostgresDocumentStore)
+    store._schema = "public"
+    store._table = "documents"
+    cursor = _WriteCursor([])
+    store._connection = lambda: _StubConnectionCtx(cursor)  # type: ignore[method-assign]
+    store._stub_cursor = cursor  # type: ignore[attr-defined]
+    return store
+
+
+def test_add_documents_tsvector_folds_in_description() -> None:
+    store = _write_store()
+    store.add_documents(
+        [
+            Document(
+                id="d1",
+                title="t",
+                content="c",
+                url="https://x.test/a",
+                metadata={"description": "meta desc here"},
+            )
+        ]
+    )
+    inserts = [
+        (sql, params)
+        for sql, params in store._stub_cursor.calls  # type: ignore[attr-defined]
+        if "INSERT INTO" in sql
+    ]
+    assert len(inserts) == 1
+    sql, params = inserts[0]
+    assert sql.count("coalesce(%s, '')") == 3
+    assert sql.count("%s") == len(params[0])
+    assert params[0][-1] == "meta desc here"
+
+
+def test_update_document_tsvector_folds_in_description() -> None:
+    store = _store_with_rows([])
+    store._stub_cursor.rowcount = 1  # type: ignore[attr-defined]
+    updated = store.update_document(
+        Document(
+            id="d1",
+            title="t",
+            content="c",
+            url="https://x.test/a",
+            metadata={"description": "meta desc here"},
+        )
+    )
+    assert updated is True
+    updates = [
+        (sql, params)
+        for sql, params in store._stub_cursor.calls  # type: ignore[attr-defined]
+        if sql.lstrip().startswith("UPDATE")
+    ]
+    assert len(updates) == 1
+    sql, params = updates[0]
+    assert sql.count("coalesce(%s, '')") == 3
+    assert sql.count("%s") == len(params)
+    assert params[-2] == "meta desc here"

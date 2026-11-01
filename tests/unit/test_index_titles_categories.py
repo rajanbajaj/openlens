@@ -129,6 +129,54 @@ def test_implied_head_title_without_head_wrapper() -> None:
     assert _parse(_LinkTitleParser, html).title == "Loose"
 
 
+def test_meta_description_plain_wins_over_og_and_twitter() -> None:
+    html = (
+        "<html><head><title>T</title>"
+        '<meta name="twitter:description" content="Twitter variant here.">'
+        '<meta property="og:description" content="OG variant here.">'
+        '<meta name="description" content="Plain SEO description here.">'
+        "</head><body><p>Body.</p></body></html>"
+    )
+    assert extract_page_attributes(html)["description"] == (
+        "Plain SEO description here."
+    )
+
+
+def test_meta_description_og_fallback_without_plain() -> None:
+    html = (
+        "<html><head><title>T</title>"
+        '<meta name="twitter:description" content="Twitter variant here.">'
+        '<meta property="og:description" content="OG variant here.">'
+        "</head><body><p>Body.</p></body></html>"
+    )
+    assert extract_page_attributes(html)["description"] == "OG variant here."
+
+
+def test_meta_description_twitter_last_resort() -> None:
+    html = (
+        "<html><head><title>T</title>"
+        '<meta name="twitter:description" content="Twitter variant here.">'
+        "</head><body><p>Body.</p></body></html>"
+    )
+    assert extract_page_attributes(html)["description"] == "Twitter variant here."
+
+
+def test_json_ld_description_wins_over_meta() -> None:
+    html = (
+        "<html><head><title>T</title>"
+        '<meta name="description" content="Plain SEO description here.">'
+        '<script type="application/ld+json">'
+        '{"@type": "Article", "description": "JSON-LD description here."}'
+        "</script></head><body><p>Body.</p></body></html>"
+    )
+    assert extract_page_attributes(html)["description"] == "JSON-LD description here."
+
+
+def test_no_description_key_when_absent() -> None:
+    html = "<html><head><title>T</title></head><body><p>Body.</p></body></html>"
+    assert "description" not in extract_page_attributes(html)
+
+
 # --- crawler extraction boundary --------------------------------------------
 
 

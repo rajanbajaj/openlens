@@ -1,7 +1,8 @@
 """Freshness scorer: exponential recency decay over publication dates.
 
 Optional SCORING-stage plugin. Reads the first present of
-``metadata["published_at"]``, ``metadata["published"]``, ``metadata["date"]``
+``metadata["published_at"]``, ``metadata["published"]``,
+``metadata["date_modified"]``, ``metadata["date"]``
 (ISO-8601 including ``Z``, or epoch seconds as int/float), scores with
 exponential decay against a configurable half-life, and writes the
 ``freshness`` signal plus a ``recency_score`` backfill (the key the ranker

@@ -400,6 +400,54 @@ def test_extract_visible_text_never_raises() -> None:
     assert extract_visible_text("<p>unclosed") == "unclosed"
 
 
+def test_extract_visible_text_strips_nav_header_footer_chrome() -> None:
+    html = (
+        "<html><head><title>T</title></head><body>"
+        "<header>Site header with links</header>"
+        "<nav><a href='https://x.test/nav'>Nav link</a></nav>"
+        "<main><article><p>Real article prose.</p></article></main>"
+        "<footer>Copyright footer boilerplate</footer>"
+        "</body></html>"
+    )
+    assert extract_visible_text(html) == "T Real article prose."
+
+
+def test_extract_visible_text_chrome_nesting_stays_stripped() -> None:
+    html = (
+        "<html><body>"
+        "<nav><div><span>Nested nav words</span></div></nav>"
+        "<p>Kept prose.</p>"
+        "</body></html>"
+    )
+    assert extract_visible_text(html) == "Kept prose."
+
+
+def test_to_document_content_excludes_chrome_but_keeps_description() -> None:
+    crawler = PoliteCrawler()
+    body = (
+        "<html><head><title>Page title</title>"
+        '<meta name="description" content="Meta description for the page.">'
+        "</head><body>"
+        "<nav>Nav boilerplate words</nav>"
+        "<p>Visible prose.</p>"
+        "<footer>Footer boilerplate words</footer>"
+        "</body></html>"
+    ).encode()
+    doc = crawler._to_document(
+        _FetchedPage(
+            status=200,
+            url="https://x.test/a",
+            content_type="text/html",
+            body=body,
+            headers={},
+        )
+    )
+    assert "Nav boilerplate" not in doc.content
+    assert "Footer boilerplate" not in doc.content
+    assert "Visible prose." in doc.content
+    assert doc.metadata["description"] == "Meta description for the page."
+
+
 def test_to_document_stores_visible_text_not_markup() -> None:
     crawler = PoliteCrawler()
     body = (

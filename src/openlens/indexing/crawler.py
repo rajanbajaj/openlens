@@ -46,7 +46,7 @@ import urllib.parse
 import urllib.robotparser
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
 
@@ -636,23 +636,36 @@ _NON_VISIBLE_TAGS = frozenset({"script", "style", "noscript", "template"})
 
 
 class _VisibleTextParser(html.parser.HTMLParser):
-    """Collects visible text in document order, skipping code tags."""
+    """Collects visible text in document order, skipping code and chrome.
+
+    ``script``/``style``/``noscript``/``template`` subtrees are code, and
+    ``nav``/``header``/``footer`` subtrees are page chrome (``_CHROME_TAGS``,
+    shared with the link filter): neither reaches stored content, snippets,
+    or the FTS index.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
         self._skip_depth = 0
+        self._chrome_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in _NON_VISIBLE_TAGS:
+        lowered = tag.lower()
+        if lowered in _NON_VISIBLE_TAGS:
             self._skip_depth += 1
+        if lowered in _CHROME_TAGS:
+            self._chrome_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in _NON_VISIBLE_TAGS and self._skip_depth > 0:
+        lowered = tag.lower()
+        if lowered in _NON_VISIBLE_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
+        if lowered in _CHROME_TAGS and self._chrome_depth > 0:
+            self._chrome_depth -= 1
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth == 0:
+        if self._skip_depth == 0 and self._chrome_depth == 0:
             self._chunks.append(data)
 
     @property
@@ -693,7 +706,11 @@ EXTRACTED_METADATA_KEYS: frozenset[str] = frozenset(
     {
         "language",
         "author",
+        "description",
         "published",
+        "date_modified",
+        "geo_hint",
+        "hreflang",
         "section",
         "price",
         "currency",
@@ -1016,10 +1033,20 @@ def classify_site_category(
 
 
 #: Meta keys (``name``/``property``, lowercased) mapped to metadata fields.
+#: Plain ``description`` is the SEO snippet source; ``og:``/``twitter:``
+#: variants are social-share fallbacks (see the priority in
+#: :func:`extract_page_attributes`).
 _META_KEY_MAP: dict[str, str] = {
     "author": "author",
     "article:author": "author",
+    "description": "description",
+    "og:description": "description",
+    "twitter:description": "description",
     "article:published_time": "published",
+    "og:article:published_time": "published",
+    "pubdate": "published",
+    "article:modified_time": "date_modified",
+    "og:article:modified_time": "date_modified",
     "article:section": "section",
     "og:price:amount": "price",
     "product:price:amount": "price",
@@ -1065,6 +1092,7 @@ class _PageDataParser(html.parser.HTMLParser):
         self.meta_titles: dict[str, str] = {}
         self.lang: str | None = None
         self.meta: list[tuple[str, str]] = []
+        self.link_alternates: list[tuple[str, str]] = []
         self.time_datetimes: list[str] = []
         self.jsonld_blocks: list[str] = []
         self._jsonld_parts: list[str] | None = None
@@ -1122,7 +1150,9 @@ class _PageDataParser(html.parser.HTMLParser):
                 self.sponsored_attr = True
         if lowered == "meta":
             norm = {name.lower(): (value or "") for name, value in attrs}
-            key = norm.get("property") or norm.get("name") or ""
+            key = (
+                norm.get("property") or norm.get("name") or norm.get("http-equiv") or ""
+            )
             content = norm.get("content", "")
             if key.strip() and content:
                 self.meta.append((key.strip().lower(), content.strip()))
@@ -1133,6 +1163,21 @@ class _PageDataParser(html.parser.HTMLParser):
             for name, value in attrs:
                 if name.lower() == "datetime" and value and value.strip():
                     self.time_datetimes.append(value.strip())
+        if lowered == "link":
+            norm = {name.lower(): (value or "") for name, value in attrs}
+            link_rel = {token.strip().lower() for token in norm.get("rel", "").split()}
+            hreflang = norm.get("hreflang", "").strip().lower()
+            href = norm.get("href", "").strip()
+            # hreflang alternates only: bare rel="alternate" (feed
+            # autodiscovery) carries no language signal, and either side
+            # blank is unactionable. Cap kept bounded like JSON-LD blocks.
+            if (
+                "alternate" in link_rel
+                and hreflang
+                and href
+                and len(self.link_alternates) < MAX_OUTLINKS_PER_PAGE
+            ):
+                self.link_alternates.append((hreflang, href))
         if lowered == "script":
             norm = {name.lower(): (value or "") for name, value in attrs}
             if norm.get("type", "").strip().lower() == "application/ld+json":
@@ -1296,6 +1341,19 @@ def _to_iso_date(value: Any) -> str | None:
         return None
 
 
+def _is_future_iso_day(iso_day: str | None) -> bool:
+    """True when an ISO ``YYYY-MM-DD`` day is after today (UTC).
+
+    Future publisher dates are clock skew or SEO spam, never a signal:
+    capture sites call this before storing and degrade to unset.
+    Lexicographic comparison is exact for zero-padded ``YYYY-MM-DD``.
+    """
+    if not iso_day:
+        return False
+    today = datetime.now(timezone.utc).date().isoformat()
+    return iso_day > today
+
+
 #: Compiled lazily on first duration parse to keep import time minimal.
 _DURATION_RE: re.Pattern[str] | None = None
 
@@ -1330,9 +1388,8 @@ def _saw_page_signal(
     """
     if parsed_any_node:
         return True
-    out_signal = any(
-        key not in _CATEGORY_OUTPUT_KEYS for key in out if key != "sponsored"
-    )
+    gated = _CATEGORY_OUTPUT_KEYS | _NON_SIGNAL_METADATA_KEYS
+    out_signal = any(key not in gated for key in out if key != "sponsored")
     if out_signal:
         return True
     return bool(
@@ -1340,6 +1397,7 @@ def _saw_page_signal(
         or parser.h1
         or parser.meta
         or parser.lang
+        or parser.link_alternates
         or parser.time_datetimes
         or parser.links
         or parser.booking_hrefs
@@ -1359,18 +1417,71 @@ _CATEGORY_OUTPUT_KEYS = frozenset(
     }
 )
 
+#: Metadata keys that never count as page signals on their own: the
+#: ccTLD hint derives from the URL, not from page content, so a garbage
+#: document on a ccTLD host must still yield ``{}``.
+_NON_SIGNAL_METADATA_KEYS = frozenset({"geo_hint"})
+
+#: Two-letter host suffixes that are NOT country codes (deliberately
+#: tiny: the rule below only fires on exactly-two-letter final labels,
+#: so gTLDs never match; these are the two-letter exceptions).
+_NON_CCTLD_SUFFIXES = frozenset({"eu"})
+
+
+def cctld_geo_hint(url: Any) -> str | None:
+    """Derive a geo hint from the URL's country-code top-level domain.
+
+    Returns the lowercase two-letter suffix (``example.de`` -> ``"de"``)
+    or None when the host has no country-code suffix (gTLDs, IP
+    literals, single-label hosts, unparseable URLs). Stdlib only: the
+    final DNS label *is* the TLD regardless of public-suffix depth, so
+    no PSL table is needed (``example.co.uk`` -> ``"uk"``). A hint,
+    never a verdict: consumers must not hard-filter on it alone.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        host = urllib.parse.urlsplit(url.strip()).hostname or ""
+    except ValueError:
+        return None
+    host = host.lower().rstrip(".")
+    if not host or "." not in host:
+        return None
+    # IP literals carry no country signal.
+    try:
+        import ipaddress
+
+        with contextlib.suppress(ValueError):
+            ipaddress.ip_address(host)
+            return None
+    except ImportError:  # pragma: no cover — stdlib always ships ipaddress
+        pass
+    suffix = host.rsplit(".", 1)[-1]
+    if len(suffix) != 2 or not suffix.isalpha() or not suffix.isascii():
+        return None
+    if suffix in _NON_CCTLD_SUFFIXES:
+        return None
+    return suffix
+
 
 def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str, Any]:
     """Extract vertical metadata from raw HTML offline (no network).
 
     Reads JSON-LD (Product/Offer/AggregateRating, Book, Recipe,
-    Article), OpenGraph/product meta tags, ``<time datetime>``, the
-    ``<html lang>`` attribute, ``rel="sponsored"`` markers, and
-    adult-content rating meta. Returns only keys with found values —
+    Article, including ``description`` and ``datePublished`` /
+    ``dateModified``), meta descriptions (plain over
+    ``og:`` over ``twitter:``), OpenGraph/product/article meta tags
+    (``article:published_time``, ``article:modified_time``, ``pubdate``,
+    plus ``og:article:`` variants), ``<time datetime>``, the
+    ``<html lang>`` attribute, ``rel="sponsored"`` markers,
+    adult-content rating meta, hreflang ``<link rel="alternate">`` tags,
+    and the ccTLD geo hint from ``url``.
+    Returns only keys with found values —
     except ``sponsored`` (always a real bool on real pages) and the
     site-category quintet (always classified, ``rules-v1``, on real
     pages) — so column promotion never sees a missing key; JSON-LD wins
-    over meta tags, meta wins over ``<time>``. ``url`` feeds domain-hit
+    over meta tags, meta wins over ``<time>``. Future dates degrade to
+    unset at capture (never stored). ``url`` feeds domain-hit
     category rules (content rules still apply without it). Input with no
     recognizable page signal yields ``{}``. Malformed markup or JSON
     never raises: unparseable pieces are skipped.
@@ -1409,13 +1520,24 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
             for key in ("datepublished", "datecreated"):
                 if key in lowered:
                     raw_date = lowered[key]
-                    _set(
-                        "published",
-                        _to_iso_date(raw_date) if isinstance(raw_date, str) else None,
-                    )
+                    if isinstance(raw_date, str):
+                        dated = _to_iso_date(raw_date)
+                        if dated is not None and not _is_future_iso_day(dated):
+                            _set("published", dated)
+                    break
+            for key in ("datemodified", "dateupdated"):
+                if key in lowered:
+                    raw_modified = lowered[key]
+                    if isinstance(raw_modified, str):
+                        dated = _to_iso_date(raw_modified)
+                        if dated is not None and not _is_future_iso_day(dated):
+                            _set("date_modified", dated)
                     break
             if node.get("inLanguage"):
                 _set("language", str(node["inLanguage"]).strip().lower() or None)
+            # JSON-LD wins over meta tags (``_set`` is first-wins and this
+            # loop runs before the meta loop below).
+            _set("description", _name_of(node.get("description")))
             offers = node.get("offers")
             offer_nodes = offers if isinstance(offers, list) else [offers]
             for offer in offer_nodes:
@@ -1479,6 +1601,10 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
             if types & {"article", "newsarticle", "blogposting", "reportage"}:
                 _set("section", _name_of(node.get("articleSection")))
 
+    # Meta descriptions are collected first so the SEO source wins:
+    # plain ``description`` over ``og:description`` over
+    # ``twitter:description`` (JSON-LD already won above via ``_set``).
+    description_candidates: dict[str, str] = {}
     for meta_key, content in parser.meta:
         if meta_key in ("rating", "robots"):
             marker = content.lower()
@@ -1488,12 +1614,21 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
         field = _META_KEY_MAP.get(meta_key)
         if field is None:
             continue
+        if field == "description":
+            description_candidates.setdefault(meta_key, content)
+            continue
         if field == "price":
             _set("price", _to_float(content))
         elif field == "currency":
             _set("currency", content.strip().upper() or None)
         elif field == "published":
-            _set("published", _to_iso_date(content) or content)
+            dated = _to_iso_date(content)
+            if dated is not None and not _is_future_iso_day(dated):
+                _set("published", dated)
+        elif field == "date_modified":
+            dated = _to_iso_date(content)
+            if dated is not None and not _is_future_iso_day(dated):
+                _set("date_modified", dated)
         elif field == "language":
             _set("language", content.strip().lower() or None)
         elif field == "isbn":
@@ -1502,14 +1637,31 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
         else:
             _set(field, content or None)
 
+    for candidate_key in ("description", "og:description", "twitter:description"):
+        candidate = description_candidates.get(candidate_key)
+        if candidate and candidate.strip():
+            _set("description", candidate.strip())
+            break
+
     if parser.lang and "language" not in out:
         out["language"] = parser.lang.strip().lower()
     if "published" not in out:
         for stamp in parser.time_datetimes:
             dated = _to_iso_date(stamp)
-            if dated:
+            if dated and not _is_future_iso_day(dated):
                 out["published"] = dated
                 break
+    # Geo hints: ccTLD from the URL, hreflang alternates from <link>
+    # tags, content-language meta via the meta loop above (all fail
+    # closed to unset; the ccTLD hint never counts as a page signal).
+    _set("geo_hint", cctld_geo_hint(url))
+    if parser.link_alternates:
+        alternates: dict[str, str] = {}
+        base = url if isinstance(url, str) and url.strip() else ""
+        for lang, href in parser.link_alternates:
+            if lang not in alternates:
+                alternates[lang] = urllib.parse.urljoin(base, href) if base else href
+        _set("hreflang", alternates or None)
     # Sponsored is a real bool at the extraction boundary: downstream
     # filters branch on ``is True`` / truthiness, never on key presence.
     sponsored = bool(parser.sponsored_rel or parser.sponsored_attr)
@@ -2395,7 +2547,7 @@ class PoliteCrawler:
         if page.headers.get("last-modified"):
             metadata["last_modified"] = page.headers["last-modified"]
             published = published_from_last_modified(page.headers["last-modified"])
-            if published is not None:
+            if published is not None and not _is_future_iso_day(published):
                 metadata["published"] = published
         if page.content_type.startswith("text/html"):
             # Never raises: extract_page_attributes returns {} on bad input.

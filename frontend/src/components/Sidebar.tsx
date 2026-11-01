@@ -190,6 +190,18 @@ function sidebarChips(filters: UserFilterState): SidebarChip[] {
       clear: (next) => ({ ...next, sortPreset: '' }),
     });
   }
+  if (filters.datePreset.trim()) {
+    const preset = filters.datePreset.trim();
+    const label =
+      preset === 'custom'
+        ? `Date: ${filters.dateFrom.trim() || '…'} to ${filters.dateTo.trim() || '…'}`
+        : `Date: ${preset}`;
+    chips.push({
+      key: 'datePreset',
+      label,
+      clear: (next) => ({ ...next, datePreset: '', dateFrom: '', dateTo: '' }),
+    });
+  }
   if (filters.siteCategory.trim()) {
     chips.push({
       key: 'siteCategory',

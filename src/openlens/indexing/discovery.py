@@ -15,6 +15,7 @@ returned pair is ``(url, date_text_or_empty)``.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -154,6 +155,35 @@ def discover_from_sitemap(
                 break
         return found
     return []
+
+
+def lastmod_hint_priority(date_text: Any) -> int:
+    """Map a sitemap ``<lastmod>`` to a dequeue priority hint (0..2).
+
+    Scheduling hint only: the caller uses it to order freshly
+    discovered URLs in the frontier queue. The value is never stored
+    as a content date and never written to document metadata (content
+    dates come from the fetched page alone). Fresh entries (``<= 7``
+    days old) float above the bulk backlog at ``2``, recent ones
+    (``<= 30`` days) at ``1``; missing, unparseable, or future values
+    degrade to ``0`` (neutral, never raised).
+    """
+    if not isinstance(date_text, str) or not date_text.strip():
+        return 0
+    try:
+        stamped = datetime.fromisoformat(date_text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - stamped).total_seconds() / 86400.0
+    if age_days < 0:
+        return 0
+    if age_days <= 7:
+        return 2
+    if age_days <= 30:
+        return 1
+    return 0
 
 
 def discover_from_feed(

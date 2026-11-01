@@ -137,6 +137,10 @@ OWNED_FILTER_KEYS: frozenset[str] = frozenset(_FILTER_KEY_TO_OPERATOR)
 #: ``safety_preset`` (one of ``strict``/``balanced``/``standard``)
 #: selects a named safety policy (``strict`` arms default-deny
 #: allowlist enforcement in the safety filter for this request).
+#: ``date_from``/``date_to`` (``YYYY-MM-DD``) and ``sort`` (``newest``)
+#: pass through untouched here and are consumed downstream by the
+#: date-range filter (malformed dates degrade to unset) and the
+#: engine rank-time newest sort.
 RESERVED_FILTER_KEYS: frozenset[str] = frozenset(
     {
         "max_price",
@@ -151,6 +155,9 @@ RESERVED_FILTER_KEYS: frozenset[str] = frozenset(
         "occasion",
         "license",
         "author",
+        "date_from",
+        "date_to",
+        "sort",
         "cuisine",
         "dietary_tags",
         "ingredients",

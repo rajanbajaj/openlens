@@ -163,7 +163,7 @@ describe('search workspace', () => {
       expect(searchBodies(fetchStub)).toHaveLength(2);
     });
     expect(searchBodies(fetchStub)[1]).toMatchObject({
-      filters: { weight_overrides: { freshness_weight: 2.0 } },
+      filters: { sort: 'newest' },
       offset: 0,
     });
     expect(screen.getByTestId('user-filter-chips')).toHaveTextContent('Sort: newest');
@@ -175,7 +175,7 @@ describe('search workspace', () => {
       expect(searchBodies(fetchStub)).toHaveLength(3);
     });
     expect(searchBodies(fetchStub)[2]).toMatchObject({
-      filters: { weight_overrides: { freshness_weight: 2.0 }, site_category: 'news' },
+      filters: { sort: 'newest', site_category: 'news' },
     });
 
     fireEvent.change(screen.getByLabelText(/search mode/i), {
@@ -187,7 +187,7 @@ describe('search workspace', () => {
     const modeBody = searchBodies(fetchStub)[3] as Record<string, unknown>;
     expect(modeBody.mode).toBe('news');
     expect(modeBody).toMatchObject({
-      filters: { weight_overrides: { freshness_weight: 2.0 }, site_category: 'news' },
+      filters: { sort: 'newest', site_category: 'news' },
     });
   });
 

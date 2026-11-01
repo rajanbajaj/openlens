@@ -239,6 +239,93 @@ def _crawl_docs(n: int, prefix: str = "page") -> list[Document]:
     ]
 
 
+def _described_doc(
+    doc_id: str = "d1",
+    title: str = "hello world",
+    content: str = "hello world content",
+    url: str | None = "http://example.com/a",
+    description: str = "a zebracorn trots through the meadow",
+) -> Document:
+    return Document(
+        id=doc_id,
+        title=title,
+        content=content,
+        url=url,
+        metadata={"description": description},
+    )
+
+
+def test_fts_indexes_metadata_description() -> None:
+    repo = DocumentRepository(":memory:")
+    repo.add_document(_described_doc())
+    hits, total = repo.search("zebracorn")
+    assert total == 1
+    assert [doc.id for doc, _ in hits] == ["d1"]
+    # Title/content terms still match alongside the description column.
+    assert repo.search("hello")[1] == 1
+    repo.close()
+
+
+def test_fts_update_rewrites_description_index() -> None:
+    repo = DocumentRepository(":memory:")
+    repo.add_document(_described_doc())
+    assert repo.search("zebracorn")[1] == 1
+    repo.update_document(
+        _described_doc(description="a quokka smiles at the camera crew")
+    )
+    assert repo.search("zebracorn")[1] == 0
+    assert repo.search("quokka")[1] == 1
+    repo.close()
+
+
+def test_fts_migration_backfills_description_from_metadata(tmp_path) -> None:
+    path = str(tmp_path / "legacy-desc.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE documents (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            url TEXT,
+            metadata TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE VIRTUAL TABLE documents_fts USING fts5(
+            doc_id UNINDEXED, title, content
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO documents (id, title, content, url, metadata)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (
+            "d1",
+            "legacy title",
+            "legacy body",
+            "http://example.com/a",
+            json.dumps({"description": "a zebracorn trots through the meadow"}),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO documents_fts (doc_id, title, content) VALUES (?, ?, ?)",
+        ("d1", "legacy title", "legacy body"),
+    )
+    conn.commit()
+    conn.close()
+
+    repo = DocumentRepository(path)
+    try:
+        assert repo.search("zebracorn")[1] == 1
+        assert repo.search("legacy")[1] == 1
+        cols = {
+            row["name"]
+            for row in repo._conn.execute("PRAGMA table_info(documents_fts)").fetchall()
+        }
+        assert "description" in cols
+    finally:
+        repo.close()
+
+
 def test_migration_run_twice_keeps_hashes_and_counts(tmp_path):
     path = str(tmp_path / "twice.db")
     _make_pre_hash_db(path)

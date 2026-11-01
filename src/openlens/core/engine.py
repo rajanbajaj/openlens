@@ -25,11 +25,13 @@ from openlens.core.interfaces import (
     SearchProvider,
     SearchRequest,
     SearchResponse,
+    SearchResult,
 )
 from openlens.providers.manager import ProviderManager
 from openlens.core.pipeline import Pipeline, assemble_explanations
 from openlens.core.registry import AI_PLUGIN_NAMES, PluginRegistry, inject_model
 from openlens.models.manager import ModelManager
+from openlens.plugins._signals import result_date as _result_date_utc
 from openlens.ranking.profiles import (
     BUILTIN_PROFILES,
     RankingProfile,
@@ -744,6 +746,18 @@ class SearchEngine(Engine):
             total = self._fill_filtered_window(
                 fetch_request, provider_request, processed, context, need, cache_key
             )
+        sort_mode = str(request.filters.get("sort", "") or "").lower()
+        if sort_mode == "newest" and len(context.results) > 1:
+            # Newest-first over the held window; undated hits sink last.
+            # Epoch seconds (not raw datetimes) keep mixed aware/naive
+            # stamps comparable instead of raising in the comparator.
+            def _newest_key(hit: SearchResult) -> tuple[bool, float]:
+                published = _result_date_utc(hit)
+                if published is None:
+                    return (False, 0.0)
+                return (True, published.timestamp())
+
+            context.results.sort(key=_newest_key, reverse=True)
         page = context.results[
             provider_request.offset : provider_request.offset + provider_request.limit
         ]

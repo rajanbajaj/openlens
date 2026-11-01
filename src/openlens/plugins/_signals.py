@@ -19,7 +19,7 @@ NEUTRAL_SIGNAL = 0.5
 MIN_SIGNAL = 0.0
 MAX_SIGNAL = 1.0
 SIGNALS_KEY = "signals"
-DATE_KEYS = ("published_at", "published", "date")
+DATE_KEYS = ("published_at", "published", "date_modified", "date")
 
 
 def clamp_signal(value: Any) -> float:
@@ -177,8 +177,9 @@ def parse_date(value: Any) -> Optional[datetime]:
 def result_date(result: SearchResult) -> Optional[datetime]:
     """Return the result's publication date from the first present key.
 
-    Key order is ``published_at``, ``published``, ``date``. None when
-    no key is present or the present value is unparseable.
+    Key order is ``published_at``, ``published``, ``date_modified``,
+    ``date``. None when no key is present or the present value is
+    unparseable.
     """
     metadata = result.metadata or {}
     for key in DATE_KEYS:

@@ -1,4 +1,5 @@
 import type { UserFilterState } from '../api/filters.ts';
+import { DATE_PRESET_OPTIONS } from '../api/filters.ts';
 import { Select } from './ui/Select.tsx';
 import { TextInput } from './ui/TextInput.tsx';
 
@@ -207,6 +208,43 @@ export function FilterPanel({ value, onChange, disabled = false }: FilterPanelPr
           disabled={disabled}
           onChange={(event) => set({ preferTopics: event.target.value })}
         />
+      </div>
+      <div>
+        <h3>Date</h3>
+        <Select
+          label="Published within"
+          id="filter-date-preset"
+          name="date_preset"
+          value={value.datePreset}
+          disabled={disabled}
+          onChange={(next) => set({ datePreset: next })}
+          options={DATE_PRESET_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+          }))}
+        />
+        {value.datePreset === 'custom' && (
+          <>
+            <TextInput
+              label="From (inclusive)"
+              id="filter-date-from"
+              name="date_from"
+              type="date"
+              value={value.dateFrom}
+              disabled={disabled}
+              onChange={(event) => set({ dateFrom: event.target.value })}
+            />
+            <TextInput
+              label="To (inclusive)"
+              id="filter-date-to"
+              name="date_to"
+              type="date"
+              value={value.dateTo}
+              disabled={disabled}
+              onChange={(event) => set({ dateTo: event.target.value })}
+            />
+          </>
+        )}
       </div>
       <div>
         <h3>Category</h3>

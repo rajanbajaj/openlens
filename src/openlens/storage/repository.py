@@ -158,6 +158,22 @@ def fetch_ms_column(doc: Document) -> float | None:
     return float(value)
 
 
+def description_of(doc: Document) -> str:
+    """Indexed meta-description text for a document ("" when absent).
+
+    Reads the crawler's ``description`` metadata key (meta/OG/Twitter or
+    JSON-LD sourced); anything non-string collapses to ``""`` so FTS5,
+    tsvector, and FULLTEXT writes stay text-typed. Never raises.
+    """
+    try:
+        value = (doc.metadata or {}).get("description")
+    except AttributeError:
+        return ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
 def _host_of(url: str | None) -> str:
     """Normalized hostname for a URL, or "" when unusable. Never raises."""
     if not isinstance(url, str) or not url.strip():
@@ -276,7 +292,7 @@ class DocumentRepository(DocumentStore):
                     fetch_ms REAL
                 );
                 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-                    doc_id UNINDEXED, title, content
+                    doc_id UNINDEXED, title, content, description
                 );
                 CREATE TABLE IF NOT EXISTS document_links (
                     source_id TEXT NOT NULL,
@@ -450,6 +466,7 @@ class DocumentRepository(DocumentStore):
                     " VALUES (?, ?, ?, ?)",
                     link_rows,
                 )
+        self._ensure_fts_description()
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_url_norm "
             "ON documents(url_norm)"
@@ -476,6 +493,44 @@ class DocumentRepository(DocumentStore):
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_documents_fetch_ms ON documents(fetch_ms)"
         )
+
+    def _ensure_fts_description(self) -> None:
+        """Add the FTS ``description`` column, rebuilding legacy tables.
+
+        FTS5 virtual tables cannot be ALTERed, so a legacy
+        ``(doc_id, title, content)`` table is rebuilt under a temp name
+        and renamed; descriptions backfill from each row's stored
+        ``description`` metadata key. Fresh databases already carry the
+        column (fresh-install DDL above) and skip the rebuild. Must be
+        called with the lock held.
+        """
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(documents_fts)").fetchall()
+        }
+        if "description" in cols:
+            return
+        self._conn.execute(
+            "CREATE VIRTUAL TABLE documents_fts_new USING fts5("
+            "doc_id UNINDEXED, title, content, description)"
+        )
+        try:
+            self._conn.execute(
+                "INSERT INTO documents_fts_new"
+                " (doc_id, title, content, description)"
+                " SELECT o.doc_id, o.title, o.content,"
+                " COALESCE(json_extract(d.metadata, '$.description'), '')"
+                " FROM documents_fts o LEFT JOIN documents d"
+                " ON d.id = o.doc_id"
+            )
+        except sqlite3.Error:
+            # No JSON1: keep the rows, descriptions fill in on next write.
+            self._conn.execute(
+                "INSERT INTO documents_fts_new (doc_id, title, content)"
+                " SELECT doc_id, title, content FROM documents_fts"
+            )
+        self._conn.execute("DROP TABLE documents_fts")
+        self._conn.execute("ALTER TABLE documents_fts_new RENAME TO documents_fts")
 
     def add_document(self, doc: Document) -> None:
         self.add_documents([doc])
@@ -531,9 +586,15 @@ class DocumentRepository(DocumentStore):
                             (doc.id,),
                         )
                         self._conn.execute(
-                            "INSERT INTO documents_fts (doc_id, title, content)"
-                            " VALUES (?, ?, ?)",
-                            (doc.id, doc.title, doc.content),
+                            "INSERT INTO documents_fts"
+                            " (doc_id, title, content, description)"
+                            " VALUES (?, ?, ?, ?)",
+                            (
+                                doc.id,
+                                doc.title,
+                                doc.content,
+                                description_of(doc),
+                            ),
                         )
             except sqlite3.Error as exc:
                 raise ProviderError(
@@ -621,9 +682,10 @@ class DocumentRepository(DocumentStore):
                     "DELETE FROM documents_fts WHERE doc_id = ?", (doc.id,)
                 )
                 self._conn.execute(
-                    "INSERT INTO documents_fts (doc_id, title, content)"
-                    " VALUES (?, ?, ?)",
-                    (doc.id, doc.title, doc.content),
+                    "INSERT INTO documents_fts"
+                    " (doc_id, title, content, description)"
+                    " VALUES (?, ?, ?, ?)",
+                    (doc.id, doc.title, doc.content, description_of(doc)),
                 )
         except sqlite3.Error as exc:
             raise ProviderError(

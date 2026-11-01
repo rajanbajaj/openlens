@@ -80,10 +80,10 @@ describe('user filter mapper', () => {
     ).toEqual({ prefer_domains: ['example.com', 'trusted.example'] });
   });
 
-  it('maps sort presets onto weight_overrides with ranker weight names', () => {
+  it('maps sort presets onto the sort key or weight_overrides', () => {
     expect(buildFilters(EMPTY_FILTER_STATE)).toEqual({});
     expect(buildFilters({ ...EMPTY_FILTER_STATE, sortPreset: 'newest' })).toEqual({
-      weight_overrides: { freshness_weight: 2.0 },
+      sort: 'newest',
     });
     expect(buildFilters({ ...EMPTY_FILTER_STATE, sortPreset: 'most-trusted' })).toEqual({
       weight_overrides: { trust_weight: 2.0 },
@@ -141,13 +141,36 @@ describe('user filter mapper', () => {
       facilities: 'wifi, pool',
       prefer_domains: ['example.com'],
       prefer_topics: ['science'],
-      weight_overrides: { freshness_weight: 2.0 },
+      sort: 'newest',
       site_category: 'news',
       blocked_domains: ['example.com'],
       allowed_domains: ['trusted.example'],
       must_not_terms: ['advertisement'],
     });
     for (const key of Object.keys(filters)) {
+      expect(isKnownFilterKey(key)).toBe(true);
+    }
+  });
+
+  it('emits date windows for presets and passes custom bounds through', () => {
+    const week = buildFilters({ ...EMPTY_FILTER_STATE, datePreset: 'past-week' });
+    expect(typeof week['date_from']).toBe('string');
+    expect(typeof week['date_to']).toBe('string');
+    expect(week['date_from']).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(week['date_to']).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect((week['date_from'] as string) <= (week['date_to'] as string)).toBe(true);
+    expect(
+      buildFilters({
+        ...EMPTY_FILTER_STATE,
+        datePreset: 'custom',
+        dateFrom: '2026-10-01',
+        dateTo: '2026-10-31',
+      }),
+    ).toEqual({ date_from: '2026-10-01', date_to: '2026-10-31' });
+    // Blank custom bounds and unknown presets send nothing.
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, datePreset: 'custom' })).toEqual({});
+    expect(buildFilters({ ...EMPTY_FILTER_STATE, datePreset: 'past-decade' })).toEqual({});
+    for (const key of Object.keys(week)) {
       expect(isKnownFilterKey(key)).toBe(true);
     }
   });

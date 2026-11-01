@@ -23,6 +23,7 @@ BUILTIN_PLUGINS: dict[str, str] = {
     "ai-classification": "openlens.plugins.ai_classification:AIClassificationPlugin",
     "safety-filter": "openlens.plugins.safety_filter:SafetyFilter",
     "mode-category-filter": "openlens.plugins.mode_category_filter:ModeCategoryFilter",
+    "date-range-filter": "openlens.plugins.date_range_filter:DateRangeFilter",
     "privacy-filter": "openlens.plugins.privacy_filter:PrivacyFilter",
     "user-restrictions": "openlens.plugins.user_restrictions:UserRestrictionsFilter",
     "trust-enricher": "openlens.plugins.trust_enricher:TrustEnricher",

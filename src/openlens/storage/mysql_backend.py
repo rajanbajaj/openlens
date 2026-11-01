@@ -31,8 +31,8 @@ normalization is a non-goal):
 
 - The input is the already-parsed FTS-style query string produced by
   ``retrieval/query_parser.parse_query`` (SQLite/FTS5 shaped).
-- It is passed verbatim into ``MATCH(title, content) AGAINST (%s IN
-  NATURAL LANGUAGE MODE)``. FTS5 phrase quotes, column filters, boolean
+- It is passed verbatim into ``MATCH(title, content, description)
+  AGAINST (%s IN NATURAL LANGUAGE MODE)``. FTS5 phrase quotes, column filters, boolean
   operators, and ``*`` prefixes are NOT honored — in natural-language
   mode they are treated as ordinary words/punctuation.
 - Ranking is MySQL's native relevance (higher is better, same direction
@@ -60,6 +60,7 @@ from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.base import DEFAULT_CHUNK_SIZE, DocumentStore
 from openlens.storage.repository import (
     SITE_CATEGORY_VALUES,
+    description_of,
     doc_columns,
     document_link_rows,
     fetch_ms_column,
@@ -96,7 +97,9 @@ def _check_table(table: str) -> str:
 
 def _doc_to_row(
     doc: Document,
-) -> tuple[str, str, str, str | None, str, str | None, str | None, str, float | None]:
+) -> tuple[
+    str, str, str, str | None, str, str | None, str | None, str, float | None, str
+]:
     content_type, published = doc_columns(doc)
     category = site_category_columns(doc)[0]
     return (
@@ -109,6 +112,9 @@ def _doc_to_row(
         published,
         category,
         fetch_ms_column(doc),
+        # Trailing FULLTEXT input (index 9): meta description so
+        # description-only terms match.
+        description_of(doc),
     )
 
 
@@ -321,7 +327,9 @@ class MySQLDocumentStore(DocumentStore):
             " `published` TEXT NULL,"
             " `site_category` VARCHAR(16) NULL DEFAULT 'other',"
             " `fetch_ms` DOUBLE NULL,"
-            " FULLTEXT KEY `ftx_title_content` (`title`, `content`),"
+            " `description` MEDIUMTEXT NULL,"
+            " FULLTEXT KEY `ftx_title_content`"
+            " (`title`, `content`, `description`),"
             " KEY `idx_content_type` (`content_type`(191)),"
             " KEY `idx_published` (`published`(10)),"
             " KEY `idx_site_category` (`site_category`),"
@@ -420,6 +428,25 @@ class MySQLDocumentStore(DocumentStore):
                 "ALTER TABLE `" + self._table + "`"  # noqa: S608
                 " ADD COLUMN `fetch_ms` DOUBLE NULL"
             )
+        if "description" not in existing:
+            cur.execute(
+                "ALTER TABLE `" + self._table + "`"  # noqa: S608
+                " ADD COLUMN `description` MEDIUMTEXT NULL"
+            )
+            # The pre-description FULLTEXT key covers (title, content)
+            # only: rebuild it over (title, content, description) so
+            # description-only terms match on migrated tables.
+            if "ftx_title_content" in indexes:
+                cur.execute(
+                    "DROP INDEX `ftx_title_content` ON `"  # noqa: S608
+                    + self._table
+                    + "`"
+                )
+            cur.execute(
+                "CREATE FULLTEXT INDEX `ftx_title_content` ON `"  # noqa: S608
+                + self._table
+                + "` (`title`, `content`, `description`)"
+            )
         cur.execute(
             "CREATE TABLE IF NOT EXISTS `document_links` ("
             " `source_id` VARCHAR(191) NOT NULL,"
@@ -454,15 +481,16 @@ class MySQLDocumentStore(DocumentStore):
             sql = (
                 "INSERT INTO `" + self._table + "`"  # noqa: S608
                 " (id, title, content, url, metadata, content_type, published,"
-                " site_category, fetch_ms)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                " site_category, fetch_ms, description)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON DUPLICATE KEY UPDATE title = VALUES(title),"
                 " content = VALUES(content), url = VALUES(url),"
                 " metadata = VALUES(metadata),"
                 " content_type = VALUES(content_type),"
                 " published = VALUES(published),"
                 " site_category = VALUES(site_category),"
-                " fetch_ms = VALUES(fetch_ms)"
+                " fetch_ms = VALUES(fetch_ms),"
+                " description = VALUES(description)"
             )
             with self._connection() as conn:
                 try:
@@ -687,7 +715,9 @@ class MySQLDocumentStore(DocumentStore):
             return [], 0
         category = site_category if site_category in SITE_CATEGORY_VALUES else None
         narrowing = " AND `site_category` = %s" if category is not None else ""
-        match_against = "MATCH(title, content) AGAINST (%s IN NATURAL LANGUAGE MODE)"
+        match_against = (
+            "MATCH(title, content, description) AGAINST (%s IN NATURAL LANGUAGE MODE)"
+        )
         # Validated table name; the query text, category, and paging values
         # below are bound %s parameters, never interpolated.
         count_sql = (

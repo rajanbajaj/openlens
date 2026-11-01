@@ -72,6 +72,7 @@ from openlens.storage.frontier import ordered_postgres_frontier_schema
 from openlens.storage.repository import (
     SITE_CATEGORY_VALUES,
     content_hash_of,
+    description_of,
     doc_columns,
     document_link_rows,
     fetch_ms_column,
@@ -189,6 +190,9 @@ def _doc_to_row(
         kids_hit,
         news_hit,
         fetch_ms_column(doc),
+        # Trailing tsvector input (index 14): meta description folded
+        # into ``search_tsv`` so description-only terms match.
+        description_of(doc),
     )
 
 
@@ -483,7 +487,8 @@ class PostgresDocumentStore(DocumentStore):
         backfill = (
             f"UPDATE {qualified} SET search_tsv ="  # noqa: S608
             " to_tsvector('english', coalesce(title, '')"
-            " || ' ' || coalesce(content, ''))"
+            " || ' ' || coalesce(content, '')"
+            " || ' ' || coalesce(metadata->>'description', ''))"
             " WHERE search_tsv IS NULL"
         )
         with self._connection() as conn:
@@ -547,6 +552,7 @@ class PostgresDocumentStore(DocumentStore):
                 " VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s,"
                 " %s, %s, %s, %s, %s, %s,"
                 " to_tsvector('english', coalesce(%s, '')"
+                " || ' ' || coalesce(%s, '')"
                 " || ' ' || coalesce(%s, '')))"
                 " ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title,"
                 " content = EXCLUDED.content, url = EXCLUDED.url,"
@@ -580,6 +586,7 @@ class PostgresDocumentStore(DocumentStore):
                     r[13],
                     r[1],
                     r[2],
+                    r[14],
                 )
                 for r in chunk
             ]
@@ -746,6 +753,7 @@ class PostgresDocumentStore(DocumentStore):
             published,
             doc.title,
             doc.content,
+            description_of(doc),
             doc.id,
         )
         with self._connection() as conn:
@@ -758,7 +766,8 @@ class PostgresDocumentStore(DocumentStore):
                         " metadata = %s::jsonb, content_hash = %s,"
                         " content_type = %s, published = %s,"
                         " search_tsv = to_tsvector('english',"
-                        " coalesce(%s, '') || ' ' || coalesce(%s, ''))"
+                        " coalesce(%s, '') || ' ' || coalesce(%s, '')"
+                        " || ' ' || coalesce(%s, ''))"
                         " WHERE id = %s",
                         params,
                     )

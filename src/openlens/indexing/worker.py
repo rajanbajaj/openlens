@@ -494,7 +494,9 @@ class CrawlerWorker:
         One discovery pass: every configured feed/sitemap is fetched
         (sitemap indexes are followed one level), unseen URLs are
         enqueued at depth 0 (the frontier dedups, so only genuinely new
-        pages enter), then ``done`` rows older than
+        pages enter; a fresh sitemap ``<lastmod>`` only biases dequeue
+        priority via :func:`discovery.lastmod_hint_priority`, never a
+        content date), then ``done`` rows older than
         :attr:`refresh_after_days` re-enter the queue for a conditional
         refetch. ``http_fetch`` injects ``(url, **kwargs) -> text|None``
         for tests; the default is the bounded
@@ -588,7 +590,7 @@ class CrawlerWorker:
             if store is None:
                 continue
             seen_urls: set[str] = set()
-            for article_url, _ in pairs:
+            for article_url, date_text in pairs:
                 if not isinstance(article_url, str) or not article_url.strip():
                     continue
                 normalized = article_url.strip()
@@ -598,6 +600,17 @@ class CrawlerWorker:
                 try:
                     if store.enqueue(normalized, depth=0):
                         result["new_urls"] += 1
+                        # Sitemap <lastmod> is a scheduling hint only: it
+                        # biases dequeue order for genuinely new URLs and
+                        # is never stored as a content date (content
+                        # dates come from the fetched page alone). The
+                        # second enqueue only upgrades the row just
+                        # inserted, so already-known URLs keep whatever
+                        # priority they had.
+                        hint = discovery_module.lastmod_hint_priority(date_text)
+                        if hint:
+                            with contextlib.suppress(Exception):
+                                store.enqueue(normalized, depth=0, priority=hint)
                 except Exception:  # noqa: S112 — duplicate/racy URLs are skipped
                     continue
         days = self.refresh_after_days
