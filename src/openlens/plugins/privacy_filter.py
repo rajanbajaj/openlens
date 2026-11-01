@@ -389,17 +389,24 @@ class PrivacyFilter(BasePlugin):
             out.append(str(value))
         return out
 
-    def _matches(self, result: SearchResult, compiled: re.Pattern[str]) -> bool:
-        if compiled.search(result.title):
-            return True
-        if compiled.search(result.snippet):
-            return True
-        if result.url and compiled.search(result.url):
-            return True
-        for text in self._metadata_strings(result.metadata):
-            if compiled.search(text):
-                return True
-        return False
+    def _search_texts(self, result: SearchResult) -> list[str]:
+        """Flatten every scanned field once per hit.
+
+        The exclude and redact passes match over the same
+        title/snippet/url/metadata text; rebuilding the metadata
+        flattening per class (up to 8 tree walks per hit) dominated
+        this plugin's runtime on wide fetch windows. One shared list
+        keeps verdicts identical while scanning each field once per
+        class instead of once per class per pass.
+        """
+        texts = [result.title, result.snippet]
+        if result.url:
+            texts.append(result.url)
+        texts.extend(self._metadata_strings(result.metadata))
+        return texts
+
+    def _matches_texts(self, texts: list[str], compiled: re.Pattern[str]) -> bool:
+        return any(compiled.search(text) for text in texts)
 
     def _redact_value(self, value: Any, compiled: re.Pattern[str]) -> Any:
         if isinstance(value, str):
@@ -424,6 +431,8 @@ class PrivacyFilter(BasePlugin):
             kept: list[SearchResult] = []
             removed = 0
             for result in context.results:
+                # One flattened text list serves both passes below.
+                texts = self._search_texts(result)
                 # Exclude check first (first-match short-circuit).
                 excluded = False
                 for cls in PII_CLASSES:
@@ -432,7 +441,7 @@ class PrivacyFilter(BasePlugin):
                     compiled = self._compiled.get(cls)
                     if compiled is None:
                         continue
-                    if self._matches(result, compiled):
+                    if self._matches_texts(texts, compiled):
                         excluded = True
                         break
                 if excluded:
@@ -447,7 +456,7 @@ class PrivacyFilter(BasePlugin):
                     compiled = self._compiled.get(cls)
                     if compiled is None:
                         continue
-                    if not self._matches(result, compiled):
+                    if not self._matches_texts(texts, compiled):
                         continue
                     result.title = compiled.sub(REDACTION_PLACEHOLDER, result.title)
                     result.snippet = compiled.sub(REDACTION_PLACEHOLDER, result.snippet)

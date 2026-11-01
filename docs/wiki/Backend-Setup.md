@@ -73,6 +73,9 @@ Caveats:
   the ranked page (`COUNT(*) OVER ()`), so one round trip replaces
   the old count-then-page pair and common terms pay for one GIN
   bitmap build instead of two. Totals stay exact.
+- The privacy filter flattens each hit's scanned text once and
+  reuses it across all PII classes and both passes (exclude +
+  redact), instead of rebuilding the metadata walk up to 8x per hit.
 - The pagination fill loop projects its refetch depth from the
   measured survival rate instead of blind doubling, so heavily
   filtered modes cover the page in ~2 passes instead of ~5 — each
