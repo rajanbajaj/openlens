@@ -522,6 +522,7 @@ def test_topic_group_lag_consumer_satisfies_driver_timeouts(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             request = kwargs.get("request_timeout_ms")
             session = kwargs.get("session_timeout_ms", 10000)
+            heartbeat = kwargs.get("heartbeat_interval_ms", 3000)
             if not (
                 isinstance(request, int)
                 and isinstance(session, int)
@@ -530,6 +531,15 @@ def test_topic_group_lag_consumer_satisfies_driver_timeouts(
                 raise Exception(
                     "KafkaConfigurationError: Request timeout "
                     f"({request}) must be larger than session timeout ({session})"
+                )
+            if not (
+                isinstance(heartbeat, int)
+                and isinstance(session, int)
+                and heartbeat <= session
+            ):
+                raise Exception(
+                    "AssertionError: Heartbeat interval must be lower "
+                    "than the session timeout"
                 )
             seen.update(kwargs)
 
