@@ -19,8 +19,8 @@ services:
     # socket, search reads): keep headroom above the worker count. The
     # in-container /healthz probe shares this CPU, so starvation shows
     # up as `unhealthy` while external traffic still gets 200s.
-    mem_limit: 2G
-    cpus: 2.0
+    mem_limit: 4G
+    cpus: 4.0
     logging: *default-logging
     restart: unless-stopped
     ports:
