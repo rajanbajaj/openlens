@@ -56,6 +56,21 @@ ADMIN_TOKEN_ENV = "OPENLENS_FRONTIER_ADMIN_TOKEN"  # noqa: S105 (env var name, n
 HEARTBEAT_INTERVAL_ENV = "OPENLENS_HEARTBEAT_INTERVAL_S"
 CRAWL_ID_ENV = "OPENLENS_CRAWL_ID"
 
+#: Backoff-pool mode: drain only ``backoff`` rows (slow retry) instead
+#: of ``queued`` rows. Per-service env so the same image serves both
+#: pools with different topics/groups (``OPENLENS_KAFKA_TOPIC`` /
+#: ``OPENLENS_KAFKA_GROUP_ID`` still select the consumed topic).
+BACKOFF_ONLY_ENV = "OPENLENS_BACKOFF_ONLY"
+#: Slow-pool politeness override, seconds (0/blank keeps config).
+BACKOFF_DELAY_ENV = "OPENLENS_BACKOFF_DELAY_S"
+#: Slow-pool fetch timeout override, seconds (0/blank keeps config).
+BACKOFF_TIMEOUT_ENV = "OPENLENS_BACKOFF_TIMEOUT_S"
+#: Wake-up topic the main pool publishes handoffs to.
+BACKOFF_TOPIC_ENV = "OPENLENS_KAFKA_BACKOFF_TOPIC"
+#: Where backoff-pool link discoveries go (fresh URLs belong to the
+#: main pool); defaults to the main crawl topic.
+BACKOFF_LINK_TOPIC_ENV = "OPENLENS_KAFKA_BACKOFF_LINK_TOPIC"
+
 
 def _heartbeat_discovery_fragment(
     discovery: Mapping[str, Any] | None,
@@ -378,6 +393,35 @@ class _SkipGuardFrontier:
             with contextlib.suppress(Exception):
                 self._guard_store.mark_skipped(url)
         return None
+
+
+class _BackoffFrontier:
+    """Store view draining only ``backoff`` rows (backoff-pool workers).
+
+    Wraps the guarded store so the whole take path (``dequeue`` and
+    ``claim``) serves parked slow-retry rows instead of ``queued`` rows;
+    everything else delegates untouched. Main-pool drains never see
+    these rows (their take filters ``status = 'queued'``), and this
+    view never takes ``queued`` rows, so the pools cannot steal from
+    each other no matter how the poll loops interleave.
+    """
+
+    def __init__(self, store: Any) -> None:
+        self._backoff_store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backoff_store, name)
+
+    def dequeue(self) -> Any:
+        """Take the oldest parked row (None when the pool is empty)."""
+        take = getattr(self._backoff_store, "dequeue_backoff", None)
+        if not callable(take):
+            return None
+        return take()
+
+    def claim(self, worker_id: str, **kwargs: Any) -> Any:
+        """Lease claim over the backoff pool (same take as dequeue)."""
+        return self.dequeue()
 
 
 @dataclass
@@ -1057,6 +1101,8 @@ def run_kafka_worker(
     from openlens.indexing.indexer import run_index
     from openlens.indexing.kafka_queue import (
         DEFAULT_MAX_POLL_INTERVAL_MS,
+        DEFAULT_TOPIC,
+        kafka_section,
         open_kafka_queue,
     )
 
@@ -1067,7 +1113,68 @@ def run_kafka_worker(
         chunk_size=chunk_size,
         crawler_factory=crawler_factory,
     )
+    backoff_only = os.environ.get(BACKOFF_ONLY_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    backoff_topic = os.environ.get(BACKOFF_TOPIC_ENV, "").strip() or "crawl.backoff"
+
+    def _queue_on(topic: str) -> Any | None:
+        """Open a producer-only queue on another topic (fail-open)."""
+        try:
+            override = dict(app_config)
+            override["kafka"] = {**kafka_section(app_config), "topic": topic}
+            return open_kafka_queue(override)
+        except Exception:
+            return None
+
+    # Pool wiring. Main pool: consume the main topic, hand slow failures
+    # to the backoff topic, publish discoveries back to the main topic.
+    # Backoff pool: consume the backoff topic, re-hand re-failures to
+    # it, publish discoveries to the main topic (fresh URLs belong to
+    # the fast pool). A missing side producer falls back to the owned
+    # queue: wake-ups may arrive on the other pool's topic, which its
+    # consumer safely absorbs as no-op redeliveries (rows are durable
+    # in the store and the idle drain finds them without any message).
+    # Injected test fakes own the whole queue surface: never open real
+    # side producers around them.
+    use_side_queues = queue is None
+    backoff_queue = (
+        None if backoff_only or not use_side_queues else _queue_on(backoff_topic)
+    )
+    if backoff_only and use_side_queues:
+        link_topic = os.environ.get(BACKOFF_LINK_TOPIC_ENV, "").strip() or DEFAULT_TOPIC
+        link_queue = _queue_on(link_topic)
+    else:
+        link_queue = None
+    link_producer = link_queue if link_queue is not None else None
+    hand_producer: Any | None = None
     kafka = queue if queue is not None else open_kafka_queue(app_config)
+    if link_producer is None:
+        link_producer = kafka
+    hand_producer = kafka if backoff_only else (backoff_queue or kafka)
+
+    def _apply_backoff_tuning() -> None:
+        """Re-assert slow-pool fetch behavior after a limits refresh."""
+        if not backoff_only:
+            return
+        try:
+            delay = float(os.environ.get(BACKOFF_DELAY_ENV, "") or 0)
+        except (TypeError, ValueError):
+            delay = 0.0
+        if 0 < delay <= 600:
+            with contextlib.suppress(Exception):
+                worker.crawler.crawl_delay_s = delay
+        try:
+            timeout = float(os.environ.get(BACKOFF_TIMEOUT_ENV, "") or 0)
+        except (TypeError, ValueError):
+            timeout = 0.0
+        if 0 < timeout <= 300:
+            with contextlib.suppress(Exception):
+                worker.crawler.timeout_s = timeout
+
+    _apply_backoff_tuning()
     if not kafka.check_available():
         raise ProviderError(
             "Kafka broker unreachable; cannot start the Kafka crawl loop",
@@ -1103,13 +1210,29 @@ def run_kafka_worker(
             return
         batch = list(pending_links)
         pending_links.clear()
-        publish_many = getattr(kafka, "publish_many", None)
+        publish_many = getattr(link_producer, "publish_many", None)
         with contextlib.suppress(Exception):
             if callable(publish_many):
                 publish_many(batch)
             else:  # pragma: no cover - pre-batch queue fakes in old tests
                 for url, depth, priority in batch:
-                    kafka.publish(url, depth, priority=priority)
+                    link_producer.publish(url, depth, priority=priority)
+
+    def _hand_off_url(url: str) -> None:
+        """Publish one slow failure to the backoff topic (fail-open)."""
+        if not isinstance(url, str) or not url.strip():
+            return
+        with contextlib.suppress(Exception):
+            hand_producer.publish(url.strip(), 0)
+
+    # The take path per pool: the backoff view serves parked rows only,
+    # the guarded store serves queued rows only. One wrapper for the
+    # whole run is enough — the skip-list lambda reads live limits.
+    drain_store = (
+        _BackoffFrontier(worker.guarded_store())
+        if backoff_only
+        else worker.guarded_store()
+    )
 
     # Crawl-outcome sink for the analytics event queue: the crawler only
     # emits (url, outcome, reason) per processed page; all aggregation
@@ -1134,6 +1257,7 @@ def run_kafka_worker(
 
     def _drain_once() -> None:
         worker.refresh_limits()
+        _apply_backoff_tuning()
         with contextlib.suppress(Exception):
             worker.maybe_run_discovery()
         drain_started = time.monotonic()
@@ -1153,11 +1277,12 @@ def run_kafka_worker(
             dict(indexing_config),
             chunk_size,
             crawler=worker.crawler,
-            frontier_store=worker.guarded_store(),
+            frontier_store=drain_store,
             should_stop=_drain_should_stop,
             crawl_id=crawl_id,
             on_link=_publish_link,
             on_outcome=_report_outcome,
+            on_backoff=_hand_off_url,
         )
         _flush_links()
         counts["added"] += int(getattr(drain_stats, "added", 0) or 0)
@@ -1223,6 +1348,7 @@ def run_kafka_worker(
     # The beat is fail-open like all reporting.
     print(
         f"[worker {worker.worker_id}] crawl={crawl_id} queue=kafka "
+        f"pool={'backoff' if backoff_only else 'main'} "
         f"api={api_url} seeds={len(seed_urls)}",
         flush=True,
     )
@@ -1324,11 +1450,12 @@ def run_kafka_worker(
                     dict(indexing_config),
                     chunk_size,
                     crawler=worker.crawler,
-                    frontier_store=worker.guarded_store(),
+                    frontier_store=drain_store,
                     should_stop=worker.should_stop,
                     crawl_id=crawl_id,
                     on_link=_publish_link,
                     on_outcome=_report_outcome,
+                    on_backoff=_hand_off_url,
                 )
             finally:
                 # Restore before commit/discovery: the next message's
@@ -1352,6 +1479,10 @@ def run_kafka_worker(
             _report_progress(force=True)
         with contextlib.suppress(Exception):
             kafka.close()
+        for extra in (backoff_queue, link_queue):
+            if extra is not None and extra is not kafka:
+                with contextlib.suppress(Exception):
+                    extra.close()
         with contextlib.suppress(Exception):
             frontier_store.close()
         with contextlib.suppress(Exception):

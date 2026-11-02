@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
+  autoTriageFailedDomains,
   blockDomains,
   bumpDomainPriority,
   clearFrontier,
@@ -9,6 +10,7 @@ import {
   fetchFailedDomains,
   fetchFailedDomainUrls,
   fetchFailedUrls,
+  fetchQueuedDomainUrls,
   fetchQueuedDomains,
   frontierLiveUrl,
   listCrawlRequests,
@@ -232,6 +234,34 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     setDomainUrlPage(0);
   }
 
+  // Same drill-down for queued hosts, tracked separately so a failed
+  // row and a queued row can each hold an expansion at once.
+  const [expandedQueuedDomain, setExpandedQueuedDomain] = useState<string | null>(null);
+  const [queuedDomainUrlPage, setQueuedDomainUrlPage] = useState(0);
+  const queuedDomainUrlsQuery = useQuery({
+    queryKey: ['frontier', 'queued-domain-urls', expandedQueuedDomain, queuedDomainUrlPage],
+    queryFn: () =>
+      expandedQueuedDomain == null
+        ? Promise.resolve(null)
+        : fetchQueuedDomainUrls(
+            expandedQueuedDomain,
+            FAILED_PAGE_SIZE,
+            queuedDomainUrlPage * FAILED_PAGE_SIZE,
+          ),
+    enabled: open && expandedQueuedDomain != null,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const queuedDomainUrls: FrontierFailedList | null | undefined = queuedDomainUrlsQuery.data;
+  const queuedDomainUrlTotal = queuedDomainUrls?.total ?? 0;
+  const queuedDomainUrlPages = Math.max(1, Math.ceil(queuedDomainUrlTotal / FAILED_PAGE_SIZE));
+
+  function toggleQueuedDomainUrls(domain: string) {
+    setExpandedQueuedDomain((current) => (current === domain ? null : domain));
+    setQueuedDomainUrlPage(0);
+  }
+
   // Queued URLs rolled up by host with per-host counts. Same paging
   // rule: the page resets whenever the drawer opens.
   const [queuedDomainPage, setQueuedDomainPage] = useState(0);
@@ -254,6 +284,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       setQueuedDomainPage(0);
       setExpandedDomain(null);
       setDomainUrlPage(0);
+      setExpandedQueuedDomain(null);
+      setQueuedDomainUrlPage(0);
     }
   }, [open]);
 
@@ -465,6 +497,36 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       await refreshFailed();
     } catch {
       pushToast('Block failed.', 'error');
+    }
+  }
+
+  async function handleAutoTriage() {
+    if (
+      !window.confirm(
+        'Auto-triage every failed domain by its top reason? ' +
+          'Robots-disallowed, content-type, 404/401 are skipped and flushed; ' +
+          '429 and timeouts are requeued with backoff; thin content is also blocked. ' +
+          'Unknown reasons are left alone.',
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await autoTriageFailedDomains(false, adminToken);
+      const counts: Record<string, number> = {};
+      for (const entry of result.triaged) {
+        counts[entry.action] = (counts[entry.action] ?? 0) + 1;
+      }
+      const summary = Object.entries(counts)
+        .map(([action, n]) => `${n} ${action}`)
+        .join(', ');
+      pushToast(
+        `Auto-triage done — ${result.triaged.length} domain(s): ${summary || 'none'}.`,
+        'success',
+      );
+      await refreshFailed();
+    } catch {
+      pushToast('Auto-triage failed.', 'error');
     }
   }
 
@@ -787,6 +849,15 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
             )}
 
             <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed domains ({failedDomainTotal})</h4>
+            {failedDomainTotal > 0 ? (
+              <Button
+                variant="secondary"
+                data-testid="frontier-auto-triage"
+                onClick={() => void handleAutoTriage()}
+              >
+                Auto-triage
+              </Button>
+            ) : null}
             {failedDomainsQuery.isPending ? (
               <p className="my-ol-s text-ol-s">Loading failed domains…</p>
             ) : failedDomains == null || failedDomains.domains.length === 0 ? (
@@ -937,6 +1008,13 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       <Badge>{entry.queued}</Badge> <Badge>p{entry.top_priority}</Badge>{' '}
                       {entry.domain}{' '}
                       <Button
+                        variant="ghost"
+                        data-testid={`frontier-queued-toggle-${entry.domain}`}
+                        onClick={() => toggleQueuedDomainUrls(entry.domain)}
+                      >
+                        {expandedQueuedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
+                      </Button>{' '}
+                      <Button
                         variant="secondary"
                         data-testid={`frontier-queued-prio-up-${entry.domain}`}
                         onClick={() => void handleQueuedPriority(entry.domain, 1)}
@@ -964,6 +1042,66 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       >
                         Block
                       </Button>
+                      {expandedQueuedDomain === entry.domain ? (
+                        <div
+                          data-testid={`frontier-queued-urls-${entry.domain}`}
+                          className="ml-ol-m mt-ol-xs border-l border-ol-border pl-ol-s"
+                        >
+                          {queuedDomainUrlsQuery.isLoading ? (
+                            <p className="text-ol-s">Loading URLs…</p>
+                          ) : queuedDomainUrls == null ? (
+                            <p className="text-ol-s">Could not load URLs.</p>
+                          ) : queuedDomainUrls.urls.length === 0 ? (
+                            <p className="text-ol-s">No queued URLs for this domain.</p>
+                          ) : (
+                            <>
+                              <ul className="flex min-h-0 flex-col gap-ol-xs my-ol-xs max-h-64 overflow-y-auto">
+                                {queuedDomainUrls.urls.map((item) => (
+                                  <li key={item.url} className="break-all">
+                                    {(item.attempts ?? 0) > 0 ? (
+                                      <Badge>{item.attempts}</Badge>
+                                    ) : null}{' '}
+                                    {item.url}
+                                    {item.reason != null && item.reason !== '' ? (
+                                      <span className="text-ol-s"> · {item.reason}</span>
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ul>
+                              <div className="flex items-center gap-ol-s my-ol-xs">
+                                <Button
+                                  variant="ghost"
+                                  data-testid={`frontier-queued-urls-prev-${entry.domain}`}
+                                  onClick={() =>
+                                    setQueuedDomainUrlPage((page) => Math.max(0, page - 1))
+                                  }
+                                  disabled={queuedDomainUrlPage <= 0}
+                                >
+                                  Previous
+                                </Button>
+                                <span
+                                  data-testid={`frontier-queued-urls-page-${entry.domain}`}
+                                  className="text-ol-s"
+                                >
+                                  Page {queuedDomainUrlPage + 1} of {queuedDomainUrlPages}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  data-testid={`frontier-queued-urls-next-${entry.domain}`}
+                                  onClick={() =>
+                                    setQueuedDomainUrlPage((page) =>
+                                      Math.min(queuedDomainUrlPages - 1, page + 1),
+                                    )
+                                  }
+                                  disabled={queuedDomainUrlPage >= queuedDomainUrlPages - 1}
+                                >
+                                  Next
+                                </Button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

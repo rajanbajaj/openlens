@@ -23,6 +23,7 @@ import type {
   FeedbackRequestSchema,
   FeedbackResponseSchema,
   FeedbackSummarySchema,
+  FrontierAutoTriageSchema,
   FrontierDomainPrioritySchema,
   FrontierDomainsActionSchema,
   FrontierDomainsResultSchema,
@@ -33,11 +34,13 @@ import type {
   FrontierFailedListSchema,
   FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
   FrontierQueuedDomainListSchema,
+  FrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetParams,
   FrontierQueuedDomainsApiV1FrontierQueuedDomainsGetParams,
   FrontierResumeSchema,
   FrontierSettingsResponseSchema,
   FrontierSettingsSchema,
   FrontierStatusSchema,
+  FrontierTriageResultSchema,
   FrontierWorkerHeartbeatSchema,
   FrontierWorkersResponseSchema,
   HTTPValidationError,
@@ -1215,6 +1218,175 @@ export const frontierDomainsSkipApiV1FrontierDomainsSkipPost = async (
     status: res.status,
     headers: res.headers,
   } as frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse;
+};
+
+export type frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse200 = {
+  data: FrontierTriageResultSchema;
+  status: 200;
+};
+
+export type frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponseSuccess =
+  frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponseError =
+  frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse =
+  | frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponseSuccess
+  | frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponseError;
+
+export const getFrontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostUrl = () => {
+  return `/api/v1/frontier/failed/domains/auto-triage`;
+};
+
+/**
+ * Automatically disposition every failed host by its top reason.
+ *
+ * Admin-only. One pass over the full failed-domains rollup:
+ *
+ * - robots-disallowed, content-type-skipped, http 404/401 →
+ *   ``skip+purge`` (queued rows skipped + skip-listed, history purged).
+ * - http 429 → ``requeue+wait`` (rows revived with a per-host
+ *   politeness wait scaled by failure volume, capped at 30 min).
+ * - fetch timeout → ``requeue+backoff`` (rows revived with a smaller
+ *   backoff wait plus a priority sink so they retry later, not first).
+ * - thin content → ``skip+block+purge`` (also merged into
+ *   ``deny_domains`` — the host earns nothing by refetching).
+ * - anything else (including the ``(invalid)`` host bucket) stays
+ *   ``unhandled`` and is reported, never mutated.
+ *
+ * ``dry_run`` classifies without mutating (``affected`` stays 0, but
+ * ``wait_s`` still shows the planned wait). ``affected`` counts queue
+ * rows moved or deleted; the accompanying skip-list/block-list policy
+ * updates are implied by the action name.
+ * @summary Frontier Failed Domains Auto Triage
+ */
+export const frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePost = async (
+  frontierAutoTriageSchema: FrontierAutoTriageSchema,
+  options?: RequestInit,
+): Promise<frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(
+    getFrontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostUrl(),
+    {
+      ...options,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+      body: JSON.stringify(frontierAutoTriageSchema),
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse['data'] =
+    body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePostResponse;
+};
+
+export type frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse200 = {
+  data: FrontierFailedListSchema;
+  status: 200;
+};
+
+export type frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponseSuccess =
+  frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponseError =
+  frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse =
+  | frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponseSuccess
+  | frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponseError;
+
+export const getFrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetUrl = (
+  domain: string,
+  params?: FrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/queued/domains/${domain}/urls?${stringifiedParams}`
+    : `/api/v1/frontier/queued/domains/${domain}/urls`;
+};
+
+/**
+ * Queued URLs for one host with per-URL attempts (domain drill-down).
+ *
+ * Open read like ``/frontier/queued/domains``. Host matching is exact
+ * + subdomain and rows come back in dequeue order (priority first).
+ * Malformed hosts and store failures degrade to the empty list,
+ * never 500.
+ * @summary Frontier Queued Domain Urls
+ */
+export const frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGet = async (
+  domain: string,
+  params?: FrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetParams,
+  options?: RequestInit,
+): Promise<frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse> => {
+  const res = await fetch(
+    getFrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetUrl(domain, params),
+    {
+      ...options,
+      method: 'GET',
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetResponse;
 };
 
 export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse200 = {

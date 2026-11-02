@@ -442,6 +442,121 @@ def test_evict_oldest_zero_limit_clears_queue() -> None:
         store.close()
 
 
+def test_evict_oldest_concurrent_runs_stay_consistent() -> None:
+    """Concurrent evictors (one per crawler worker) never corrupt the queue.
+
+    Regression for the prod deadlock where two simultaneous evictions
+    aborted each other: every run either moves true overflow or no-ops,
+    and the queue ends exactly at the cap with no lost rows.
+    """
+    import threading
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        for i in range(20):
+            assert store.enqueue(f"https://example.com/{i}", 0) is True
+        errors: list[BaseException] = []
+        # NOTE: list.append is atomic under the GIL; a shared += counter
+        # would race (lost update) and is exactly what we must not do here.
+        results: list[int] = []
+
+        def evict() -> None:
+            try:
+                for _ in range(5):
+                    results.append(store.evict_oldest(10))
+            except BaseException as exc:  # pragma: no cover - must not happen
+                errors.append(exc)
+
+        threads = [threading.Thread(target=evict) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        assert sum(results) == 10  # exactly the overflow, never double-counted
+        assert store.counts().get("queued", 0) == 10
+        assert store.counts().get("skipped", 0) == 10
+    finally:
+        store.close()
+
+
+def test_backoff_rows_hide_from_main_dequeue() -> None:
+    """mark_backoff parks rows for the slow pool without losing attempts."""
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/slow", 0) is True
+        assert store.enqueue("https://example.com/normal", 0) is True
+        store.mark_backoff("https://example.com/slow", "http 429")
+        # Main path only ever sees queued rows.
+        entry = store.dequeue()
+        assert entry is not None and entry.url == "https://example.com/normal"
+        assert store.dequeue() is None
+        # The parked row keeps its attempt bump and reason...
+        probe = store.pending(limit=100)
+        assert [e.url for e in probe] == ["https://example.com/normal"]
+        counts = store.counts()
+        assert counts.get("backoff", 0) == 1
+        # ...and the backoff pool drains it oldest-first, marked active.
+        backed = store.dequeue_backoff()
+        assert backed is not None and backed.url == "https://example.com/slow"
+        assert backed.attempts == 1
+        assert backed.last_error == "http 429"
+        assert backed.status == "active"
+        assert store.dequeue_backoff() is None
+        store.mark_done("https://example.com/slow")
+        assert store.counts().get("done", 0) == 1
+    finally:
+        store.close()
+
+
+def test_postgres_evict_oldest_skips_locked_rows_in_order() -> None:
+    """The Postgres eviction locks victims deterministically and skips busy rows.
+
+    Pins the deadlock fix: victim selection must carry
+    ``FOR UPDATE SKIP LOCKED`` over a fully-ordered oldest-first scan,
+    so concurrent evictors take locks in one global order instead of
+    deadlocking on the same oldest rows in different visit orders.
+    """
+    import contextlib
+
+    from openlens.storage.frontier import PostgresFrontierStore
+
+    executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    class _FakeCursor:
+        rowcount = 3
+
+        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> "_FakeCursor":
+            executed.append((sql, params))
+            return self
+
+        def fetchone(self) -> tuple[int]:
+            return (5,)
+
+    class _FakeConn:
+        def cursor(self) -> Any:
+            return contextlib.nullcontext(_FakeCursor())
+
+        def commit(self) -> None:
+            return None
+
+    store = object.__new__(PostgresFrontierStore)
+    store._schema = "public"
+
+    @contextlib.contextmanager
+    def _fake_connection():  # type: ignore[no-untyped-def]
+        yield _FakeConn()
+
+    store._connection = _fake_connection  # type: ignore[method-assign]
+    assert store.evict_oldest(2) == 3
+    assert len(executed) == 2
+    update_sql, params = executed[1]
+    assert params == (3,)
+    assert "FOR UPDATE SKIP LOCKED" in update_sql
+    assert "ORDER BY discovered_at ASC, url ASC" in update_sql
+    assert "evicted: queue cap exceeded" in update_sql
+
+
 def test_persistent_crawl_path_leaks_no_temp_sidecar() -> None:
     pattern = os.path.join(tempfile.gettempdir(), "openlens-frontier-*.urls")
     before = set(glob.glob(pattern))

@@ -614,6 +614,118 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     assert hits.get("https://kafka.test/a", 0) == 1
 
 
+def test_backoff_frontier_view_serves_only_backoff_rows(tmp_path: Path) -> None:
+    """The backoff view takes parked rows; the main path never sees them."""
+    from openlens.indexing.worker import _BackoffFrontier
+
+    db_path = str(tmp_path / "frontier.db")
+    store = SqliteFrontierStore(db_path)
+    try:
+        assert store.enqueue("https://pool.test/parked", 0) is True
+        assert store.enqueue("https://pool.test/queued", 0) is True
+        store.mark_backoff("https://pool.test/parked", "http 429")
+        view = _BackoffFrontier(store)
+        entry = view.dequeue()
+        assert entry is not None and entry.url == "https://pool.test/parked"
+        assert view.dequeue() is None
+        assert entry.status == "active"
+        # The underlying main take still serves only queued rows.
+        main = store.dequeue()
+        assert main is not None and main.url == "https://pool.test/queued"
+    finally:
+        store.close()
+
+
+def test_run_kafka_worker_backoff_mode_drains_backoff_pool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """BACKOFF_ONLY workers fetch parked rows and leave queued rows alone."""
+    monkeypatch.setenv("OPENLENS_BACKOFF_ONLY", "1")
+    db_path = str(tmp_path / "frontier.db")
+    seed = SqliteFrontierStore(db_path)
+    try:
+        assert seed.enqueue("https://kafka.test/a", 0) is True
+        seed.mark_backoff("https://kafka.test/a", "http 429")
+        assert seed.enqueue("https://kafka.test/other", 0) is True
+    finally:
+        seed.close()
+    fake = _FakeQueue([])
+    hits: dict[str, int] = {}
+    run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w-backoff",
+        crawler_factory=_crawler_factory(hits),
+        queue=fake,
+        max_iterations=1,
+        idle_sleep_s=0.01,
+    )
+    assert hits.get("https://kafka.test/a", 0) == 1
+    assert "https://kafka.test/other" not in hits
+    # Discovered links still fan out (to the injected queue in tests)...
+    assert ("https://kafka.test/b", 1, 0) in fake.published
+    # ...and the pool is empty while the main queue is untouched.
+    store = SqliteFrontierStore(db_path)
+    try:
+        assert store.counts().get("backoff", 0) == 0
+        pending_urls = {entry.url for entry in store.pending(limit=100)}
+        assert "https://kafka.test/other" in pending_urls
+    finally:
+        store.close()
+
+
+def test_run_kafka_worker_main_hands_off_429_to_backoff(
+    tmp_path: Path,
+) -> None:
+    """A main-pool 429 parks the row and wakes the backoff pool by message."""
+    db_path = str(tmp_path / "frontier.db")
+    hits: dict[str, int] = {}
+
+    def _throttled_factory() -> PoliteCrawler:
+        crawler = PoliteCrawler()
+        crawler.configure(
+            {
+                "timeout_s": 5,
+                "crawl_delay_s": 0,
+                "max_pages": 10,
+                "max_attempts_per_url": 3,
+                "respect_robots": False,
+            }
+        )
+
+        def fake_fetch(url: str) -> _FetchedPage | None:
+            hits[url] = hits.get(url, 0) + 1
+            return _FetchedPage(
+                status=429, url=url, content_type="text/plain", body=b""
+            )
+
+        crawler._fetch_bounded = fake_fetch  # type: ignore[method-assign]
+        return crawler
+
+    fake = _FakeQueue([("https://kafka.test/slow", 0, 0)])
+    run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w-main",
+        crawler_factory=_throttled_factory,
+        queue=fake,
+        max_iterations=2,
+        idle_sleep_s=0.01,
+    )
+    # One fetch, then parked: never refetched by the main pool...
+    assert hits == {"https://kafka.test/slow": 1}
+    # ...and the handoff woke the backoff pool through the topic.
+    assert ("https://kafka.test/slow", 0, None) in fake.published
+    store = SqliteFrontierStore(db_path)
+    try:
+        assert store.counts().get("backoff", 0) == 1
+        assert store.counts().get("failed", 0) == 0
+        backed = store.dequeue_backoff()
+        assert backed is not None and backed.last_error == "http 429"
+    finally:
+        store.close()
+
+
 def test_run_kafka_worker_reports_claimed_and_discovery(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

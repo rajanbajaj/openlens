@@ -66,9 +66,20 @@ STATUS_ACTIVE = "active"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+#: Parked for slow retry by the backoff pool: invisible to the main
+#: dequeue/claim path (which only takes ``queued``), drained by
+#: backoff workers via :meth:`FrontierStore.dequeue_backoff`.
+STATUS_BACKOFF = "backoff"
 
 _VALID_STATUSES = frozenset(
-    {STATUS_QUEUED, STATUS_ACTIVE, STATUS_DONE, STATUS_FAILED, STATUS_SKIPPED}
+    {
+        STATUS_QUEUED,
+        STATUS_ACTIVE,
+        STATUS_DONE,
+        STATUS_FAILED,
+        STATUS_SKIPPED,
+        STATUS_BACKOFF,
+    }
 )
 
 #: User-requested crawl URL states (``crawl_requests`` table).
@@ -217,6 +228,31 @@ class FrontierStore(ABC):
     def mark_failed(self, url: str, error: str) -> None:
         """Mark a URL failed, bumping its attempt counter."""
         raise NotImplementedError
+
+    def mark_backoff(self, url: str, error: str) -> None:
+        """Park a URL for slow retry, bumping its attempt counter.
+
+        Same attempt accounting as :meth:`mark_failed`, but the row
+        moves to ``backoff`` instead of ``failed``: the main
+        dequeue/claim path never takes it, and only backoff workers
+        (via :meth:`dequeue_backoff`) drain it. The error is kept so
+        the row still explains itself if it later terminates as failed.
+        Concrete default (fall back to :meth:`mark_failed`) so
+        older/test doubles keep working; the shipped SQLite and
+        Postgres stores override it.
+        """
+        self.mark_failed(url, error)
+
+    def dequeue_backoff(self) -> FrontierEntry | None:
+        """Take the oldest ``backoff`` row (dequeue order, marked active).
+
+        Backoff-pool mirror of :meth:`dequeue`: same priority/depth/
+        discovery ordering, same active-claim, but only ``backoff``
+        rows are eligible. Returns None when the pool is empty.
+        Concrete default (empty pool) so older/test doubles keep
+        working; the shipped stores override it.
+        """
+        return None
 
     @abstractmethod
     def mark_skipped(self, url: str) -> int:
@@ -427,6 +463,23 @@ class FrontierStore(ABC):
     @abstractmethod
     def failed_domain_url_count(self, domain: str) -> int:
         """Number of ``failed`` rows for one host (exact+subdomain)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def queued_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``queued`` rows for one host (exact+subdomain).
+
+        Powers the per-domain drill-down in the admin queued-domains
+        view. Dequeue order (priority first), like :meth:`pending`.
+        Malformed domains fail closed to the empty list.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def queued_domain_url_count(self, domain: str) -> int:
+        """Number of ``queued`` rows for one host (exact+subdomain)."""
         raise NotImplementedError
 
     @abstractmethod
@@ -1368,6 +1421,32 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def dequeue_backoff(self) -> FrontierEntry | None:
+        try:
+            with self._lock, self._conn:
+                row = self._conn.execute(
+                    "SELECT url, depth, status, parent_url, attempts,"
+                    " last_error, etag, last_modified, priority FROM frontier_queue"
+                    " WHERE status = 'backoff'"
+                    " ORDER BY priority DESC, depth ASC,"
+                    " discovered_at ASC, rowid ASC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    return None
+                entry = _entry_from_row(row)
+                self._conn.execute(
+                    "UPDATE frontier_queue SET status = 'active' WHERE url = ?",
+                    (entry.url,),
+                )
+                entry.status = STATUS_ACTIVE
+                return entry
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to dequeue backoff frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def mark_done(
         self,
         url: str,
@@ -1405,6 +1484,22 @@ class SqliteFrontierStore(FrontierStore):
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to mark frontier URL failed: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def mark_backoff(self, url: str, error: str) -> None:
+        norm = normalize_frontier_url(url)
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "UPDATE frontier_queue SET status = 'backoff',"
+                    " attempts = attempts + 1, last_error = ? WHERE url = ?",
+                    (error[:500], norm),
+                )
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to mark frontier URL backoff: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -2209,6 +2304,56 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def queued_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``queued`` rows for one host (SQLite exact+subdomain)."""
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return []
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
+                    " last_error, etag, last_modified, priority"
+                    " FROM frontier_queue WHERE status = 'queued'"
+                    f" AND ({condition})"
+                    " ORDER BY priority DESC, rowid DESC LIMIT ? OFFSET ?",
+                    (*patterns, capped, skipped),
+                ).fetchall()
+                return [_entry_from_row(row) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list queued domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def queued_domain_url_count(self, domain: str) -> int:
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return 0
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM frontier_queue"  # noqa: S608
+                    f" WHERE status = 'queued' AND ({condition})",
+                    patterns,
+                ).fetchone()
+                return int(row["n"]) if row is not None else 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to count queued domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def requeue_failed_domains(self, domains: Any) -> int:
         """Revive ``failed`` rows from ``domains`` (exact+subdomain).
 
@@ -2837,6 +2982,49 @@ class PostgresFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def dequeue_backoff(self) -> FrontierEntry | None:
+        table = self._qualified("frontier_queue")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
+                        f" last_error, etag, last_modified, priority FROM {table}"
+                        " WHERE status = 'backoff'"
+                        " ORDER BY priority DESC, depth ASC,"
+                        " discovered_at ASC LIMIT 1"
+                        " FOR UPDATE SKIP LOCKED"
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        conn.commit()
+                        return None
+                    cols = (
+                        "url",
+                        "depth",
+                        "status",
+                        "parent_url",
+                        "attempts",
+                        "last_error",
+                        "etag",
+                        "last_modified",
+                        "priority",
+                    )
+                    entry = _entry_from_row(dict(zip(cols, row)))
+                    cur.execute(
+                        f"UPDATE {table} SET status = 'active' WHERE url = %s",  # noqa: S608
+                        (entry.url,),
+                    )
+                    entry.status = STATUS_ACTIVE
+                conn.commit()
+                return entry
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to dequeue backoff frontier URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def mark_done(
         self,
         url: str,
@@ -2857,6 +3045,14 @@ class PostgresFrontierStore(FrontierStore):
         table = self._qualified("frontier_queue")
         self._write(
             f"UPDATE {table} SET status = 'failed',"  # noqa: S608
+            " attempts = attempts + 1, last_error = %s WHERE url = %s",
+            (error[:500], normalize_frontier_url(url)),
+        )
+
+    def mark_backoff(self, url: str, error: str) -> None:
+        table = self._qualified("frontier_queue")
+        self._write(
+            f"UPDATE {table} SET status = 'backoff',"  # noqa: S608
             " attempts = attempts + 1, last_error = %s WHERE url = %s",
             (error[:500], normalize_frontier_url(url)),
         )
@@ -2913,9 +3109,16 @@ class PostgresFrontierStore(FrontierStore):
         """Drop oldest queued rows past ``limit`` (oldest-first eviction).
 
         Single-statement eviction: one ``COUNT`` sizes the overflow, then
-        one ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT %s)``
-        moves the victims. Victims match the old per-row loop exactly
-        (oldest ``queued`` rows by ``discovered_at``).
+        one CTE ``UPDATE`` moves the victims. Victims match the old
+        per-row loop exactly (oldest ``queued`` rows by
+        ``discovered_at``, ``url`` tiebreak). The CTE locks victims in
+        that same deterministic order with ``FOR UPDATE SKIP LOCKED``:
+        concurrent evictors (one per crawler worker) take locks in an
+        identical global order and skip — never wait on — each other's
+        rows, so the eviction cannot deadlock itself the way two
+        ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT)``
+        statements can (each locking the same oldest rows in a
+        different physical visit order).
         """
         table = self._qualified("frontier_queue")
         cap = max(0, limit)
@@ -2933,11 +3136,15 @@ class PostgresFrontierStore(FrontierStore):
                         conn.commit()
                         return 0
                     cur.execute(
-                        f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
-                        " last_error = 'evicted: queue cap exceeded'"
-                        f" WHERE url IN (SELECT url FROM {table}"  # noqa: S608
+                        f"WITH victims AS ("  # noqa: S608
+                        f" SELECT url FROM {table}"  # noqa: S608
                         " WHERE status = 'queued'"
-                        " ORDER BY discovered_at ASC LIMIT %s)",
+                        " ORDER BY discovered_at ASC, url ASC"
+                        " LIMIT %s"
+                        " FOR UPDATE SKIP LOCKED"
+                        f") UPDATE {table} AS q SET status = 'skipped',"  # noqa: S608
+                        " last_error = 'evicted: queue cap exceeded'"
+                        " FROM victims AS v WHERE q.url = v.url",
                         (overflow,),
                     )
                     evicted = cur.rowcount or 0
@@ -3749,6 +3956,74 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to count failed domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def queued_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``queued`` rows for one host (Postgres exact+subdomain)."""
+        table = self._qualified("frontier_queue")
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return []
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE %s ESCAPE '\\'"] * len(patterns))
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        cols = (
+            "url",
+            "depth",
+            "status",
+            "parent_url",
+            "attempts",
+            "last_error",
+            "etag",
+            "last_modified",
+            "priority",
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT {', '.join(cols)} FROM {table}"  # noqa: S608
+                        " WHERE status = 'queued'"
+                        f" AND ({condition})"
+                        " ORDER BY priority DESC, discovered_at DESC"
+                        " LIMIT %s OFFSET %s",
+                        (*patterns, capped, skipped),
+                    )
+                    return [
+                        _entry_from_row(dict(zip(cols, row))) for row in cur.fetchall()
+                    ]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to list queued domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def queued_domain_url_count(self, domain: str) -> int:
+        table = self._qualified("frontier_queue")
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return 0
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE %s ESCAPE '\\'"] * len(patterns))
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {table}"  # noqa: S608
+                        f" WHERE status = 'queued' AND ({condition})",
+                        patterns,
+                    )
+                    row = cur.fetchone()
+                    return int(row[0]) if row is not None else 0
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to count queued domain URLs: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

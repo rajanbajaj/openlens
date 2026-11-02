@@ -228,6 +228,103 @@ def test_http_transient_retried_then_terminal(
         store.close()
 
 
+def test_429_hands_off_to_backoff_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 with a backoff sink parks the row and emits once, then moves on."""
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    hits: list[str] = []
+    handed: list[str] = []
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        return _failed_page(url, 429)
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler(max_pages=20, max_attempts_per_url=3, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        for _ in range(3):
+            crawler.crawl(
+                ["https://example.com/throttled"],
+                frontier_store=store,
+                on_backoff=handed.append,
+            )
+        # One fetch, one handoff; the parked row never re-enters the main drain.
+        assert hits == ["https://example.com/throttled"]
+        assert handed == ["https://example.com/throttled"]
+        counts = store.counts()
+        assert counts.get("backoff", 0) == 1
+        assert counts.get("failed", 0) == 0
+        backed = store.dequeue_backoff()
+        assert backed is not None and backed.attempts == 1
+        assert backed.last_error == "http 429"
+    finally:
+        store.close()
+
+
+def test_timeout_hands_off_to_backoff_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fetch timeout with a backoff sink parks instead of requeueing."""
+    from openlens.indexing.crawler import CrawlError
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    hits: list[str] = []
+    handed: list[str] = []
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        raise CrawlError("boom")
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler(max_pages=20, max_attempts_per_url=3, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        for _ in range(3):
+            crawler.crawl(
+                ["https://example.com/slow"],
+                frontier_store=store,
+                on_backoff=handed.append,
+            )
+        assert hits == ["https://example.com/slow"]
+        assert handed == ["https://example.com/slow"]
+        assert store.counts().get("backoff", 0) == 1
+        backed = store.dequeue_backoff()
+        assert backed is not None and backed.last_error == "fetch timeout"
+    finally:
+        store.close()
+
+
+def test_backoff_exhausted_budget_terminates_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handoff never fires once the retry budget is spent."""
+    from openlens.indexing.crawler import CrawlError
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    handed: list[str] = []
+
+    def _fetch(url: str) -> object:
+        raise CrawlError("boom")
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler(max_pages=20, max_attempts_per_url=1, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        crawler.crawl(
+            ["https://example.com/slow"],
+            frontier_store=store,
+            on_backoff=handed.append,
+        )
+        assert handed == []
+        assert store.counts().get("failed", 0) == 1
+        assert store.counts().get("backoff", 0) == 0
+    finally:
+        store.close()
+
+
 def test_unfetchable_urls_fail_without_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     """mailto:/hostless URLs never reach the network; one terminal failure."""
     from openlens.indexing.crawler import _is_fetchable_url

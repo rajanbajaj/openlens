@@ -2,6 +2,8 @@
 
 Date: Nov 2026. Stack: 3 × `apache/kafka:3.9.0` in KRaft
 combined `broker,controller` mode, 12 crawler replicas on one 16-CPU host.
+(Fleet has since doubled: 24 main crawlers + a 2-replica backoff pool
+on `crawl.backoff`, still one broker.)
 
 ## What we saw
 
@@ -42,11 +44,12 @@ still meant an unavailable partition; only `__consumer_offsets`
 (RF=3) was actually replicated. We paid the full cost of a quorum
 (elections, ISR tracking, 6 GB RAM + 3 CPUs) without the benefit.
 
-## Why one broker + 12 crawlers is fine
+## Why one broker + 24 crawlers is fine
 
 - Consumer parallelism comes from **partitions, not brokers**:
-  `crawl.urls` has 12 partitions, so 12 crawlers each own one.
-  A 13th would idle.
+  `crawl.urls` has 24 partitions, so 24 crawlers each own one.
+  A 25th would idle. The `crawl.backoff` topic rides the same broker
+  (separate group `crawlers-backoff`) — no new JVM needed.
 - The queue is transient (24h retention); Postgres is the source
   of truth and the store dedupes, so redelivery after an offset
   reset is harmless.

@@ -33,7 +33,8 @@ The flapping has a second, compounding cause: `max_poll_interval_ms`
 gets the member kicked; it rejoins on its next poll after the drain
 returns. Slow drains therefore read as 0–2 members indefinitely.
 Three brokers are not the cause: publishes flow, lag probes read,
-and 12 partitions could host all 6 workers.
+and 24 partitions could host all 24 workers (12 at the time of
+writing).
 
 ## How to confirm on prod
 

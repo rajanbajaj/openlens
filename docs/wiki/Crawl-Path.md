@@ -21,10 +21,16 @@ until an operator requeues them.
 ## Two coordinated paths, one store
 
 - **Kafka mode** (`crawl-worker --queue kafka`): seeds and
-  discovered links publish to `crawl.urls` (12 partitions, group
+  discovered links publish to `crawl.urls` (24 partitions, group
   `crawlers`); each live worker owns its partitions. Delivery is
   at-least-once — offsets commit only after index — and duplicates
   collapse on the normalized-URL primary key.
+- **Backoff pool** (same image, `OPENLENS_BACKOFF_ONLY=1`): 429s and
+  fetch timeouts are parked as `backoff` rows and handed to the
+  `crawl.backoff` topic instead of stalling the main drain. Two slow
+  workers (`crawlers-backoff` group, higher delay + timeout) retry
+  them; discoveries still fan out to the main topic. Attempts keep
+  accumulating across pools, so terminal rows still terminate.
 - **Store mode** (offline/tests): workers claim directly from the
   table. Multi-process crawling requires Postgres; SQLite
   coordination is process-local.

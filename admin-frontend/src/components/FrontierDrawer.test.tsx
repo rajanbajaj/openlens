@@ -670,8 +670,42 @@ describe('FrontierDrawer failed domains', () => {
             limit: 20,
             offset: 0,
           };
-        else if (text.includes('/api/v1/frontier/failed/domains')) payload = DOMAINS;
+        else if (
+          text.includes('/api/v1/frontier/failed/domains/auto-triage') &&
+          method === 'POST'
+        ) {
+          capture.posts.push({ url: text, body: init?.body });
+          payload = {
+            triaged: [
+              {
+                domain: 'example.com',
+                top_reason: 'http 404',
+                action: 'skip+purge',
+                affected: 12,
+                wait_s: 0,
+              },
+              {
+                domain: 'other.example',
+                top_reason: 'http 429',
+                action: 'requeue+wait',
+                affected: 3,
+                wait_s: 180,
+              },
+            ],
+            dry_run: false,
+          };
+        } else if (text.includes('/api/v1/frontier/failed/domains')) payload = DOMAINS;
         else if (text.includes('/api/v1/frontier/failed')) payload = { urls: [], total: 0 };
+        else if (text.includes('/api/v1/frontier/queued/domains/example.com/urls'))
+          payload = {
+            urls: [
+              { url: 'https://example.com/q1', reason: '', attempts: 0 },
+              { url: 'https://example.com/q2', reason: '', attempts: 0 },
+            ],
+            total: 2,
+            limit: 20,
+            offset: 0,
+          };
         else if (text.includes('/api/v1/frontier/queued/domains')) payload = QUEUED;
         else if (text.includes('/api/v1/frontier/domains/requeue') && method === 'POST') {
           capture.posts.push({ url: text, body: init?.body });
@@ -779,6 +813,29 @@ describe('FrontierDrawer failed domains', () => {
     expect(screen.getByTestId('frontier-deny-list')).toHaveTextContent('example.com');
   });
 
+  it('runs auto-triage behind a confirm and toasts the action mix', async () => {
+    MockSocket.instances = [];
+    const capture = {
+      posts: [] as { url: string; body: unknown }[],
+      puts: [] as { url: string; body: unknown }[],
+    };
+    stubDomainBackend(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
+    render(<FrontierDrawer adminToken="secret" />);
+    fireEvent.click(await screen.findByTestId('frontier-auto-triage'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Auto-triage done — 2 domain(s): 1 skip+purge, 1 requeue+wait.',
+      );
+    });
+    expect(capture.posts).toHaveLength(1);
+    expect(capture.posts[0].url).toContain('/api/v1/frontier/failed/domains/auto-triage');
+  });
+
   it('renders queued domains with priority, skip, and block buttons', async () => {
     MockSocket.instances = [];
     const empty: {
@@ -826,6 +883,33 @@ describe('FrontierDrawer failed domains', () => {
     fireEvent.click(screen.getByTestId('frontier-domain-toggle-example.com'));
     await waitFor(() => {
       expect(screen.queryByTestId('frontier-domain-urls-example.com')).not.toBeInTheDocument();
+    });
+  });
+
+  it('expands a queued domain to list its URLs', async () => {
+    MockSocket.instances = [];
+    const empty: {
+      posts: { url: string; body: unknown }[];
+      puts: { url: string; body: unknown }[];
+    } = {
+      posts: [],
+      puts: [],
+    };
+    stubDomainBackend(empty);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    fireEvent.click(await screen.findByTestId('frontier-queued-toggle-example.com'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-queued-urls-example.com')).toHaveTextContent(
+        'https://example.com/q1',
+      );
+    });
+    expect(screen.getByTestId('frontier-queued-urls-example.com')).toHaveTextContent(
+      'https://example.com/q2',
+    );
+    fireEvent.click(screen.getByTestId('frontier-queued-toggle-example.com'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('frontier-queued-urls-example.com')).not.toBeInTheDocument();
     });
   });
 

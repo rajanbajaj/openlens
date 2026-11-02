@@ -7,7 +7,7 @@ track and rejected fail-closed until it ships.
 ## Why ClickHouse, why separate
 
 The v0.4.33-v0.4.35 incident chain was write contention on the primary
-Postgres (eviction UPDATEs stalling 12 crawlers, 19 s status reads).
+Postgres (eviction UPDATEs stalling the crawler fleet, 19 s status reads).
 Analytics is pure append volume — putting it in the same database would
 recreate exactly that load pattern. So analytics lives in its own
 ClickHouse database (`openlens_analytics`):

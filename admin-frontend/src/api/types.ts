@@ -310,6 +310,21 @@ export interface FrontierDomainsResult {
   affected: number;
 }
 
+/** One triaged host: its top failure reason and the action taken. */
+export interface FrontierTriageEntry {
+  domain: string;
+  top_reason: string;
+  action: string;
+  affected: number;
+  wait_s: number;
+}
+
+/** Outcome of a failed-domains auto-triage pass. */
+export interface FrontierTriageResult {
+  triaged: FrontierTriageEntry[];
+  dry_run: boolean;
+}
+
 /** One queued host with its queued-URL count and top queued priority. */
 export interface FrontierQueuedDomain {
   domain: string;

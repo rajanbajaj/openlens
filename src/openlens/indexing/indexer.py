@@ -201,6 +201,7 @@ def run_index(
     crawl_id: str = "default",
     on_link: Any | None = None,
     on_outcome: Any | None = None,
+    on_backoff: Any | None = None,
 ) -> IndexStats:
     """Crawl seeds and incrementally index the results (CLI entry point).
 
@@ -219,7 +220,12 @@ def run_index(
     active = crawler if crawler is not None else PoliteCrawler()
     if crawler is None:
         active.configure(dict(config or {}))
-    if frontier_store is None and should_stop is None and crawl_id == "default":
+    if (
+        frontier_store is None
+        and should_stop is None
+        and crawl_id == "default"
+        and on_backoff is None
+    ):
         # Legacy call shape: keeps old monkeypatched/subclassed crawl
         # overrides working (they may accept only seed_urls).
         docs = active.crawl(list(seed_urls))
@@ -231,6 +237,7 @@ def run_index(
             crawl_id=crawl_id,
             on_link=on_link,
             on_outcome=on_outcome,
+            on_backoff=on_backoff,
         )
     return DocumentIndexer(repository).index_incremental(docs, chunk_size)
 

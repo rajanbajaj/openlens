@@ -2088,6 +2088,7 @@ class PoliteCrawler:
         checkpoint_interval: int | None = None,
         on_link: Callable[[str, int, int | None], None] | None = None,
         on_outcome: Callable[[str, str, str | None], None] | None = None,
+        on_backoff: Callable[[str], None] | None = None,
     ) -> list[Document]:
         """Fetch seeds (following discovered links) into raw Documents.
 
@@ -2125,6 +2126,33 @@ class PoliteCrawler:
                 return
             with contextlib.suppress(Exception):
                 on_outcome(url, outcome, reason)
+
+        def _hand_off(url: str, reason: str) -> bool:
+            """Park a retryable failure in the backoff pool (fail-open).
+
+            Returns True when the backoff sink accepted the URL: the
+            row is marked backoff (attempt bumped, like mark_failed) and
+            the URL is handed to the backoff topic, so the main drain
+            moves on to the next row instead of waiting out the retry.
+            Without a sink (``on_backoff`` unset, e.g. single-pool
+            deployments and offline tests) or on a store without
+            backoff support, returns False and the caller keeps the
+            legacy mark_failed + requeue path. A failed publish still
+            returns True — the parked row is durable and the backoff
+            pool's idle drain finds it without any message.
+            """
+            if on_backoff is None or store is None:
+                return False
+            park = getattr(store, "mark_backoff", None)
+            if not callable(park):
+                return False
+            try:
+                park(url, reason)
+            except Exception:
+                return False
+            with contextlib.suppress(Exception):
+                on_backoff(url)
+            return True
 
         store = frontier_store if self.frontier_enabled else None
         interval = (
@@ -2295,9 +2323,13 @@ class PoliteCrawler:
                 except CrawlError:
                     stats.timeouts += 1
                     if store is not None:
-                        store.mark_failed(raw, "fetch timeout")
-                        if entry_attempts + 1 < self.max_attempts_per_url:
-                            store.requeue(raw)
+                        if not (
+                            entry_attempts + 1 < self.max_attempts_per_url
+                            and _hand_off(raw, "fetch timeout")
+                        ):
+                            store.mark_failed(raw, "fetch timeout")
+                            if entry_attempts + 1 < self.max_attempts_per_url:
+                                store.requeue(raw)
                     _notify(raw, "failed", "fetch timeout")
                     continue
                 except Exception:
@@ -2323,11 +2355,16 @@ class PoliteCrawler:
                     stats.errors += 1
                     reason = f"http {page.status}"
                     if store is not None:
-                        store.mark_failed(raw, reason)
-                        if _is_retriable_http_status(page.status) and (
-                            entry_attempts + 1 < self.max_attempts_per_url
+                        if not (
+                            page.status == 429
+                            and entry_attempts + 1 < self.max_attempts_per_url
+                            and _hand_off(raw, reason)
                         ):
-                            store.requeue(raw)
+                            store.mark_failed(raw, reason)
+                            if _is_retriable_http_status(page.status) and (
+                                entry_attempts + 1 < self.max_attempts_per_url
+                            ):
+                                store.requeue(raw)
                     _notify(raw, "failed", reason)
                     continue
                 if page.bytes_aborted:

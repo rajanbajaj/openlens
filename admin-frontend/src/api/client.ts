@@ -19,6 +19,7 @@ import {
   isFrontierFailedDomainList,
   isFrontierFailedList,
   isFrontierQueuedDomainList,
+  isFrontierTriageResult,
   isFrontierSettingsResponse,
   isFrontierStatus,
   isFrontierWorkersResponse,
@@ -34,9 +35,11 @@ import {
   frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
   frontierDomainsPriorityApiV1FrontierDomainsPriorityPost,
   frontierDomainsPurgeApiV1FrontierDomainsPurgePost,
+  frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePost,
   frontierDomainsRequeueApiV1FrontierDomainsRequeuePost,
   frontierDomainsSkipApiV1FrontierDomainsSkipPost,
   frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGet,
+  frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGet,
   frontierQueuedDomainsApiV1FrontierQueuedDomainsGet,
   frontierFailedApiV1FrontierFailedGet,
   frontierFailedDomainsApiV1FrontierFailedDomainsGet,
@@ -56,6 +59,7 @@ import type {
   FrontierFailedDomainList,
   FrontierFailedList,
   FrontierQueuedDomainList,
+  FrontierTriageResult,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -859,6 +863,29 @@ export async function fetchFailedDomainUrls(
   return isFrontierFailedList(res.data) ? res.data : null;
 }
 
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/queued/domains/{domain}/urls`
+ * (open read). Resolves to `null` on transport or shape failures so
+ * the drill-down degrades to an empty list instead of crashing.
+ */
+export async function fetchQueuedDomainUrls(
+  domain: string,
+  limit: number = 20,
+  offset: number = 0,
+): Promise<FrontierFailedList | null> {
+  let res;
+  try {
+    res = await frontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGet(domain, {
+      limit,
+      offset,
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFrontierFailedList(res.data) ? res.data : null;
+}
+
 /** Domain actions shared by the failed-domains buttons. */
 export type FrontierDomainOp = 'requeue' | 'purge' | 'skip';
 
@@ -917,6 +944,34 @@ export async function bumpDomainPriority(
     );
   }
   if (res.status === 200 && isFrontierDomainsResult(res.data)) return res.data;
+  if (isErrorEnvelope(res.data)) {
+    throw new SearchApiError(res.data.error.code, res.data.error.message);
+  }
+  throw new SearchApiError('invalid_response', 'Unexpected response shape.');
+}
+
+/**
+ * Run the failed-domains auto-triage pass (admin-only). Throws
+ * {@link SearchApiError} on failure so the drawer can toast the
+ * backend message.
+ */
+export async function autoTriageFailedDomains(
+  dryRun: boolean,
+  adminToken: string = '',
+): Promise<FrontierTriageResult> {
+  let res;
+  try {
+    res = await frontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTriagePost(
+      { dry_run: dryRun },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  if (res.status === 200 && isFrontierTriageResult(res.data)) return res.data;
   if (isErrorEnvelope(res.data)) {
     throw new SearchApiError(res.data.error.code, res.data.error.message);
   }

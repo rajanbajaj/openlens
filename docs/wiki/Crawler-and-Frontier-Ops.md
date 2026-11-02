@@ -17,6 +17,9 @@ stateDiagram-v2
     queued --> active: claim (owner lease, 120 s TTL)
     active --> done: fetch + index ok
     active --> failed: terminal failure
+    active --> backoff: 429 / timeout handoff
+    backoff --> active: slow-pool drain
+    backoff --> failed: budget spent
     active --> queued: lease expiry → requeue
     failed --> queued: requeue (attempts reset, error cleared)
     queued --> skipped: bulk domain skip
@@ -56,7 +59,12 @@ retries surface across `crawl()` calls, one fetch per URL per call):
 - **Terminal on first hit:** any 4xx, `invalid url`
   (non-http(s) scheme, hostless URL, archive-wrapped `mailto:`),
   empty fetch, content-type/quality skips. No requeue.
-- **Retried:** 429 and 5xx, fetch timeouts and transport errors.
+- **Slow-retried (backoff pool):** 429 and fetch timeouts are parked
+  as `backoff` rows and handed to the `crawl.backoff` topic instead
+  of requeueing into the fast lane — the main drain never waits them
+  out. Two slow workers retry with 10 s politeness and 30 s timeouts.
+- **Retried in place:** 5xx and transport errors requeue with the
+  normal politeness (retry-soon is correct for server errors).
 - Every attempt emits one `crawl.page` analytics event, so the
   admin Crawler card counts *attempts*, not URLs.
 
@@ -89,16 +97,25 @@ malformed host lists:
   doc, merges the host into `deny_domains` (deduped, lowercased),
   and PUTs it back. Policy gates apply on the next claim; workers
   pick the config up on refresh.
+- **Auto-triage** (`POST /frontier/failed/domains/auto-triage`,
+  admin-only, optional `{"dry_run": true}`) — one pass over every
+  failed host: robots/content-type/404/401 → skip+purge, 429 →
+  requeue + volume-scaled politeness wait, fetch timeout →
+  requeue + backoff + priority sink, thin content →
+  skip+block+purge. Unknown reasons and the `(invalid)` bucket stay
+  untouched and are reported. Use dry-run first on a new backlog.
 
 ## Scaling crawler throughput
 
 Each worker fetches pages sequentially, so per-worker rate is ~1 page
 per (fetch + politeness wait + index writes). Scale in this order:
 
-1. **Replicas** (no code change): `--scale crawler=N`, up to **12**
+1. **Replicas** (no code change): `--scale crawler=N`, up to **24**
    (one per `crawl.urls` partition; more replicas idle). On the
    release host this is `CRAWLER_SCALE` in `release.env`. Watch
-   `kafka_lag_total` first — scale only when lag grows.
+   `kafka_lag_total` first — scale only when lag grows. The backoff
+   pool scales separately via `CRAWLER_BACKOFF_SCALE` (default 2;
+   backoff volume is a fraction of intake, so it stays small).
 2. **Per-poll budget** (config): `kafka.max_pages_per_poll`
    (default 25) amortizes poll/commit overhead. Keep worst-case poll
    work under ~1/4 of `kafka.max_poll_interval_ms` (900s); past that
@@ -111,11 +128,14 @@ pools × `OPENLENS_PG_POOL_SIZE` (default 5 → ~10 server connections);
 the backend holds one more pool on the replica when it is enabled.
 Provision
 `(replicas + 1) × 2 × pool_size + headroom` via
-`POSTGRES_MAX_CONNECTIONS` (compose default 200 — covers 12 replicas
-at pool 5). We hit `sorry, too many clients` before this knob
-existed; do not scale replicas without it. Lowering pool size helps
-only past this; a sequential worker rarely needs 5 concurrent
-connections.
+`POSTGRES_MAX_CONNECTIONS` (compose default 400 — covers 24 main
+replicas + the backoff pool + backend at pool 5). We hit
+`sorry, too many clients` before this knob existed; do not scale
+replicas without it. Lowering pool size helps only past this; a
+sequential worker rarely needs 5 concurrent connections. The writer
+itself runs at 2G/4 CPU with 512MB `shared_buffers` (see compose)
+after the 24-worker scale-out doubled its checkpoint and connection
+load.
 
 While scaling, watch PG CPU/IO and `pg_stat_activity` wait events —
 every page costs upserts plus index maintenance, and search latency

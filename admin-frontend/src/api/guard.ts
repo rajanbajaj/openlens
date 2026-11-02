@@ -22,6 +22,7 @@ import type {
   FrontierFailedDomainList,
   FrontierFailedList,
   FrontierQueuedDomainList,
+  FrontierTriageResult,
   FrontierFailedUrl,
   FrontierSettings,
   FrontierSettingsResponse,
@@ -384,6 +385,22 @@ export function isFrontierDomainsResult(value: unknown): value is FrontierDomain
     Array.isArray(value.domains) &&
     value.domains.every((entry) => typeof entry === 'string') &&
     typeof value.affected === 'number'
+  );
+}
+
+/** Auto-triage pass result shape. */
+export function isFrontierTriageResult(value: unknown): value is FrontierTriageResult {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.triaged) &&
+    value.triaged.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.domain === 'string' &&
+        typeof entry.action === 'string' &&
+        typeof entry.affected === 'number',
+    ) &&
+    typeof value.dry_run === 'boolean'
   );
 }
 

@@ -46,6 +46,7 @@ from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
 from openlens.api.schemas import (
+    FrontierAutoTriageSchema,
     FrontierDomainPrioritySchema,
     FrontierDomainsActionSchema,
     FrontierDomainsResultSchema,
@@ -53,6 +54,8 @@ from openlens.api.schemas import (
     FrontierFailedDomainSchema,
     FrontierQueuedDomainListSchema,
     FrontierQueuedDomainSchema,
+    FrontierTriageEntrySchema,
+    FrontierTriageResultSchema,
 )
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
@@ -1686,6 +1689,275 @@ def frontier_domains_skip(
 ) -> FrontierDomainsResultSchema | JSONResponse:
     """Skip a host's queued rows (admin-only; same as bulk domain skip)."""
     return _frontier_domains_action(request, body, "skip")
+
+
+#: Failed-domain top reasons that are permanent: the host's queued rows
+#: move to ``skipped`` (and the settings skip list) while its failed
+#: history is purged.
+_TRIAGE_SKIP_PURGE_REASONS = frozenset(
+    {
+        "disallowed by robots.txt",
+        "content-type skipped",
+        "http 404",
+        "http 401",
+    }
+)
+
+#: Cap for the 429 politeness wait: ``60s`` per failed row, ``30min`` max.
+_TRIAGE_429_WAIT_CAP_S = 1800.0
+
+#: Cap for the fetch-timeout retry backoff: ``30s`` per failed row, ``10min`` max.
+_TRIAGE_TIMEOUT_BACKOFF_CAP_S = 600.0
+
+
+def _triage_action_for_reason(reason: Any) -> str:
+    """Map a failed-domain ``top_reason`` to its automation action.
+
+    Returns one of ``skip+purge``, ``requeue+wait`` (429),
+    ``requeue+backoff`` (fetch timeout), ``skip+block+purge`` (thin
+    content), or ``unhandled``. Unknown reasons stay unhandled so the
+    pass never invents a policy for a failure mode it does not know.
+    """
+    cleaned = str(reason or "").strip()
+    if cleaned in _TRIAGE_SKIP_PURGE_REASONS:
+        return "skip+purge"
+    if cleaned == "http 429":
+        return "requeue+wait"
+    if cleaned == "fetch timeout":
+        return "requeue+backoff"
+    if cleaned.startswith("thin content"):
+        return "skip+block+purge"
+    return "unhandled"
+
+
+def _triage_merge_deny_domains(request: Request, targets: list[str]) -> int:
+    """Union ``targets`` into the indexing doc ``deny_domains`` (block step).
+
+    Server-side mirror of the admin drawer's block flow: the persisted
+    row wins over the YAML seed, the merged body is validated with the
+    boot validators, and the running app's in-memory config is overlaid
+    so reads stay consistent. Best effort like
+    :func:`_merge_settings_domains` — failures log and return 0, never
+    fail the pass. Returns newly blocked hosts.
+    """
+    try:
+        from openlens.storage.frontier import normalize_skip_domains
+
+        clean = normalize_skip_domains(targets) or []
+        if not clean:
+            return 0
+        config_store = _admin_config_store(request)
+        prior = try_get_doc(config_store, "indexing")
+        app_config = getattr(request.app.state, "config", None)
+        if prior is not None and isinstance(prior.body, dict):
+            body = dict(prior.body)
+        else:
+            seed = extract_file_doc(
+                app_config if isinstance(app_config, dict) else {}, "indexing"
+            )
+            body = dict(seed) if isinstance(seed, dict) else {}
+        current = list(body.get("deny_domains", []) or [])
+        merged = [*current]
+        for domain in clean:
+            if domain not in merged:
+                merged.append(domain)
+        added = len(merged) - len(current)
+        if added <= 0:
+            return 0
+        body["deny_domains"] = merged
+        try:
+            validate_config_doc("indexing", body)
+        except ConfigError as exc:
+            logger.warning("frontier auto-triage block validation failed: %s", exc)
+            return 0
+        config_store.put("indexing", body)
+        if isinstance(app_config, dict):
+            request.app.state.config = apply_db_config_overlay(
+                {**app_config, "indexing": dict(body)},
+                config_store,
+            )
+        return added
+    except Exception as exc:
+        logger.warning("frontier auto-triage block merge failed: %s", exc)
+        return 0
+
+
+@router.post(
+    "/frontier/failed/domains/auto-triage",
+    response_model=FrontierTriageResultSchema,
+)
+def frontier_failed_domains_auto_triage(
+    body: FrontierAutoTriageSchema, request: Request
+) -> FrontierTriageResultSchema | JSONResponse:
+    """Automatically disposition every failed host by its top reason.
+
+    Admin-only. One pass over the full failed-domains rollup:
+
+    - robots-disallowed, content-type-skipped, http 404/401 →
+      ``skip+purge`` (queued rows skipped + skip-listed, history purged).
+    - http 429 → ``requeue+wait`` (rows revived with a per-host
+      politeness wait scaled by failure volume, capped at 30 min).
+    - fetch timeout → ``requeue+backoff`` (rows revived with a smaller
+      backoff wait plus a priority sink so they retry later, not first).
+    - thin content → ``skip+block+purge`` (also merged into
+      ``deny_domains`` — the host earns nothing by refetching).
+    - anything else (including the ``(invalid)`` host bucket) stays
+      ``unhandled`` and is reported, never mutated.
+
+    ``dry_run`` classifies without mutating (``affected`` stays 0, but
+    ``wait_s`` still shows the planned wait). ``affected`` counts queue
+    rows moved or deleted; the accompanying skip-list/block-list policy
+    updates are implied by the action name.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    dry = bool(getattr(body, "dry_run", False))
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable", "frontier store unavailable"
+                ),
+            )
+        rollup: list[tuple[str, int, str]] = []
+        seen_offset = 0
+        while True:
+            page = store.failed_domains(limit=500, offset=seen_offset)
+            if not page:
+                break
+            rollup.extend(
+                (str(domain), max(0, int(count or 0)), str(reason or ""))
+                for domain, count, reason in page
+            )
+            if len(page) < 500:
+                break
+            seen_offset += len(page)
+        triaged: list[FrontierTriageEntrySchema] = []
+        for domain, failed_count, top_reason in rollup:
+            action = _triage_action_for_reason(top_reason)
+            if domain == "(invalid)" or action == "unhandled":
+                triaged.append(
+                    FrontierTriageEntrySchema(
+                        domain=domain, top_reason=top_reason, action="unhandled"
+                    )
+                )
+                continue
+            targets = [domain]
+            affected = 0
+            wait_s = 0.0
+            if not dry:
+                try:
+                    if action == "skip+purge":
+                        affected += int(store.skip_queued_domains(targets) or 0)
+                        _merge_settings_domains(request, "skip_domains", targets)
+                        affected += int(store.purge_failed_domains(targets) or 0)
+                    elif action == "requeue+wait":
+                        affected += int(store.requeue_failed_domains(targets) or 0)
+                        wait_s = min(
+                            _TRIAGE_429_WAIT_CAP_S, 60.0 * max(1, failed_count)
+                        )
+                        store.reserve_politeness(domain, wait_s, now=time.time())
+                    elif action == "requeue+backoff":
+                        affected += int(store.requeue_failed_domains(targets) or 0)
+                        wait_s = min(
+                            _TRIAGE_TIMEOUT_BACKOFF_CAP_S,
+                            30.0 * max(1, failed_count),
+                        )
+                        store.reserve_politeness(domain, wait_s, now=time.time())
+                        store.bump_queued_priority(targets, -1)
+                    elif action == "skip+block+purge":
+                        affected += int(store.skip_queued_domains(targets) or 0)
+                        _merge_settings_domains(request, "skip_domains", targets)
+                        _triage_merge_deny_domains(request, targets)
+                        affected += int(store.purge_failed_domains(targets) or 0)
+                except Exception as exc:
+                    logger.warning(
+                        "frontier auto-triage failed for %s: %s", domain, exc
+                    )
+                    action = "error"
+                    affected = 0
+                    wait_s = 0.0
+            else:
+                if action == "requeue+wait":
+                    wait_s = min(_TRIAGE_429_WAIT_CAP_S, 60.0 * max(1, failed_count))
+                elif action == "requeue+backoff":
+                    wait_s = min(
+                        _TRIAGE_TIMEOUT_BACKOFF_CAP_S,
+                        30.0 * max(1, failed_count),
+                    )
+            triaged.append(
+                FrontierTriageEntrySchema(
+                    domain=domain,
+                    top_reason=top_reason,
+                    action=action,
+                    affected=affected,
+                    wait_s=wait_s,
+                )
+            )
+        return FrontierTriageResultSchema(triaged=triaged, dry_run=dry)
+    except ProviderError as exc:
+        logger.warning("frontier auto-triage failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+    except Exception as exc:
+        logger.warning("frontier auto-triage failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+
+
+@router.get(
+    "/frontier/queued/domains/{domain}/urls", response_model=FrontierFailedListSchema
+)
+def frontier_queued_domain_urls(
+    domain: str, request: Request, limit: int = 100, offset: int = 0
+) -> FrontierFailedListSchema:
+    """Queued URLs for one host with per-URL attempts (domain drill-down).
+
+    Open read like ``/frontier/queued/domains``. Host matching is exact
+    + subdomain and rows come back in dequeue order (priority first).
+    Malformed hosts and store failures degrade to the empty list,
+    never 500.
+    """
+    from openlens.storage.frontier import normalize_skip_domain
+
+    capped = max(0, min(int(limit or 0), 500))
+    skipped = max(0, int(offset or 0))
+    host = normalize_skip_domain(domain)
+    if host is None:
+        return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return FrontierFailedListSchema(
+                urls=[], total=0, limit=capped, offset=skipped
+            )
+        try:
+            total = int(store.queued_domain_url_count(host) or 0)
+        except Exception:
+            total = 0
+        rows = store.queued_domain_urls(host, limit=capped, offset=skipped)
+        return FrontierFailedListSchema(
+            urls=[
+                FrontierFailedUrlSchema(
+                    url=entry.url,
+                    reason=entry.last_error or "",
+                    attempts=max(0, int(entry.attempts or 0)),
+                )
+                for entry in rows
+            ],
+            total=total,
+            limit=capped,
+            offset=skipped,
+        )
+    except Exception:
+        return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
 
 
 @router.post("/frontier/domains/priority", response_model=FrontierDomainsResultSchema)

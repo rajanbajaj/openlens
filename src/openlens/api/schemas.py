@@ -413,6 +413,35 @@ class FrontierDomainsResultSchema(BaseModel):
     affected: int = Field(default=0, ge=0)
 
 
+class FrontierAutoTriageSchema(BaseModel):
+    """Body for the failed-domains auto-triage pass (admin-only)."""
+
+    dry_run: bool = Field(
+        default=False,
+        description="Classify only; report planned actions without mutating.",
+    )
+
+
+class FrontierTriageEntrySchema(BaseModel):
+    """One triaged host: its top failure reason and the action taken."""
+
+    domain: str = ""
+    top_reason: str = ""
+    action: str = Field(
+        default="unhandled",
+        description="skip+purge, requeue+wait, skip+block+purge, or unhandled.",
+    )
+    affected: int = Field(default=0, ge=0)
+    wait_s: float = Field(default=0.0, ge=0.0)
+
+
+class FrontierTriageResultSchema(BaseModel):
+    """Outcome of a failed-domains auto-triage pass."""
+
+    triaged: list[FrontierTriageEntrySchema] = Field(default_factory=list)
+    dry_run: bool = False
+
+
 class FrontierDiscoverySchema(BaseModel):
     """A worker's last discovery-pass summary (feeds + refresh).
 

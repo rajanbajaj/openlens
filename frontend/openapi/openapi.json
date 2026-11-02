@@ -861,6 +861,111 @@
         }
       }
     },
+    "/api/v1/frontier/failed/domains/auto-triage": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Failed Domains Auto Triage",
+        "description": "Automatically disposition every failed host by its top reason.\n\nAdmin-only. One pass over the full failed-domains rollup:\n\n- robots-disallowed, content-type-skipped, http 404/401 \u2192\n  ``skip+purge`` (queued rows skipped + skip-listed, history purged).\n- http 429 \u2192 ``requeue+wait`` (rows revived with a per-host\n  politeness wait scaled by failure volume, capped at 30 min).\n- fetch timeout \u2192 ``requeue+backoff`` (rows revived with a smaller\n  backoff wait plus a priority sink so they retry later, not first).\n- thin content \u2192 ``skip+block+purge`` (also merged into\n  ``deny_domains`` \u2014 the host earns nothing by refetching).\n- anything else (including the ``(invalid)`` host bucket) stays\n  ``unhandled`` and is reported, never mutated.\n\n``dry_run`` classifies without mutating (``affected`` stays 0, but\n``wait_s`` still shows the planned wait). ``affected`` counts queue\nrows moved or deleted; the accompanying skip-list/block-list policy\nupdates are implied by the action name.",
+        "operationId": "frontier_failed_domains_auto_triage_api_v1_frontier_failed_domains_auto_triage_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierAutoTriageSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierTriageResultSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/queued/domains/{domain}/urls": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Queued Domain Urls",
+        "description": "Queued URLs for one host with per-URL attempts (domain drill-down).\n\nOpen read like ``/frontier/queued/domains``. Host matching is exact\n+ subdomain and rows come back in dequeue order (priority first).\nMalformed hosts and store failures degrade to the empty list,\nnever 500.",
+        "operationId": "frontier_queued_domain_urls_api_v1_frontier_queued_domains__domain__urls_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierFailedListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/domains/priority": {
       "post": {
         "tags": [
@@ -2437,6 +2542,19 @@
         "title": "FeedbackSummarySchema",
         "description": "Admin feedback overview: totals plus the noisiest documents."
       },
+      "FrontierAutoTriageSchema": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Classify only; report planned actions without mutating.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "FrontierAutoTriageSchema",
+        "description": "Body for the failed-domains auto-triage pass (admin-only)."
+      },
       "FrontierCheckpointSchema": {
         "properties": {
           "phase": {
@@ -3037,6 +3155,60 @@
         ],
         "title": "FrontierStatusSchema",
         "description": "GET /api/v1/frontier/status response body."
+      },
+      "FrontierTriageEntrySchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain",
+            "default": ""
+          },
+          "top_reason": {
+            "type": "string",
+            "title": "Top Reason",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "skip+purge, requeue+wait, skip+block+purge, or unhandled.",
+            "default": "unhandled"
+          },
+          "affected": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Affected",
+            "default": 0
+          },
+          "wait_s": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Wait S",
+            "default": 0.0
+          }
+        },
+        "type": "object",
+        "title": "FrontierTriageEntrySchema",
+        "description": "One triaged host: its top failure reason and the action taken."
+      },
+      "FrontierTriageResultSchema": {
+        "properties": {
+          "triaged": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierTriageEntrySchema"
+            },
+            "type": "array",
+            "title": "Triaged"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "FrontierTriageResultSchema",
+        "description": "Outcome of a failed-domains auto-triage pass."
       },
       "FrontierWorkerHeartbeatSchema": {
         "properties": {

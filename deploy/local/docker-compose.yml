@@ -175,12 +175,79 @@ services:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
-    # Replica count from the environment (default 1): 12 matches the
+    # Replica count from the environment (default 1): 24 matches the
     # crawl.urls partition count so each replica owns a partition.
     # Env-driven because a plain `up -d` reconciles to this number —
     # a hardcoded 1 kept shrinking the fleet back after every deploy.
     deploy:
       replicas: ${CRAWLER_SCALE:-1}
+      restart_policy:
+        condition: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q crawl-worker /proc/1/cmdline || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - openlens
+
+  # Slow-pool crawl worker: same image as `crawler`, but drains only
+  # `backoff` rows (429 / fetch-timeout retries parked by the main pool
+  # instead of waiting them out). Separate topic (`crawl.backoff`,
+  # auto-created like `crawl.urls`) and group (`crawlers-backoff`) so
+  # wake-ups never disturb the fast pool, and slower fetch behavior
+  # (`OPENLENS_BACKOFF_DELAY_S` / `OPENLENS_BACKOFF_TIMEOUT_S`) so the
+  # same hosts are not hammered straight again. Fresh links discovered
+  # here still go to the main topic. Scale with CRAWLER_BACKOFF_SCALE
+  # (default 2); the topic has 24 partitions but the pool is small by
+  # design — backoff volume is a fraction of main intake.
+  crawler-backoff:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.backend
+    command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
+    mem_limit: 1G
+    cpus: 0.25
+    logging: *default-logging
+    volumes:
+      - openlens-data:/app/data
+    environment:
+      OPENLENS_API_URL: http://backend:8000
+      OPENLENS_PG_HOST: postgres
+      OPENLENS_PG_PORT: 5432
+      OPENLENS_PG_DBNAME: ${POSTGRES_DB:-openlens}
+      OPENLENS_PG_USER: ${POSTGRES_USER:-openlens}
+      OPENLENS_PG_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
+      OPENLENS_REDIS_URL: redis://redis:6379/0
+      OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
+      OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092}
+      OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_BACKOFF_TOPIC:-crawl.backoff}
+      OPENLENS_KAFKA_GROUP_ID: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}-backoff
+      OPENLENS_KAFKA_BACKOFF_TOPIC: ${OPENLENS_KAFKA_BACKOFF_TOPIC:-crawl.backoff}
+      OPENLENS_KAFKA_BACKOFF_LINK_TOPIC: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
+      OPENLENS_BACKOFF_ONLY: "1"
+      OPENLENS_BACKOFF_DELAY_S: ${OPENLENS_BACKOFF_DELAY_S:-10}
+      OPENLENS_BACKOFF_TIMEOUT_S: ${OPENLENS_BACKOFF_TIMEOUT_S:-30}
+      OPENLENS_CRAWL_ID: ${OPENLENS_CRAWL_ID:-default}
+      OPENLENS_WORKER_ID: ${OPENLENS_WORKER_ID:-}
+      OPENLENS_HEARTBEAT_INTERVAL_S: ${OPENLENS_HEARTBEAT_INTERVAL_S:-40}
+      OPENLENS_FRONTIER_ADMIN_TOKEN: ${OPENLENS_FRONTIER_ADMIN_TOKEN:-}
+      MODEL_ENABLED: ${MODEL_ENABLED:-false}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.meta.ai/v1}
+      MODEL_NAME: ${MODEL_NAME:-muse-spark-1.3-contributor}
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+    deploy:
+      replicas: ${CRAWLER_BACKOFF_SCALE:-2}
       restart_policy:
         condition: on-failure
     healthcheck:
@@ -198,8 +265,8 @@ services:
   # topics were effectively RF=1 anyway, and a 3-voter quorum kept
   # flapping controller elections on this host. Internal traffic uses
   # INTERNAL://kafka-1:19092 (service DNS); host debugging uses
-  # EXTERNAL localhost:9092. Topics auto-create with 12 partitions so
-  # up to 12 crawler replicas each get their own partition share.
+  # EXTERNAL localhost:9092. Topics auto-create with 24 partitions so
+  # up to 24 crawler replicas each get their own partition share.
   # PLAINTEXT throughout: local dev only.
   # To go back to 3 brokers: re-add kafka-2/kafka-3 (copy this block,
   # node ids 2/3, ports 9094/9095), set the voter list back to
@@ -227,7 +294,7 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_NUM_PARTITIONS: 12
+      KAFKA_NUM_PARTITIONS: 24
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -294,22 +361,23 @@ services:
   # .env.example). Same pattern as KAFKA_UI_HOST / PGADMIN_HOST.
   postgres:
     image: postgres:16
-    mem_limit: 1G
-    cpus: 2.0
+    mem_limit: 2G
+    cpus: 4.0
     logging: *default-logging
     # Connection headroom for crawler scale-out: each backend/crawler
     # process holds ~2 pools x OPENLENS_PG_POOL_SIZE connections
-    # (default 5 -> ~10). 200 covers 12 crawler replicas + backend
-    # with margin; raise with replicas (see Crawler-and-Frontier-Ops).
+    # (default 5 -> ~10). 400 covers 24 crawler replicas + backend +
+    # analytics workers with margin; raise with replicas
+    # (see Crawler-and-Frontier-Ops).
     # hba_file allows replication connections for the read replica
     # (stock pg_hba has no replication entry); see ./pg_hba.conf.
-    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200} -c hba_file=/etc/pg_hba/pg_hba.conf -c shared_buffers=256MB
+    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-400} -c hba_file=/etc/pg_hba/pg_hba.conf -c shared_buffers=512MB
     # Postgres DSM (parallel-query shared memory) lives in /dev/shm,
-    # which Docker caps at 64MB: 12 workers evicting/querying a ~100k
+    # which Docker caps at 64MB: 24 workers evicting/querying a ~100k
     # queue exhaust it ("could not resize shared memory segment ... No
-    # space left on device") and crash-loop every crawler. 256MB is
-    # ample here; counts toward the 1G mem_limit above.
-    shm_size: 256mb
+    # space left on device") and crash-loop every crawler. 512MB
+    # tracks the 2G mem_limit above (DSM + shared_buffers ≈ 1G).
+    shm_size: 512mb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-openlens}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}

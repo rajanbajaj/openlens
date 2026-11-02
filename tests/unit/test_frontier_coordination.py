@@ -499,6 +499,12 @@ def test_coordination_defaults_preserve_single_worker_shape() -> None:
         def failed_domain_url_count(self, domain) -> int:  # type: ignore[no-untyped-def]
             return 0
 
+        def queued_domain_urls(self, domain, limit: int = 100, offset: int = 0):  # type: ignore[no-untyped-def]
+            return []
+
+        def queued_domain_url_count(self, domain) -> int:  # type: ignore[no-untyped-def]
+            return 0
+
         def counts(self):  # type: ignore[no-untyped-def]
             return {"total": 0}
 

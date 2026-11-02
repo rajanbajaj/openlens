@@ -343,6 +343,33 @@ def test_failed_domain_urls_lists_only_that_host(
         store.close()
 
 
+def test_queued_domain_urls_lists_only_that_host(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The queued drill-down lists that host's queued URLs in take order."""
+    from openlens.api import routes as routes_mod
+
+    store = _queued_domain_store(tmp_path)
+    assert store.bump_queued_priority(["example.com"], 4) == 2
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        body = client.get("/api/v1/frontier/queued/domains/example.com/urls").json()
+        assert body["total"] == 2
+        assert [u["url"] for u in body["urls"]] == [
+            "https://example.com/b",
+            "https://example.com/a",
+        ]
+        other = client.get("/api/v1/frontier/queued/domains/other.example/urls").json()
+        assert other["total"] == 1
+        assert other["urls"][0]["url"] == "https://other.example/c"
+        missing = client.get("/api/v1/frontier/queued/domains/missing.test/urls").json()
+        assert missing == {"urls": [], "total": 0, "limit": 100, "offset": 0}
+        malformed = client.get("/api/v1/frontier/queued/domains/:::/urls").json()
+        assert malformed["urls"] == [] and malformed["total"] == 0
+    finally:
+        store.close()
+
+
 def test_domains_priority_bumps_only_queued(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -406,6 +433,148 @@ def test_domains_skip_merges_settings_skip_list(
             probe.close()
     finally:
         store.close()
+
+
+def _triage_store(tmp_path) -> str:
+    """Seeded store with one failed host per triage reason class."""
+    db_path = str(tmp_path / "triage.db")
+    store = SqliteFrontierStore(db_path)
+    try:
+        seeds = [
+            ("https://robots.example/a", "disallowed by robots.txt"),
+            ("https://robots.example/still-queued", None),
+            ("https://type.example/a", "content-type skipped"),
+            ("https://type.example/still-queued", None),
+            ("https://gone.example/a", "http 404"),
+            ("https://gone.example/still-queued", None),
+            ("https://denied.example/a", "http 401"),
+            ("https://slow.example/a", "http 429"),
+            ("https://slow.example/b", "http 429"),
+            ("https://timeout.example/a", "fetch timeout"),
+            ("https://timeout.example/b", "fetch timeout"),
+            ("https://thin.example/a", "thin content"),
+            ("https://thin.example/still-queued", None),
+            ("https://weird.example/a", "some new reason"),
+            ("mailto:info@invalid.example", "invalid url"),
+        ]
+        for url, reason in seeds:
+            assert store.enqueue(url, 0) is True
+            if reason is not None:
+                store.mark_failed(url, reason)
+    finally:
+        store.close()
+    return db_path
+
+
+def _triage_post(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    payload: dict,
+) -> dict:
+    """Run the triage endpoint against a seeded store; return the body."""
+    from openlens.api import routes as routes_mod
+    from openlens.storage.app_config import SqliteAppConfigStore
+
+    _file_store(monkeypatch, tmp_path)
+    db_path = _triage_store(tmp_path)
+    store = SqliteFrontierStore(db_path)
+    # Offline config-doc store: the test app otherwise resolves a
+    # (lazy, unreachable) Postgres config store for the block step.
+    config_store = SqliteAppConfigStore(":memory:")
+    monkeypatch.setattr(routes_mod, "_admin_config_store", lambda request: config_store)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post("/api/v1/frontier/failed/domains/auto-triage", json=payload)
+        assert resp.status_code == 200, resp.text
+        return {"body": resp.json(), "db_path": db_path}
+    finally:
+        store.close()
+
+
+def _triage_by_domain(body: dict) -> dict[str, dict]:
+    return {entry["domain"]: entry for entry in body["triaged"]}
+
+
+def test_auto_triage_dispositions_by_reason(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Every reason class gets its documented action; unknowns are untouched."""
+    from openlens.api import frontier_state
+
+    result = _triage_post(client, monkeypatch, tmp_path, {})
+    assert result["body"]["dry_run"] is False
+    by_domain = _triage_by_domain(result["body"])
+
+    assert by_domain["robots.example"]["action"] == "skip+purge"
+    assert by_domain["type.example"]["action"] == "skip+purge"
+    assert by_domain["gone.example"]["action"] == "skip+purge"
+    assert by_domain["denied.example"]["action"] == "skip+purge"
+    assert by_domain["slow.example"]["action"] == "requeue+wait"
+    assert by_domain["slow.example"]["wait_s"] == pytest.approx(120.0)
+    assert by_domain["timeout.example"]["action"] == "requeue+backoff"
+    assert by_domain["timeout.example"]["wait_s"] == pytest.approx(60.0)
+    assert by_domain["thin.example"]["action"] == "skip+block+purge"
+    assert by_domain["weird.example"]["action"] == "unhandled"
+    assert by_domain["(invalid)"]["action"] == "unhandled"
+
+    statuses = _row_statuses(result["db_path"])
+    # Permanent failures: queued rows skipped, failed history purged.
+    assert statuses["https://robots.example/still-queued"] == "skipped"
+    assert statuses["https://type.example/still-queued"] == "skipped"
+    assert statuses["https://gone.example/still-queued"] == "skipped"
+    assert "https://robots.example/a" not in statuses
+    assert "https://gone.example/a" not in statuses
+    # Transient failures: revived to queued.
+    assert statuses["https://slow.example/a"] == "queued"
+    assert statuses["https://timeout.example/a"] == "queued"
+    assert statuses["https://thin.example/still-queued"] == "skipped"
+    assert "https://thin.example/a" not in statuses
+    # Unknowns: never mutated.
+    assert statuses["https://weird.example/a"] == "failed"
+    assert statuses["mailto:info@invalid.example"] == "failed"
+
+    settings = frontier_state.get_frontier_state().settings
+    for domain in ("robots.example", "type.example", "gone.example", "thin.example"):
+        assert domain in settings["skip_domains"]
+    indexing = client.get("/api/v1/admin/config/indexing").json()
+    assert "thin.example" in indexing["body"].get("deny_domains", [])
+    assert "robots.example" not in indexing["body"].get("deny_domains", [])
+
+    probe = SqliteFrontierStore(result["db_path"])
+    try:
+        assert probe.get_politeness_delay("slow.example") > 0
+        pending = {entry.url: entry for entry in probe.pending(limit=100)}
+        assert pending["https://timeout.example/a"].priority == -1
+        assert pending["https://slow.example/a"].priority == 0
+    finally:
+        probe.close()
+
+
+def test_auto_triage_dry_run_mutates_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Dry run classifies (with planned waits) but changes no rows or policy."""
+    from openlens.api import frontier_state
+
+    result = _triage_post(client, monkeypatch, tmp_path, {"dry_run": True})
+    assert result["body"]["dry_run"] is True
+    by_domain = _triage_by_domain(result["body"])
+    assert by_domain["slow.example"]["action"] == "requeue+wait"
+    assert by_domain["slow.example"]["wait_s"] == pytest.approx(120.0)
+    assert by_domain["timeout.example"]["action"] == "requeue+backoff"
+    assert by_domain["gone.example"]["action"] == "skip+purge"
+    assert by_domain["thin.example"]["action"] == "skip+block+purge"
+    assert all(entry["affected"] == 0 for entry in result["body"]["triaged"])
+
+    statuses = _row_statuses(result["db_path"])
+    assert statuses["https://slow.example/a"] == "failed"
+    assert statuses["https://gone.example/still-queued"] == "queued"
+    assert "thin.example" not in (
+        frontier_state.get_frontier_state().settings.get("skip_domains", [])
+    )
+    indexing = client.get("/api/v1/admin/config/indexing").json()
+    assert "thin.example" not in indexing["body"].get("deny_domains", [])
 
 
 def test_store_overlay_preserves_kafka_enabled() -> None:
