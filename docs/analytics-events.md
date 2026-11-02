@@ -35,7 +35,7 @@ non-`server` sources, and oversized props are dropped, never stored:
 |---|---|---|
 | `search.served` | `query_hash`, `mode`, `result_count` | API per search |
 | `search.feedback` | `doc_id`, `action`, `reason?` | API per feedback tally |
-| `crawl.page` | `url`, `outcome`, `reason?` | worker per processed page |
+| `crawl.page` | `url`, `outcome`, `domain`, `reason?` | worker per processed page |
 
 Raw query text is never stored — only its SHA-256 hex digest. Crawled
 page URLs are stored (like feedback `doc_id`) with only the outcome
@@ -49,7 +49,14 @@ routed/sampled separately.
 fire-and-forget event per processed page, emitted through the same
 `analytics.events` queue. Workers never aggregate — the admin
 `GET /api/v1/admin/analytics/top?name=crawl.page&prop=reason` endpoint
-(and the Analytics tab's Crawler card) does the counting.
+(and the Analytics tab's Crawler card) does the counting. `top` also
+accepts `filter_prop` + `filter_value` to restrict rows first (e.g.
+`prop=domain&filter_prop=outcome&filter_value=failed` for top failing
+domains), and `GET /api/v1/admin/analytics/series?name=&bucket=hour|day&days=`
+returns per-bucket page counts (throughput) oldest-first. The Crawler
+card combines these into outcome split, success rate, hourly/daily
+throughput sparkline, domain split, top failing domains, and top
+reasons.
 
 ## Services
 
@@ -64,8 +71,10 @@ fire-and-forget event per processed page, emitted through the same
 - Backend publishes on every search (`served`) and feedback tally.
   Crawl workers publish one `crawl.page` event per processed page
   (fetched/failed/skipped + reason). The admin API serves
-  `GET /api/v1/admin/analytics/counts?days=N` and
-  `GET /api/v1/admin/analytics/top?name=&prop=&days=` (admin-gated,
+  `GET /api/v1/admin/analytics/counts?days=N`,
+  `GET /api/v1/admin/analytics/top?name=&prop=&days=` (plus optional
+  `filter_prop=`/`filter_value=`), and
+  `GET /api/v1/admin/analytics/series?name=&bucket=&days=` (admin-gated,
   503 when the store is unreachable, 422 for unknown names/props).
 
 ## Operations

@@ -304,6 +304,20 @@ export interface AnalyticsTop {
   top: AnalyticsTopEntry[];
 }
 
+/** One throughput bucket: ISO start plus event count. */
+export interface AnalyticsSeriesPoint {
+  t: string;
+  count: number;
+}
+
+/** Per-bucket event counts over a window (throughput). */
+export interface AnalyticsSeries {
+  name: string;
+  bucket: string;
+  days: number;
+  points: AnalyticsSeriesPoint[];
+}
+
 /** Frontier crawl settings (PUT body is strict: unknown keys rejected). */
 export interface FrontierSettings {
   max_pages: number;

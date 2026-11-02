@@ -13,4 +13,6 @@ export type AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams = {
   prop?: string;
   days?: number;
   limit?: number;
+  filter_prop?: string | null;
+  filter_value?: string | null;
 };

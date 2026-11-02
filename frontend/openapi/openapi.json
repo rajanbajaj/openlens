@@ -258,7 +258,7 @@
           "search"
         ],
         "summary": "Admin Analytics Top",
-        "description": "Admin-only top-values breakdown for one analytics event prop.\n\nSame gate as the counts endpoint; fail-open store (503 when\nunreachable). ``name`` must be a known event and ``prop`` a plain\nidentifier (fail-closed, 422 otherwise) so no user input reaches\nthe aggregation query.",
+        "description": "Admin-only top-values breakdown for one analytics event prop.\n\nSame gate as the counts endpoint; fail-open store (503 when\nunreachable). ``name`` must be a known event and ``prop`` (plus the\noptional ``filter_prop``) a plain identifier; ``filter_value`` is\ncharset-restricted (fail-closed, 422 otherwise) so no user input\nreaches the aggregation query raw. The optional\n``filter_prop=filter_value`` clause restricts rows first \u2014 e.g.\ntop domains among failed pages only.",
         "operationId": "admin_analytics_top_api_v1_admin_analytics_top_get",
         "parameters": [
           {
@@ -301,6 +301,40 @@
               "default": 10,
               "title": "Limit"
             }
+          },
+          {
+            "name": "filter_prop",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Prop"
+            }
+          },
+          {
+            "name": "filter_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Value"
+            }
           }
         ],
         "responses": {
@@ -310,6 +344,71 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AnalyticsTopSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/analytics/series": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Analytics Series",
+        "description": "Admin-only per-bucket event counts (throughput) over a window.\n\nSame gate and fail-open store as the counts endpoint. ``bucket`` is\n``hour`` or ``day``; points come back oldest-first.",
+        "operationId": "admin_analytics_series_api_v1_admin_analytics_series_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "crawl.page",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "bucket",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(hour|day)$",
+              "default": "day",
+              "title": "Bucket"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 30,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsSeriesSchema"
                 }
               }
             }
@@ -1299,6 +1398,58 @@
         ],
         "title": "AnalyticsCountsSchema",
         "description": "Admin analytics overview: durable per-name counts over a window."
+      },
+      "AnalyticsSeriesPointSchema": {
+        "properties": {
+          "t": {
+            "type": "string",
+            "title": "T"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "t",
+          "count"
+        ],
+        "title": "AnalyticsSeriesPointSchema",
+        "description": "One throughput bucket: ISO start plus event count."
+      },
+      "AnalyticsSeriesSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "bucket": {
+            "type": "string",
+            "title": "Bucket"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Days"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsSeriesPointSchema"
+            },
+            "type": "array",
+            "title": "Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "bucket",
+          "days"
+        ],
+        "title": "AnalyticsSeriesSchema",
+        "description": "Admin per-bucket event counts over a window (throughput)."
       },
       "AnalyticsTopEntrySchema": {
         "properties": {

@@ -9,6 +9,7 @@
 import {
   isAdminConfigDoc,
   isAnalyticsCounts,
+  isAnalyticsSeries,
   isAnalyticsTop,
   isCrawlRequest,
   isCrawlRequestList,
@@ -23,6 +24,7 @@ import {
 } from './guard.ts';
 import {
   adminAnalyticsCountsApiV1AdminAnalyticsCountsGet,
+  adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet,
   adminAnalyticsTopApiV1AdminAnalyticsTopGet,
   adminFeedbackSummaryApiV1AdminFeedbackSummaryGet,
   frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
@@ -34,6 +36,7 @@ import type {
   AdminConfigDoc,
   AdminConfigName,
   AnalyticsCounts,
+  AnalyticsSeries,
   AnalyticsTop,
   CrawlRequest,
   CrawlRequestList,
@@ -714,11 +717,20 @@ export async function fetchAnalyticsTop(
   days: number = 30,
   limit: number = 10,
   adminToken: string = '',
+  filterProp?: string,
+  filterValue?: string,
 ): Promise<AnalyticsTop | null> {
   let res;
   try {
     res = await adminAnalyticsTopApiV1AdminAnalyticsTopGet(
-      { name, prop, days, limit },
+      {
+        name,
+        prop,
+        days,
+        limit,
+        ...(filterProp !== undefined ? { filter_prop: filterProp } : {}),
+        ...(filterValue !== undefined ? { filter_value: filterValue } : {}),
+      },
       { headers: { ...frontierAdminHeaders(adminToken) } },
     );
   } catch {
@@ -726,6 +738,31 @@ export async function fetchAnalyticsTop(
   }
   if (res.status !== 200) return null;
   return isAnalyticsTop(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/admin/analytics/series` (admin-only
+ * read). Resolves to `null` on transport, auth, store-unavailable
+ * (503), invalid args (422), or shape failures. Pass `adminToken`
+ * when the backend sets `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function fetchAnalyticsSeries(
+  name: string = 'crawl.page',
+  bucket: string = 'day',
+  days: number = 30,
+  adminToken: string = '',
+): Promise<AnalyticsSeries | null> {
+  let res;
+  try {
+    res = await adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet(
+      { name, bucket, days },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isAnalyticsSeries(res.data) ? res.data : null;
 }
 
 /**

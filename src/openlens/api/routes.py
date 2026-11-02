@@ -678,6 +678,22 @@ class AnalyticsTopSchema(BaseModel):
     top: list[AnalyticsTopEntrySchema] = Field(default_factory=list)
 
 
+class AnalyticsSeriesPointSchema(BaseModel):
+    """One throughput bucket: ISO start plus event count."""
+
+    t: str
+    count: int = Field(ge=0)
+
+
+class AnalyticsSeriesSchema(BaseModel):
+    """Admin per-bucket event counts over a window (throughput)."""
+
+    name: str
+    bucket: str
+    days: int = Field(ge=1)
+    points: list[AnalyticsSeriesPointSchema] = Field(default_factory=list)
+
+
 @router.post(
     "/feedback",
     response_model=FeedbackResponseSchema,
@@ -814,6 +830,32 @@ def admin_analytics_counts(
     )
 
 
+def _admin_analytics_store(
+    request: Request,
+) -> tuple[Any | None, JSONResponse | None]:
+    """Open the configured analytics store for an admin read.
+
+    Returns ``(store, None)`` or ``(None, 503 response)`` when the
+    store is unreachable (fail-open).
+    """
+    try:
+        from openlens.analytics.store import open_analytics_store
+
+        app_config = getattr(request.app.state, "config", None)
+        section: dict[str, Any] = {}
+        if isinstance(app_config, dict):
+            raw = app_config.get("analytics", {})
+            if isinstance(raw, Mapping):
+                section = dict(raw.get("store", {}))
+        return open_analytics_store(section), None
+    except Exception as exc:
+        logger.warning("analytics: store unavailable: %s", exc)
+        return None, JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+
+
 @router.get("/admin/analytics/top", response_model=AnalyticsTopSchema)
 def admin_analytics_top(
     request: Request,
@@ -821,13 +863,18 @@ def admin_analytics_top(
     prop: str = Query(default="reason", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
     days: int = 30,
     limit: int = 10,
+    filter_prop: str | None = Query(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
+    filter_value: str | None = Query(default=None, max_length=256),
 ) -> AnalyticsTopSchema | JSONResponse:
     """Admin-only top-values breakdown for one analytics event prop.
 
     Same gate as the counts endpoint; fail-open store (503 when
-    unreachable). ``name`` must be a known event and ``prop`` a plain
-    identifier (fail-closed, 422 otherwise) so no user input reaches
-    the aggregation query.
+    unreachable). ``name`` must be a known event and ``prop`` (plus the
+    optional ``filter_prop``) a plain identifier; ``filter_value`` is
+    charset-restricted (fail-closed, 422 otherwise) so no user input
+    reaches the aggregation query raw. The optional
+    ``filter_prop=filter_value`` clause restricts rows first — e.g.
+    top domains among failed pages only.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -842,24 +889,32 @@ def admin_analytics_top(
     window = days if isinstance(days, int) and days >= 1 else 30
     window = min(window, 365)
     capped = max(1, min(int(limit or 10), 100))
-    try:
-        from openlens.analytics.store import open_analytics_store
-
-        app_config = getattr(request.app.state, "config", None)
-        section: dict[str, Any] = {}
-        if isinstance(app_config, dict):
-            raw = app_config.get("analytics", {})
-            if isinstance(raw, Mapping):
-                section = dict(raw.get("store", {}))
-        store = open_analytics_store(section)
-    except Exception as exc:
-        logger.warning("analytics top: store unavailable: %s", exc)
+    if (filter_prop is None) != (filter_value is None):
         return JSONResponse(
-            status_code=503,
-            content=error_body("provider_unavailable", "analytics store unavailable"),
+            status_code=422,
+            content=error_body(
+                "invalid_request", "filter_prop and filter_value go together"
+            ),
         )
+    store, unavailable = _admin_analytics_store(request)
+    if store is None:
+        if unavailable is None:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable", "analytics store unavailable"
+                ),
+            )
+        return unavailable
     try:
-        pairs = store.top_props(name, prop, since_days=window, limit=capped)
+        pairs = store.top_props(
+            name,
+            prop,
+            since_days=window,
+            limit=capped,
+            filter_prop=filter_prop,
+            filter_value=filter_value,
+        )
     except ProviderError as exc:
         if exc.code == ProviderError.INVALID_REQUEST:
             return JSONResponse(
@@ -889,6 +944,70 @@ def admin_analytics_top(
         top=[
             AnalyticsTopEntrySchema(value=value, count=count) for value, count in pairs
         ],
+    )
+
+
+@router.get("/admin/analytics/series", response_model=AnalyticsSeriesSchema)
+def admin_analytics_series(
+    request: Request,
+    name: str = "crawl.page",
+    bucket: str = Query(default="day", pattern=r"^(hour|day)$"),
+    days: int = 30,
+) -> AnalyticsSeriesSchema | JSONResponse:
+    """Admin-only per-bucket event counts (throughput) over a window.
+
+    Same gate and fail-open store as the counts endpoint. ``bucket`` is
+    ``hour`` or ``day``; points come back oldest-first.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    from openlens.analytics.events import EVENT_NAMES
+
+    if name not in EVENT_NAMES:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", f"unknown analytics event: {name}"),
+        )
+    window = days if isinstance(days, int) and days >= 1 else 30
+    window = min(window, 365)
+    store, unavailable = _admin_analytics_store(request)
+    if store is None:
+        if unavailable is None:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable", "analytics store unavailable"
+                ),
+            )
+        return unavailable
+    try:
+        points = store.series(name, bucket=bucket, since_days=window)
+    except ProviderError as exc:
+        if exc.code == ProviderError.INVALID_REQUEST:
+            return JSONResponse(
+                status_code=422,
+                content=error_body("invalid_request", str(exc)),
+            )
+        logger.warning("analytics series: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    except Exception as exc:
+        logger.warning("analytics series: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    finally:
+        with suppress(Exception):
+            store.close()
+    return AnalyticsSeriesSchema(
+        name=name,
+        bucket=bucket,
+        days=window,
+        points=[AnalyticsSeriesPointSchema(t=t, count=count) for t, count in points],
     )
 
 

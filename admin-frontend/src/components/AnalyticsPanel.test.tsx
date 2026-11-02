@@ -52,11 +52,44 @@ const TOP_REASON = {
   ],
 };
 
+const TOP_DOMAIN = {
+  name: 'crawl.page',
+  prop: 'domain',
+  days: 30,
+  total: 4,
+  top: [
+    { value: 'example.com', count: 3 },
+    { value: 'other.example', count: 1 },
+  ],
+};
+
+const TOP_FAILING_DOMAIN = {
+  name: 'crawl.page',
+  prop: 'domain',
+  days: 30,
+  total: 1,
+  top: [{ value: 'example.com', count: 1 }],
+};
+
+const SERIES = {
+  name: 'crawl.page',
+  bucket: 'day',
+  days: 30,
+  points: [
+    { t: '2026-10-26', count: 0 },
+    { t: '2026-10-27', count: 4 },
+    { t: '2026-10-28', count: 8 },
+  ],
+};
+
 function stubBackend(
   counts: unknown = COUNTS,
   feedback: unknown = FEEDBACK,
   topOutcome: unknown = TOP_OUTCOME,
   topReason: unknown = TOP_REASON,
+  topDomain: unknown = TOP_DOMAIN,
+  topFailingDomain: unknown = TOP_FAILING_DOMAIN,
+  series: unknown = SERIES,
 ): void {
   vi.stubGlobal(
     'fetch',
@@ -64,11 +97,17 @@ function stubBackend(
       const text = String(url);
       const payload = text.includes('/api/v1/admin/feedback/summary')
         ? feedback
-        : text.includes('/api/v1/admin/analytics/top') && text.includes('prop=reason')
-          ? topReason
-          : text.includes('/api/v1/admin/analytics/top')
-            ? topOutcome
-            : counts;
+        : text.includes('/api/v1/admin/analytics/series')
+          ? series
+          : text.includes('/api/v1/admin/analytics/top') && text.includes('filter_value=failed')
+            ? topFailingDomain
+            : text.includes('/api/v1/admin/analytics/top') && text.includes('prop=domain')
+              ? topDomain
+              : text.includes('/api/v1/admin/analytics/top') && text.includes('prop=reason')
+                ? topReason
+                : text.includes('/api/v1/admin/analytics/top')
+                  ? topOutcome
+                  : counts;
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -115,8 +154,8 @@ describe('AnalyticsPanel', () => {
     await screen.findByTestId('analytics-total');
     await screen.findByTestId('feedback-total');
     await screen.findByTestId('crawler-summary');
-    await waitFor(() => expect(impl).toHaveBeenCalledTimes(4));
-    expect(seen).toEqual(['s3cret', 's3cret', 's3cret', 's3cret']);
+    await waitFor(() => expect(impl).toHaveBeenCalledTimes(7));
+    expect(seen).toEqual(['s3cret', 's3cret', 's3cret', 's3cret', 's3cret', 's3cret', 's3cret']);
   });
 
   it('renders crawler outcomes and top reasons', async () => {
@@ -124,10 +163,14 @@ describe('AnalyticsPanel', () => {
     render(<AnalyticsPanel adminToken="" />);
     expect(await screen.findByTestId('crawler-by-outcome')).toHaveTextContent('skipped');
     expect(screen.getByTestId('crawler-by-reason')).toHaveTextContent('denied by deny_domains (2)');
+    expect(screen.getByTestId('crawler-success-rate')).toHaveTextContent('25% fetched (1/4)');
+    expect(screen.getByTestId('crawler-throughput')).toHaveTextContent('peak 8/day');
+    expect(screen.getByTestId('crawler-by-domain')).toHaveTextContent('example.com');
+    expect(screen.getByTestId('crawler-failing-domains')).toHaveTextContent('example.com (1)');
   });
 
   it('degrades to empty panels when the store is unavailable', async () => {
-    stubBackend(null, null, null, null);
+    stubBackend(null, null, null, null, null, null, null);
     render(<AnalyticsPanel adminToken="" />);
     expect(await screen.findByTestId('analytics-empty')).toBeInTheDocument();
     expect(screen.getByTestId('feedback-empty')).toBeInTheDocument();

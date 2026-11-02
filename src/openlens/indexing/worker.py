@@ -1008,6 +1008,7 @@ def _outcome_sink(
     """
     try:
         from openlens.analytics.events import AnalyticsQueue, crawl_page_event
+        from urllib.parse import urlsplit
 
         queue = AnalyticsQueue.from_app_config(
             app_config if isinstance(app_config, Mapping) else {}
@@ -1017,7 +1018,8 @@ def _outcome_sink(
 
     def _report(url: str, outcome: str, reason: str | None) -> None:
         with contextlib.suppress(Exception):
-            queue.publish_event(crawl_page_event(url, outcome, reason))
+            domain = urlsplit(url).hostname or None
+            queue.publish_event(crawl_page_event(url, outcome, reason, domain))
 
     return _report
 

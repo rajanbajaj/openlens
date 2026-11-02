@@ -6,6 +6,7 @@
  */
 
 export * from './adminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams.ts';
+export * from './adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams.ts';
 export * from './adminAnalyticsTopApiV1AdminAnalyticsTopGetParams.ts';
 export * from './adminConfigDocResponseSchema.ts';
 export * from './adminConfigDocResponseSchemaBody.ts';
@@ -13,6 +14,8 @@ export * from './adminConfigPutSchema.ts';
 export * from './adminConfigPutSchemaBody.ts';
 export * from './analyticsCountsSchema.ts';
 export * from './analyticsCountsSchemaByName.ts';
+export * from './analyticsSeriesPointSchema.ts';
+export * from './analyticsSeriesSchema.ts';
 export * from './analyticsTopEntrySchema.ts';
 export * from './analyticsTopSchema.ts';
 export * from './chatCitationSchema.ts';

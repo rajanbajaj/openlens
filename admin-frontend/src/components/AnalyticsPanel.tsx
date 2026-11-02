@@ -1,7 +1,34 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { fetchAnalyticsCounts, fetchAnalyticsTop, fetchFeedbackSummary } from '../api/client.ts';
-import type { AnalyticsCounts, AnalyticsTop, FeedbackSummary } from '../api/types.ts';
+import {
+  fetchAnalyticsCounts,
+  fetchAnalyticsSeries,
+  fetchAnalyticsTop,
+  fetchFeedbackSummary,
+} from '../api/client.ts';
+import type {
+  AnalyticsCounts,
+  AnalyticsSeries,
+  AnalyticsTop,
+  FeedbackSummary,
+} from '../api/types.ts';
+
+/** Text-sparkline blocks for the throughput strip (no chart dependency). */
+const SPARK_LEVELS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/** Compact sparkline over per-bucket counts (empty when all zero). */
+export function sparkline(counts: number[]): string {
+  const peak = Math.max(0, ...counts);
+  if (peak <= 0) return '';
+  return counts
+    .map(
+      (count) =>
+        SPARK_LEVELS[
+          Math.min(SPARK_LEVELS.length - 1, Math.round((count / peak) * (SPARK_LEVELS.length - 1)))
+        ],
+    )
+    .join('');
+}
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
@@ -54,11 +81,37 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
+  const crawlDomainQuery = useQuery({
+    queryKey: ['admin', 'analytics-top', 'crawl.page', 'domain', days, adminToken],
+    queryFn: () => fetchAnalyticsTop('crawl.page', 'domain', days, 10, adminToken),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const crawlFailingDomainQuery = useQuery({
+    queryKey: ['admin', 'analytics-top', 'crawl.page', 'domain', 'failed', days, adminToken],
+    queryFn: () =>
+      fetchAnalyticsTop('crawl.page', 'domain', days, 10, adminToken, 'outcome', 'failed'),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const crawlBucket = days <= 7 ? 'hour' : 'day';
+  const crawlSeriesQuery = useQuery({
+    queryKey: ['admin', 'analytics-series', 'crawl.page', crawlBucket, days, adminToken],
+    queryFn: () => fetchAnalyticsSeries('crawl.page', crawlBucket, days, adminToken),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
 
   const counts: AnalyticsCounts | null | undefined = countsQuery.data;
   const feedback: FeedbackSummary | null | undefined = feedbackQuery.data;
   const crawlOutcomes: AnalyticsTop | null | undefined = crawlOutcomeQuery.data;
   const crawlReasons: AnalyticsTop | null | undefined = crawlReasonQuery.data;
+  const crawlDomains: AnalyticsTop | null | undefined = crawlDomainQuery.data;
+  const crawlFailingDomains: AnalyticsTop | null | undefined = crawlFailingDomainQuery.data;
+  const crawlSeries: AnalyticsSeries | null | undefined = crawlSeriesQuery.data;
 
   useEffect(() => {
     if (countsQuery.isError || (countsQuery.isSuccess && countsQuery.data === null)) {
@@ -72,18 +125,16 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   }, [feedbackQuery.isError, feedbackQuery.isSuccess, feedbackQuery.data]);
 
   async function refresh() {
-    const [countsResult, feedbackResult, outcomeResult, reasonResult] = await Promise.all([
+    const results = await Promise.all([
       countsQuery.refetch(),
       feedbackQuery.refetch(),
       crawlOutcomeQuery.refetch(),
       crawlReasonQuery.refetch(),
+      crawlDomainQuery.refetch(),
+      crawlFailingDomainQuery.refetch(),
+      crawlSeriesQuery.refetch(),
     ]);
-    if (
-      countsResult.isError ||
-      feedbackResult.isError ||
-      outcomeResult.isError ||
-      reasonResult.isError
-    ) {
+    if (results.some((result) => result.isError)) {
       pushToast('Refresh failed.', 'error');
     }
   }
@@ -92,7 +143,10 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     countsQuery.isPending ||
     feedbackQuery.isPending ||
     crawlOutcomeQuery.isPending ||
-    crawlReasonQuery.isPending;
+    crawlReasonQuery.isPending ||
+    crawlDomainQuery.isPending ||
+    crawlFailingDomainQuery.isPending ||
+    crawlSeriesQuery.isPending;
   const eventEntries = counts ? Object.entries(counts.by_name).sort((a, b) => b[1] - a[1]) : [];
   const actionEntries = feedback
     ? Object.entries(feedback.by_action).sort((a, b) => b[1] - a[1])
@@ -155,35 +209,98 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
           )}
 
           <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawler</h4>
-          {crawlOutcomes == null && crawlReasons == null ? (
+          {crawlOutcomes == null &&
+          crawlReasons == null &&
+          crawlDomains == null &&
+          crawlFailingDomains == null &&
+          crawlSeries == null ? (
             <p data-testid="crawler-empty" className="my-ol-s text-ol-s">
               No crawler activity — workers have not reported page outcomes yet.
             </p>
           ) : (
             <Card data-testid="crawler-summary">
-              {crawlOutcomes != null && crawlOutcomes.top.length > 0 && (
-                <ul
-                  data-testid="crawler-by-outcome"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {crawlOutcomes.top.map((entry) => (
-                    <li key={entry.value} className="break-all">
-                      <Badge>{entry.count}</Badge> {entry.value}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {crawlReasons != null && crawlReasons.top.length > 0 && (
-                <p data-testid="crawler-by-reason" className="my-ol-s text-ol-s">
-                  Top reasons:{' '}
-                  {crawlReasons.top.map((entry) => `${entry.value} (${entry.count})`).join(', ')}
-                </p>
-              )}
-              {crawlOutcomes != null &&
-                crawlOutcomes.top.length === 0 &&
-                (crawlReasons == null || crawlReasons.top.length === 0) && (
-                  <p className="my-ol-s text-ol-s">No page outcomes recorded in this window.</p>
-                )}
+              {(() => {
+                const outcomeCounts: Record<string, number> = {};
+                for (const entry of crawlOutcomes?.top ?? []) {
+                  outcomeCounts[entry.value] = entry.count;
+                }
+                const total =
+                  (outcomeCounts.fetched ?? 0) +
+                  (outcomeCounts.failed ?? 0) +
+                  (outcomeCounts.skipped ?? 0);
+                const successRate =
+                  total > 0
+                    ? `${Math.round(((outcomeCounts.fetched ?? 0) / total) * 100)}% fetched (${outcomeCounts.fetched ?? 0}/${total})`
+                    : null;
+                const seriesCounts = (crawlSeries?.points ?? []).map((point) => point.count);
+                const seriesPeak = Math.max(0, ...seriesCounts);
+                return (
+                  <>
+                    {crawlOutcomes != null && crawlOutcomes.top.length > 0 && (
+                      <ul
+                        data-testid="crawler-by-outcome"
+                        className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                      >
+                        {crawlOutcomes.top.map((entry) => (
+                          <li key={entry.value} className="break-all">
+                            <Badge>{entry.count}</Badge> {entry.value}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {successRate != null && (
+                      <p data-testid="crawler-success-rate" className="my-ol-s text-ol-s">
+                        Success rate: {successRate}
+                      </p>
+                    )}
+                    {seriesCounts.length > 0 && seriesPeak > 0 && (
+                      <p data-testid="crawler-throughput" className="my-ol-s">
+                        <span aria-hidden="true">{sparkline(seriesCounts)}</span>{' '}
+                        <span className="text-ol-s">
+                          {crawlSeries?.bucket === 'hour' ? 'hourly' : 'daily'} pages · peak{' '}
+                          {seriesPeak}/{crawlSeries?.bucket === 'hour' ? 'hour' : 'day'}
+                        </span>
+                      </p>
+                    )}
+                    {crawlDomains != null && crawlDomains.top.length > 0 && (
+                      <ul
+                        data-testid="crawler-by-domain"
+                        className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                      >
+                        {crawlDomains.top.map((entry) => (
+                          <li key={entry.value} className="break-all">
+                            <Badge>{entry.count}</Badge> {entry.value}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {crawlFailingDomains != null && crawlFailingDomains.top.length > 0 && (
+                      <p data-testid="crawler-failing-domains" className="my-ol-s text-ol-s">
+                        Top failing domains:{' '}
+                        {crawlFailingDomains.top
+                          .map((entry) => `${entry.value} (${entry.count})`)
+                          .join(', ')}
+                      </p>
+                    )}
+                    {crawlReasons != null && crawlReasons.top.length > 0 && (
+                      <p data-testid="crawler-by-reason" className="my-ol-s text-ol-s">
+                        Top reasons:{' '}
+                        {crawlReasons.top
+                          .map((entry) => `${entry.value} (${entry.count})`)
+                          .join(', ')}
+                      </p>
+                    )}
+                    {crawlOutcomes != null &&
+                      crawlOutcomes.top.length === 0 &&
+                      (crawlReasons == null || crawlReasons.top.length === 0) &&
+                      (crawlDomains == null || crawlDomains.top.length === 0) && (
+                        <p className="my-ol-s text-ol-s">
+                          No page outcomes recorded in this window.
+                        </p>
+                      )}
+                  </>
+                );
+              })()}
             </Card>
           )}
 

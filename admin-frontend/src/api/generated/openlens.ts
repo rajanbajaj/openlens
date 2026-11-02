@@ -6,10 +6,12 @@
  */
 import type {
   AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams,
+  AdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams,
   AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams,
   AdminConfigDocResponseSchema,
   AdminConfigPutSchema,
   AnalyticsCountsSchema,
+  AnalyticsSeriesSchema,
   AnalyticsTopSchema,
   ChatRequestSchema,
   ChatResponseSchema,
@@ -466,9 +468,12 @@ export const getAdminAnalyticsTopApiV1AdminAnalyticsTopGetUrl = (
  * Admin-only top-values breakdown for one analytics event prop.
  *
  * Same gate as the counts endpoint; fail-open store (503 when
- * unreachable). ``name`` must be a known event and ``prop`` a plain
- * identifier (fail-closed, 422 otherwise) so no user input reaches
- * the aggregation query.
+ * unreachable). ``name`` must be a known event and ``prop`` (plus the
+ * optional ``filter_prop``) a plain identifier; ``filter_value`` is
+ * charset-restricted (fail-closed, 422 otherwise) so no user input
+ * reaches the aggregation query raw. The optional
+ * ``filter_prop=filter_value`` clause restricts rows first — e.g.
+ * top domains among failed pages only.
  * @summary Admin Analytics Top
  */
 export const adminAnalyticsTopApiV1AdminAnalyticsTopGet = async (
@@ -490,6 +495,75 @@ export const adminAnalyticsTopApiV1AdminAnalyticsTopGet = async (
     status: res.status,
     headers: res.headers,
   } as adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse;
+};
+
+export type adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse200 = {
+  data: AnalyticsSeriesSchema;
+  status: 200;
+};
+
+export type adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponseSuccess =
+  adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse200 & {
+    headers: Headers;
+  };
+export type adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponseError =
+  adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse422 & {
+    headers: Headers;
+  };
+
+export type adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse =
+  | adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponseSuccess
+  | adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponseError;
+
+export const getAdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetUrl = (
+  params?: AdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/admin/analytics/series?${stringifiedParams}`
+    : `/api/v1/admin/analytics/series`;
+};
+
+/**
+ * Admin-only per-bucket event counts (throughput) over a window.
+ *
+ * Same gate and fail-open store as the counts endpoint. ``bucket`` is
+ * ``hour`` or ``day``; points come back oldest-first.
+ * @summary Admin Analytics Series
+ */
+export const adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet = async (
+  params?: AdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams,
+  options?: RequestInit,
+): Promise<adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse> => {
+  const res = await fetch(getAdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetResponse;
 };
 
 export type listPrefsApiV1PrefsGetResponse200 = {

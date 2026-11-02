@@ -45,7 +45,7 @@ EVENT_NAMES = frozenset(
 EVENT_PROPS: dict[str, frozenset[str]] = {
     "search.feedback": frozenset({"doc_id", "action", "reason"}),
     "search.served": frozenset({"query_hash", "mode", "result_count"}),
-    "crawl.page": frozenset({"url", "outcome", "reason"}),
+    "crawl.page": frozenset({"url", "domain", "outcome", "reason"}),
 }
 
 MAX_PROP_KEYS = 16
@@ -138,17 +138,20 @@ def served_event(query: str, mode: str, result_count: int) -> AnalyticsEvent:
 
 
 def crawl_page_event(
-    url: str, outcome: str, reason: str | None = None
+    url: str, outcome: str, reason: str | None = None, domain: str | None = None
 ) -> AnalyticsEvent:
     """Build the worker-side event for one processed crawl page.
 
     ``outcome`` is one of ``fetched`` / ``failed`` / ``skipped`` and
     ``reason`` is the short terminal reason (deny rule, robots, fetch
-    error, ...). Fire-and-forget: workers emit, never aggregate.
+    error, ...). ``domain`` is the registrable host slice for
+    per-domain splits. Fire-and-forget: workers emit, never aggregate.
     """
     props: dict[str, Any] = {"url": url, "outcome": outcome}
     if reason:
         props["reason"] = reason
+    if domain:
+        props["domain"] = domain
     return AnalyticsEvent(name="crawl.page", props=props)
 
 

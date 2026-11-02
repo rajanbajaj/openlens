@@ -51,11 +51,20 @@ def _window_cutoff(since_days: int) -> str:
     )
 
 
-def _check_top_args(name: str, prop: str) -> None:
-    """Fail-closed validation for top-prop aggregation arguments."""
+def _event_names() -> frozenset[str]:
     from openlens.analytics.events import EVENT_NAMES
 
-    if name not in EVENT_NAMES:
+    return EVENT_NAMES
+
+
+#: Filter values ride inside single-quoted literals in the ClickHouse
+#: query builder, so they are restricted to a quote-free charset.
+_FILTER_VALUE_RE = re.compile(r"^[A-Za-z0-9 _.\-/:()@]+$")
+
+
+def _check_top_args(name: str, prop: str) -> None:
+    """Fail-closed validation for top-prop aggregation arguments."""
+    if name not in _event_names():
         raise ProviderError(
             f"unknown analytics event: {name}",
             provider_name=_PROVIDER_NAME,
@@ -67,6 +76,36 @@ def _check_top_args(name: str, prop: str) -> None:
             provider_name=_PROVIDER_NAME,
             code=ProviderError.INVALID_REQUEST,
         )
+
+
+def _check_filter_args(filter_prop: str | None, filter_value: str | None) -> None:
+    """Fail-closed validation for the optional top-prop row filter."""
+    if filter_prop is None and filter_value is None:
+        return
+    if (
+        not isinstance(filter_prop, str)
+        or not _TOP_PROP_KEY_RE.match(filter_prop)
+        or not isinstance(filter_value, str)
+        or not _FILTER_VALUE_RE.match(filter_value)
+    ):
+        raise ProviderError(
+            f"invalid analytics filter: {filter_prop!r}={filter_value!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+
+
+def _bucket_sql(bucket: str) -> str:
+    """SQLite bucket expression (hour or day); fail-closed on the name."""
+    if bucket == "hour":
+        return "strftime('%Y-%m-%d %H:00', at)"
+    if bucket == "day":
+        return "date(at)"
+    raise ProviderError(
+        f"invalid analytics bucket: {bucket!r}",
+        provider_name=_PROVIDER_NAME,
+        code=ProviderError.INVALID_REQUEST,
+    )
 
 
 class AnalyticsStore:
@@ -151,7 +190,13 @@ class AnalyticsStore:
             ) from exc
 
     def top_props(
-        self, name: str, prop: str, since_days: int = 30, limit: int = 10
+        self,
+        name: str,
+        prop: str,
+        since_days: int = 30,
+        limit: int = 10,
+        filter_prop: str | None = None,
+        filter_value: str | None = None,
     ) -> list[tuple[str, int]]:
         """Top prop values for one event name over the trailing window.
 
@@ -160,23 +205,63 @@ class AnalyticsStore:
         first. Powers the admin top-reasons view.
         """
         _check_top_args(name, prop)
+        _check_filter_args(filter_prop, filter_value)
         capped = max(1, min(int(limit or 10), 100))
         cutoff = _window_cutoff(since_days)
         path = f"$.{prop}"
+        where = ["name = ?", "at >= ?"]
+        args: list[Any] = [name, cutoff]
+        if filter_prop is not None and filter_value is not None:
+            where.append("json_extract(props, ?) = ?")
+            args.extend([f"$.{filter_prop}", filter_value])
+        where_sql = " AND ".join(where)
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT json_extract(props, ?) AS v, COUNT(*) AS n"
-                    " FROM analytics_events"
-                    " WHERE name = ? AND at >= ?"
+                    f"SELECT json_extract(props, ?) AS v, COUNT(*) AS n"  # noqa: S608
+                    f" FROM analytics_events WHERE {where_sql}"
                     " AND v IS NOT NULL AND v != ''"
                     " GROUP BY v ORDER BY n DESC, v ASC LIMIT ?",
-                    (path, name, cutoff, capped),
+                    (path, *args, capped),
                 ).fetchall()
                 return [(str(row["v"]), int(row["n"])) for row in rows]
         except Exception as exc:
             raise ProviderError(
                 f"failed to aggregate analytics props: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def series(
+        self, name: str, bucket: str = "day", since_days: int = 30, limit: int = 500
+    ) -> list[tuple[str, int]]:
+        """Per-bucket event counts over the trailing window (throughput).
+
+        ``bucket`` is ``hour`` or ``day``; returns ``(bucket_start, count)``
+        pairs oldest-first, capped at ``limit`` buckets.
+        """
+        if name not in _event_names():
+            raise ProviderError(
+                f"unknown analytics event: {name}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.INVALID_REQUEST,
+            )
+        bucket_sql = _bucket_sql(bucket)
+        capped = max(1, min(int(limit or 500), 2000))
+        cutoff = _window_cutoff(since_days)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT {bucket_sql} AS b, COUNT(*) AS n"  # noqa: S608
+                    " FROM analytics_events"
+                    " WHERE name = ? AND at >= ?"
+                    " GROUP BY b ORDER BY b ASC LIMIT ?",
+                    (name, cutoff, capped),
+                ).fetchall()
+                return [(str(row["b"]), int(row["n"])) for row in rows]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate analytics series: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
@@ -403,27 +488,81 @@ class ClickHouseAnalyticsStore:
             ) from exc
 
     def top_props(
-        self, name: str, prop: str, since_days: int = 30, limit: int = 10
+        self,
+        name: str,
+        prop: str,
+        since_days: int = 30,
+        limit: int = 10,
+        filter_prop: str | None = None,
+        filter_value: str | None = None,
     ) -> list[tuple[str, int]]:
         """Top prop values for one event name (fail-closed, see SQLite)."""
         _check_top_args(name, prop)
+        _check_filter_args(filter_prop, filter_value)
         window = max(0, int(since_days))
         capped = max(1, min(int(limit or 10), 100))
-        # Both interpolations are allowlisted above: ``name`` is a known
-        # event, ``prop`` a plain identifier — no user input reaches SQL.
+        # All interpolations are allowlisted above: ``name`` is a known
+        # event, props are plain identifiers, the filter value matches a
+        # quote-free charset — no user input reaches SQL raw.
         value_sql = f"JSONExtractString(props, '{prop}')"
+        clauses = [
+            f"name = '{name}'",
+            f"at >= now() - INTERVAL {window} DAY",
+            "v != ''",
+        ]
+        if filter_prop is not None and filter_value is not None:
+            clauses.append(
+                f"JSONExtractString(props, '{filter_prop}') = '{filter_value}'"
+            )
         try:
             result = self._client.query(
                 f"SELECT {value_sql} AS v, COUNT() AS n "  # noqa: S608
                 f"FROM {self._table()} "
-                f"WHERE name = '{name}' "
-                f"AND at >= now() - INTERVAL {window} DAY "
-                f"AND v != '' GROUP BY v ORDER BY n DESC, v ASC LIMIT {capped}"
+                f"WHERE {' AND '.join(clauses)} "
+                f"GROUP BY v ORDER BY n DESC, v ASC LIMIT {capped}"
             )
             return [(str(v), int(n)) for v, n in result.result_rows]
         except Exception as exc:
             raise ProviderError(
                 f"failed to aggregate analytics props: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def series(
+        self, name: str, bucket: str = "day", since_days: int = 30, limit: int = 500
+    ) -> list[tuple[str, int]]:
+        """Per-bucket event counts over the trailing window (throughput)."""
+        if name not in _event_names():
+            raise ProviderError(
+                f"unknown analytics event: {name}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.INVALID_REQUEST,
+            )
+        if bucket == "hour":
+            bucket_sql = "toString(toStartOfHour(at))"
+        elif bucket == "day":
+            bucket_sql = "toString(toStartOfDay(at))"
+        else:
+            raise ProviderError(
+                f"invalid analytics bucket: {bucket!r}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.INVALID_REQUEST,
+            )
+        window = max(0, int(since_days))
+        capped = max(1, min(int(limit or 500), 2000))
+        try:
+            result = self._client.query(
+                f"SELECT {bucket_sql} AS b, COUNT() AS n "  # noqa: S608
+                f"FROM {self._table()} "
+                f"WHERE name = '{name}' "
+                f"AND at >= now() - INTERVAL {window} DAY "
+                f"GROUP BY b ORDER BY b ASC LIMIT {capped}"
+            )
+            return [(str(b), int(n)) for b, n in result.result_rows]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate analytics series: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

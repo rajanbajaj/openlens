@@ -8,6 +8,7 @@ import type {
   AdminConfigDoc,
   AiCitation,
   AnalyticsCounts,
+  AnalyticsSeries,
   AnalyticsTop,
   CacheStatus,
   CrawlRequest,
@@ -368,6 +369,24 @@ export function isAnalyticsTop(value: unknown): value is AnalyticsTop {
     typeof value.total === 'number' &&
     Array.isArray(value.top) &&
     value.top.every(isAnalyticsTopEntry)
+  );
+}
+
+/** One throughput point. */
+function isAnalyticsSeriesPoint(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.t === 'string' && typeof value.count === 'number';
+}
+
+/** `GET /api/v1/admin/analytics/series` response shape. */
+export function isAnalyticsSeries(value: unknown): value is AnalyticsSeries {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.name === 'string' &&
+    typeof value.bucket === 'string' &&
+    typeof value.days === 'number' &&
+    Array.isArray(value.points) &&
+    value.points.every(isAnalyticsSeriesPoint)
   );
 }
 
