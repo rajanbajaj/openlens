@@ -37,6 +37,17 @@ and 12 partitions could host all 6 workers.
 
 ## How to confirm on prod
 
+```mermaid
+flowchart TB
+    A[kafka-ui shows 0–2 members<br/>all crawlers Up] --> B{Container uptimes<br/>resetting?}
+    B -->|yes| C[Crash loop:<br/>read crawler logs]
+    B -->|no| D{Heartbeats fresh in<br/>/frontier/status?}
+    D -->|no| E[Workers wedged:<br/>check backend logs]
+    D -->|yes| F{stats null +<br/>claimed 0?}
+    F -->|yes| G[Still in first drain:<br/>expected, watch queue_depth]
+    F -->|no, has stats| H[Drains outrun max_poll_interval:<br/>kick cycle — shorten drains]
+```
+
 1. `docker logs openlens-local-crawler-<n>` shows only the startup
    banner — consistent with a blocking drain (nothing prints until
    it returns), not a crash (uptime would reset).

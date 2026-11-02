@@ -6,6 +6,17 @@ with AI backends swappable via config, and filtering, ranking, and
 enrichment owned by independent plugins behind stable interfaces
 (`src/openlens/core/interfaces.py` + `core/context.py`).
 
+```mermaid
+flowchart TB
+    U[Browser :3000] --> B[Backend API :8000]
+    A[Admin console :3001] --> B
+    B --> PG[(Postgres: documents + frontier)]
+    B --> K[Kafka: crawl.urls + analytics.events]
+    W[Crawler workers] <--> K
+    W --> PG
+    AW[Analytics worker] --> CH[(ClickHouse)]
+```
+
 ## Features
 
 - Search modes: default, news, shopping, travel, child-safe — plus an

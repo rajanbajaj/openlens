@@ -45,6 +45,17 @@ Regression test: `test_run_kafka_worker_idle_drain_sends_heartbeat` in
 
 ## How to confirm on prod
 
+```mermaid
+flowchart TB
+    A[Admin shows 0 workers] --> B{Backend reachable?}
+    B -->|no| C[Backend down or wedged:<br/>logs + /healthz first]
+    B -->|yes| D{Probe errors?}
+    D -->|yes: disabled/partial| E[Config or backend-side defect]
+    D -->|no| F{Reporter alive?}
+    F -->|yes| G[Registry healthy but empty:<br/>UI-only suspect — hard refresh]
+    F -->|no, all silent| H[Host-wide outage:<br/>reporters, scheduler, healthchecks]
+```
+
 1. Deploy the release, restart all crawler containers, then
    `POST /api/v1/frontier/resume` once with the admin token.
 2. Within ~2 poll intervals (80 s) workers reappear in

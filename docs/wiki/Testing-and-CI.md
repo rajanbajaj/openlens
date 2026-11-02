@@ -21,6 +21,15 @@ expectation only when the task explicitly changes it.
 
 ## CI (`.github/workflows/ci.yml`)
 
+```mermaid
+flowchart LR
+    P[push / PR] --> BE[backend gates]
+    BE --> FE[frontend gates]
+    FE --> S[gitleaks secret scan]
+    S -->|green| M[mergeable]
+    S -->|tag v*| R[release workflow]
+```
+
 Runs on every push/PR: backend gates, frontend gates, then a
 full-history gitleaks secret scan. CI never deploys — only a `v*`
 tag triggers the [release workflow](Release-Process).

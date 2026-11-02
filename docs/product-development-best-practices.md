@@ -117,6 +117,15 @@ message and diff is scanned for leaked credentials.
   `max_poll_interval_ms`, so a busy consumer is never mistaken for a
   dead one and rebalanced; link fan-out is one broker flush per drain
   (`KafkaQueue.publish_many`), not one round-trip per link.
+
+  ```mermaid
+  flowchart LR
+      D[startup drain ≤ budget] --> P[poll]
+      P -->|messages| M[bounded per-message drain]
+      M --> P
+      P -->|idle × N| I[bounded idle drain]
+      I --> P
+  ```
 - The worker degrades instead of dying: per-link publish, eviction,
   discovery, and reporting failures are suppressed at the boundary —
   the store row is the durable record — so a full queue or a down

@@ -26,6 +26,17 @@ sustained inserts >~10k/sec, or dashboards routinely scanning >100M rows.
 The Kafka topic decouples producers, so a future engine swap needs no
 re-instrumentation.
 
+## Flow
+
+```mermaid
+flowchart LR
+    S[search / feedback API] --> T[(analytics.events)]
+    C[crawl.page per fetch attempt] --> T
+    T --> AW[analytics-worker<br/>batch flush / 5 s]
+    AW --> CH[(ClickHouse<br/>TTL, no DELETEs)]
+    CH --> AD[Admin: counts / top / series]
+```
+
 ## Events
 
 Closed allowlist in `src/openlens/analytics/events.py` — unknown names,

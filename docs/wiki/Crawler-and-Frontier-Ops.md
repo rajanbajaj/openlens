@@ -11,6 +11,18 @@ and same-domain scope. Claimed rows carry an owner lease
 (`frontier.lease_ttl_s`, heartbeat every TTL/3); only expired
 leases are requeued.
 
+```mermaid
+stateDiagram-v2
+    [*] --> queued: seed / discover / requeue
+    queued --> active: claim (owner lease, 120 s TTL)
+    active --> done: fetch + index ok
+    active --> failed: terminal failure
+    active --> queued: lease expiry → requeue
+    failed --> queued: requeue (attempts reset, error cleared)
+    queued --> skipped: bulk domain skip
+    failed --> [*]: purge domain history
+```
+
 ## Discovery and freshness
 
 - Sitemap/RSS discovery feeds per domain config, run on an
