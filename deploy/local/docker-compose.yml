@@ -18,6 +18,7 @@ services:
     mem_limit: 1G
     cpus: 1.0
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     environment:
@@ -80,6 +81,7 @@ services:
     mem_limit: 512M
     cpus: 0.5
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:
@@ -103,6 +105,7 @@ services:
     mem_limit: 512M
     cpus: 0.5
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "${ADMIN_FRONTEND_PORT:-3001}:80"
     depends_on:
@@ -144,6 +147,7 @@ services:
     mem_limit: 1G
     cpus: 0.25
     logging: *default-logging
+    restart: unless-stopped
     volumes:
       - openlens-data:/app/data
     environment:
@@ -210,6 +214,7 @@ services:
     mem_limit: 1G
     cpus: 0.25
     logging: *default-logging
+    restart: unless-stopped
     volumes:
       - openlens-data:/app/data
     environment:
@@ -279,6 +284,7 @@ services:
     mem_limit: 4G
     cpus: 2.0
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "127.0.0.1:9092:9092"
     environment:
@@ -320,6 +326,7 @@ services:
     mem_limit: 1G
     cpus: 2.0
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "${KAFKA_UI_HOST:-127.0.0.1}:${KAFKA_UI_PORT:-8080}:8080"
     environment:
@@ -348,6 +355,7 @@ services:
     mem_limit: 128M
     cpus: 0.25
     logging: *default-logging
+    restart: unless-stopped
     ports:
       - "${DOZZLE_HOST:-0.0.0.0}:${DOZZLE_PORT:-8082}:8080"
     volumes:
@@ -364,6 +372,7 @@ services:
     mem_limit: 4G
     cpus: 4.0
     logging: *default-logging
+    restart: unless-stopped
     # Connection headroom for crawler scale-out: each backend/crawler
     # process holds ~2 pools x OPENLENS_PG_POOL_SIZE connections
     # (default 5 -> ~10). 400 covers 24 crawler replicas + backend +
@@ -407,6 +416,7 @@ services:
     mem_limit: 1G
     cpus: 1.0
     logging: *default-logging
+    restart: unless-stopped
     shm_size: 256mb
     command: ["bash", "/entry/postgres-replica-entrypoint.sh"]
     environment:
@@ -439,6 +449,7 @@ services:
     mem_limit: 512M
     cpus: 0.5
     logging: *default-logging
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@openlens.io}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-openlens}
@@ -464,6 +475,7 @@ services:
     mem_limit: 512M
     cpus: 0.5
     logging: *default-logging
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
@@ -491,6 +503,7 @@ services:
     mem_limit: 2G
     cpus: 1.0
     logging: *default-logging
+    restart: unless-stopped
     # ClickHouse raises its open-file limit at startup; the container needs
     # matching ulimits or the server aborts during initialisation.
     ulimits:
@@ -538,6 +551,7 @@ services:
       restart_policy:
         condition: on-failure
     logging: *default-logging
+    restart: unless-stopped
     environment:
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
       OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092}
