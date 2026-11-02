@@ -457,8 +457,11 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
     command: ["sh", "-c", "exec python -m openlens.cli analytics-worker --batch-size \"$${OPENLENS_ANALYTICS_BATCH_SIZE:-100}\""]
-    mem_limit: 1G
-    cpus: 0.5
+    mem_limit: 512M
+    cpus: 0.25
+    # Replica count from the environment (default 1). The worker consumes
+    # the analytics.events group, so replicas split partitions.
+    scale: ${ANALYTICS_WORKER_SCALE:-1}
     logging: *default-logging
     environment:
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
