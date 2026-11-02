@@ -274,6 +274,36 @@ export interface FeedbackSummary {
   top_docs: FeedbackDocSummary[];
 }
 
+/** One failed URL with its short terminal reason. */
+export interface FrontierFailedUrl {
+  url: string;
+  reason?: string | null;
+  attempts?: number | null;
+}
+
+/** Paginated failed-URL list response. */
+export interface FrontierFailedList {
+  urls: FrontierFailedUrl[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** One top prop value with its count. */
+export interface AnalyticsTopEntry {
+  value: string;
+  count: number;
+}
+
+/** Top-values breakdown for one analytics event prop. */
+export interface AnalyticsTop {
+  name: string;
+  prop: string;
+  days: number;
+  total: number;
+  top: AnalyticsTopEntry[];
+}
+
 /** Frontier crawl settings (PUT body is strict: unknown keys rejected). */
 export interface FrontierSettings {
   max_pages: number;

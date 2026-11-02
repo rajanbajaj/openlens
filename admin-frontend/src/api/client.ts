@@ -9,10 +9,12 @@
 import {
   isAdminConfigDoc,
   isAnalyticsCounts,
+  isAnalyticsTop,
   isCrawlRequest,
   isCrawlRequestList,
   isErrorEnvelope,
   isFeedbackSummary,
+  isFrontierFailedList,
   isFrontierSettingsResponse,
   isFrontierStatus,
   isFrontierWorkersResponse,
@@ -21,19 +23,23 @@ import {
 } from './guard.ts';
 import {
   adminAnalyticsCountsApiV1AdminAnalyticsCountsGet,
+  adminAnalyticsTopApiV1AdminAnalyticsTopGet,
   adminFeedbackSummaryApiV1AdminFeedbackSummaryGet,
   frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
   frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
+  frontierFailedApiV1FrontierFailedGet,
   frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet,
 } from './generated/openlens.ts';
 import type {
   AdminConfigDoc,
   AdminConfigName,
   AnalyticsCounts,
+  AnalyticsTop,
   CrawlRequest,
   CrawlRequestList,
   FeedbackRequest,
   FeedbackSummary,
+  FrontierFailedList,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -693,4 +699,51 @@ export async function fetchFeedbackSummary(
   }
   if (res.status !== 200) return null;
   return isFeedbackSummary(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/admin/analytics/top` (admin-only
+ * read). Resolves to `null` on transport, auth, store-unavailable
+ * (503), invalid name/prop (422), or shape failures. Pass
+ * `adminToken` when the backend sets
+ * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function fetchAnalyticsTop(
+  name: string = 'crawl.page',
+  prop: string = 'reason',
+  days: number = 30,
+  limit: number = 10,
+  adminToken: string = '',
+): Promise<AnalyticsTop | null> {
+  let res;
+  try {
+    res = await adminAnalyticsTopApiV1AdminAnalyticsTopGet(
+      { name, prop, days, limit },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isAnalyticsTop(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/failed` (open read, like the
+ * status endpoint). Resolves to `null` on transport or shape
+ * failures so the frontier view degrades to an empty section with a
+ * notice instead of crashing the page.
+ */
+export async function fetchFailedUrls(
+  limit: number = 20,
+  offset: number = 0,
+): Promise<FrontierFailedList | null> {
+  let res;
+  try {
+    res = await frontierFailedApiV1FrontierFailedGet({ limit, offset });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFrontierFailedList(res.data) ? res.data : null;
 }

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import {
   clearFrontier,
   decideCrawlRequest,
+  fetchFailedUrls,
   frontierLiveUrl,
   listCrawlRequests,
   pauseFrontier,
@@ -24,6 +25,7 @@ import {
 } from '../api/guard.ts';
 import type {
   CrawlRequest,
+  FrontierFailedList,
   FrontierSettings,
   FrontierStatus,
   FrontierWorker,
@@ -56,6 +58,9 @@ import { Card } from './ui/Card.tsx';
 import { Drawer } from './ui/Drawer.tsx';
 import { GlassPanel } from './ui/GlassPanel.tsx';
 import { Toasts, useToasts } from './ui/Toast.tsx';
+
+/** Failed-URL page size for the paginated admin list. */
+const FAILED_PAGE_SIZE = 20;
 
 /** Local defaults used before the backend settings load. */
 const DEFAULT_SETTINGS: FrontierSettings = {
@@ -161,6 +166,26 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     staleTime: Infinity,
   });
   const crawlRequests: CrawlRequest[] = requestsQuery.data?.requests ?? [];
+
+  // Failed URLs with reasons, paginated. The page resets whenever the
+  // drawer opens so a shrunk backlog cannot strand the view past the
+  // last page.
+  const [failedPage, setFailedPage] = useState(0);
+  const failedQuery = useQuery({
+    queryKey: ['frontier', 'failed', failedPage],
+    queryFn: () => fetchFailedUrls(FAILED_PAGE_SIZE, failedPage * FAILED_PAGE_SIZE),
+    enabled: open,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const failed: FrontierFailedList | null | undefined = failedQuery.data;
+  const failedTotal = failed?.total ?? 0;
+  const failedPages = Math.max(1, Math.ceil(failedTotal / FAILED_PAGE_SIZE));
+
+  useEffect(() => {
+    if (open) setFailedPage(0);
+  }, [open]);
 
   const [workers, setWorkers] = useState<FrontierWorker[]>([]);
 
@@ -574,6 +599,50 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                   </li>
                 ))}
               </ul>
+            )}
+
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed URLs ({failedTotal})</h4>
+            {failedQuery.isPending ? (
+              <p className="my-ol-s text-ol-s">Loading failed URLs…</p>
+            ) : failed == null || failed.urls.length === 0 ? (
+              <p data-testid="frontier-failed-empty" className="my-ol-s text-ol-s">
+                No failed URLs
+              </p>
+            ) : (
+              <>
+                <ul
+                  data-testid="frontier-failed"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {failed.urls.map((entry) => (
+                    <li key={entry.url} className="break-all">
+                      <Badge>{entry.attempts ?? 0} tries</Badge> {entry.url}
+                      {entry.reason ? <span className="text-ol-s"> · {entry.reason}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-center gap-ol-s my-ol-s">
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-failed-prev"
+                    onClick={() => setFailedPage((page) => Math.max(0, page - 1))}
+                    disabled={failedPage <= 0}
+                  >
+                    Previous
+                  </Button>
+                  <span data-testid="frontier-failed-page" className="text-ol-s">
+                    Page {failedPage + 1} of {failedPages}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-failed-next"
+                    onClick={() => setFailedPage((page) => Math.min(failedPages - 1, page + 1))}
+                    disabled={failedPage >= failedPages - 1}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
             )}
 
             <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl requests ({crawlRequests.length})</h4>

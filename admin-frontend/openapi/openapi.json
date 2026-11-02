@@ -252,6 +252,81 @@
         }
       }
     },
+    "/api/v1/admin/analytics/top": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Admin Analytics Top",
+        "description": "Admin-only top-values breakdown for one analytics event prop.\n\nSame gate as the counts endpoint; fail-open store (503 when\nunreachable). ``name`` must be a known event and ``prop`` a plain\nidentifier (fail-closed, 422 otherwise) so no user input reaches\nthe aggregation query.",
+        "operationId": "admin_analytics_top_api_v1_admin_analytics_top_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "crawl.page",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "prop",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "default": "reason",
+              "title": "Prop"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsTopSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/prefs": {
       "get": {
         "tags": [
@@ -329,6 +404,60 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FrontierStatusSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/failed": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Failed",
+        "description": "Paginated failed-URL list with reasons for the admin dashboard.\n\nOpen read like ``/frontier/status`` (URLs + short error strings only).\nNever 500s: store failures degrade to the empty list.",
+        "operationId": "frontier_failed_api_v1_frontier_failed_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierFailedListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1171,6 +1300,64 @@
         "title": "AnalyticsCountsSchema",
         "description": "Admin analytics overview: durable per-name counts over a window."
       },
+      "AnalyticsTopEntrySchema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "count"
+        ],
+        "title": "AnalyticsTopEntrySchema",
+        "description": "One top prop value with its count."
+      },
+      "AnalyticsTopSchema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "prop": {
+            "type": "string",
+            "title": "Prop"
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Days"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total"
+          },
+          "top": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsTopEntrySchema"
+            },
+            "type": "array",
+            "title": "Top"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "prop",
+          "days",
+          "total"
+        ],
+        "title": "AnalyticsTopSchema",
+        "description": "Admin top-values breakdown for one event prop over a window."
+      },
       "ChatCitationSchema": {
         "properties": {
           "ref": {
@@ -1818,6 +2005,63 @@
         "type": "object",
         "title": "FrontierDiscoverySchema",
         "description": "A worker's last discovery-pass summary (feeds + refresh).\n\n``at`` is a unix-epoch timestamp for when the worker reported the\nsummary; ``worker_id`` names the reporting worker (empty on\nper-worker entries where the parent already names it)."
+      },
+      "FrontierFailedListSchema": {
+        "properties": {
+          "urls": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierFailedUrlSchema"
+            },
+            "type": "array",
+            "title": "Urls"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierFailedListSchema",
+        "description": "Paginated failed-URL list (HTTP 200 always; empty when unreadable)."
+      },
+      "FrontierFailedUrlSchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Attempts",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "FrontierFailedUrlSchema",
+        "description": "One failed URL for the admin failed-URL view."
       },
       "FrontierNewUrlSchema": {
         "properties": {

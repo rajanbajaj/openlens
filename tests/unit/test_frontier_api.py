@@ -77,6 +77,53 @@ def test_status_payload_flags_kafka_enabled() -> None:
     assert disabled.kafka_enabled is False
 
 
+def test_failed_lists_reasons_with_pagination(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The failed-URL view shows the short terminal reason per page."""
+    from openlens.api import routes as routes_mod
+    from openlens.storage.frontier import FrontierEntry
+
+    entries = [
+        FrontierEntry(
+            url=f"https://example.com/{name}",
+            status="failed",
+            attempts=attempts,
+            last_error=reason,
+        )
+        for name, attempts, reason in [
+            ("a", 3, "fetch timeout"),
+            ("b", 2, "denied by deny_domains"),
+            ("c", 1, None),
+        ]
+    ]
+
+    class _Store:
+        def failed(self, limit: int = 100, offset: int = 0):
+            return entries[offset : offset + limit]
+
+        def counts(self):
+            return {"failed": len(entries), "total": len(entries)}
+
+    monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: _Store())
+    first = client.get("/api/v1/frontier/failed?limit=2")
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["total"] == 3
+    assert [entry["url"] for entry in body["urls"]] == [
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+    assert body["urls"][0]["reason"] == "fetch timeout"
+    assert body["urls"][0]["attempts"] == 3
+    second = client.get("/api/v1/frontier/failed?limit=2&offset=2")
+    assert second.status_code == 200, second.text
+    assert [entry["url"] for entry in second.json()["urls"]] == [
+        "https://example.com/c"
+    ]
+    assert second.json()["urls"][0]["reason"] == ""
+
+
 def test_store_overlay_preserves_kafka_enabled() -> None:
     """The store overlay rebuilds the payload; it must not drop the flag.
 

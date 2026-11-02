@@ -129,6 +129,60 @@ def test_max_pages_cap_enforced(stub_base: str) -> None:
     assert len(docs) == 1
 
 
+def test_crawl_reports_page_outcomes(stub_base: str) -> None:
+    """Each terminal page outcome emits (url, outcome, reason) once."""
+    seen: list[tuple[str, str, str | None]] = []
+    crawler = _crawler(deny_domains=["blocked.example"], max_pages=10)
+    crawler.crawl(
+        [f"{stub_base}/page1", f"{stub_base}/nope", "https://blocked.example/x"],
+        on_outcome=lambda url, outcome, reason: seen.append((url, outcome, reason)),
+    )
+    by_url = {url: (outcome, reason) for url, outcome, reason in seen}
+    assert by_url[f"{stub_base}/page1"][0] == "fetched"
+    assert by_url[f"{stub_base}/page2"][0] == "fetched"
+    assert by_url[f"{stub_base}/nope"] == ("failed", "http 404")
+    assert by_url["https://blocked.example/x"] == ("skipped", "denied by deny_domains")
+    # Popped terminal pages only: the robots-gated /private link is
+    # never queued, so it never reports.
+    assert not any(url.endswith("/private") for url, _, _ in seen)
+
+
+def test_crawl_without_sink_stays_silent(stub_base: str) -> None:
+    """No on_outcome means zero reporting overhead and no behavior change."""
+    crawler = _crawler(max_pages=10)
+    docs = crawler.crawl([f"{stub_base}/page1"])
+    assert {doc.url for doc in docs} >= {f"{stub_base}/page1"}
+
+
+def test_run_index_forwards_outcome_sink() -> None:
+    """run_index threads the outcome callback through to crawl."""
+    from openlens.indexing.indexer import run_index
+    from openlens.storage.frontier import SqliteFrontierStore
+    from openlens.storage.repository import DocumentRepository
+
+    seen: dict[str, object] = {}
+
+    class _RecCrawler:
+        def crawl(self, seeds: list[str], **kwargs: object) -> list:
+            seen.update(kwargs)
+            return []
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        marker = object()
+        run_index(
+            [],
+            DocumentRepository(),
+            {},
+            crawler=_RecCrawler(),
+            frontier_store=store,
+            on_outcome=marker,
+        )
+        assert seen.get("on_outcome") is marker
+    finally:
+        store.close()
+
+
 def test_deny_domains_enforced(stub_base: str) -> None:
     crawler = _crawler(deny_domains=["127.0.0.1"])
     assert crawler.crawl([f"{stub_base}/page1"]) == []

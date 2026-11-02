@@ -6,9 +6,11 @@
  */
 import type {
   AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams,
+  AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams,
   AdminConfigDocResponseSchema,
   AdminConfigPutSchema,
   AnalyticsCountsSchema,
+  AnalyticsTopSchema,
   ChatRequestSchema,
   ChatResponseSchema,
   ClusterMapResponseSchema,
@@ -19,6 +21,8 @@ import type {
   FeedbackRequestSchema,
   FeedbackResponseSchema,
   FeedbackSummarySchema,
+  FrontierFailedApiV1FrontierFailedGetParams,
+  FrontierFailedListSchema,
   FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
   FrontierResumeSchema,
   FrontierSettingsResponseSchema,
@@ -417,6 +421,77 @@ export const adminAnalyticsCountsApiV1AdminAnalyticsCountsGet = async (
   } as adminAnalyticsCountsApiV1AdminAnalyticsCountsGetResponse;
 };
 
+export type adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse200 = {
+  data: AnalyticsTopSchema;
+  status: 200;
+};
+
+export type adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type adminAnalyticsTopApiV1AdminAnalyticsTopGetResponseSuccess =
+  adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse200 & {
+    headers: Headers;
+  };
+export type adminAnalyticsTopApiV1AdminAnalyticsTopGetResponseError =
+  adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse422 & {
+    headers: Headers;
+  };
+
+export type adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse =
+  | adminAnalyticsTopApiV1AdminAnalyticsTopGetResponseSuccess
+  | adminAnalyticsTopApiV1AdminAnalyticsTopGetResponseError;
+
+export const getAdminAnalyticsTopApiV1AdminAnalyticsTopGetUrl = (
+  params?: AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/admin/analytics/top?${stringifiedParams}`
+    : `/api/v1/admin/analytics/top`;
+};
+
+/**
+ * Admin-only top-values breakdown for one analytics event prop.
+ *
+ * Same gate as the counts endpoint; fail-open store (503 when
+ * unreachable). ``name`` must be a known event and ``prop`` a plain
+ * identifier (fail-closed, 422 otherwise) so no user input reaches
+ * the aggregation query.
+ * @summary Admin Analytics Top
+ */
+export const adminAnalyticsTopApiV1AdminAnalyticsTopGet = async (
+  params?: AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams,
+  options?: RequestInit,
+): Promise<adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse> => {
+  const res = await fetch(getAdminAnalyticsTopApiV1AdminAnalyticsTopGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as adminAnalyticsTopApiV1AdminAnalyticsTopGetResponse;
+};
+
 export type listPrefsApiV1PrefsGetResponse200 = {
   data: SavedPrefsListResponseSchema;
   status: 200;
@@ -555,6 +630,73 @@ export const frontierStatusApiV1FrontierStatusGet = async (
     status: res.status,
     headers: res.headers,
   } as frontierStatusApiV1FrontierStatusGetResponse;
+};
+
+export type frontierFailedApiV1FrontierFailedGetResponse200 = {
+  data: FrontierFailedListSchema;
+  status: 200;
+};
+
+export type frontierFailedApiV1FrontierFailedGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierFailedApiV1FrontierFailedGetResponseSuccess =
+  frontierFailedApiV1FrontierFailedGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierFailedApiV1FrontierFailedGetResponseError =
+  frontierFailedApiV1FrontierFailedGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierFailedApiV1FrontierFailedGetResponse =
+  | frontierFailedApiV1FrontierFailedGetResponseSuccess
+  | frontierFailedApiV1FrontierFailedGetResponseError;
+
+export const getFrontierFailedApiV1FrontierFailedGetUrl = (
+  params?: FrontierFailedApiV1FrontierFailedGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/failed?${stringifiedParams}`
+    : `/api/v1/frontier/failed`;
+};
+
+/**
+ * Paginated failed-URL list with reasons for the admin dashboard.
+ *
+ * Open read like ``/frontier/status`` (URLs + short error strings only).
+ * Never 500s: store failures degrade to the empty list.
+ * @summary Frontier Failed
+ */
+export const frontierFailedApiV1FrontierFailedGet = async (
+  params?: FrontierFailedApiV1FrontierFailedGetParams,
+  options?: RequestInit,
+): Promise<frontierFailedApiV1FrontierFailedGetResponse> => {
+  const res = await fetch(getFrontierFailedApiV1FrontierFailedGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierFailedApiV1FrontierFailedGetResponse['data'] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierFailedApiV1FrontierFailedGetResponse;
 };
 
 export type frontierClearApiV1FrontierClearPostResponse200 = {

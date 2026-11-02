@@ -454,6 +454,58 @@ describe('FrontierDrawer skip domains', () => {
     expect(row?.className).toMatch(/break-all/);
     expect(container.querySelector('.break-all')).toHaveTextContent(longUrl.slice(0, 32));
   });
+
+  it('pages through failed URLs with reasons', async () => {
+    const failed = Array.from({ length: 25 }, (_, i) => ({
+      url: `https://example.com/f${i}`,
+      reason: i % 2 ? 'fetch timeout' : 'denied by deny_domains',
+      attempts: 3,
+    }));
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      if (url.includes('/api/v1/frontier/failed')) {
+        const params = new URL(url, 'http://localhost').searchParams;
+        const limit = Number(params.get('limit') ?? 20);
+        const offset = Number(params.get('offset') ?? 0);
+        return {
+          urls: failed.slice(offset, offset + limit),
+          total: failed.length,
+          limit,
+          offset,
+        };
+      }
+      return STATUS;
+    });
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-failed')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-failed-page')).toHaveTextContent('Page 1 of 2');
+    expect(screen.getByTestId('frontier-failed')).toHaveTextContent('fetch timeout');
+    expect(screen.getByTestId('frontier-failed-prev')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('frontier-failed-next'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-failed-page')).toHaveTextContent('Page 2 of 2');
+    });
+    expect(screen.getByTestId('frontier-failed')).toHaveTextContent('https://example.com/f24');
+    expect(screen.getByTestId('frontier-failed-next')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('frontier-failed-prev'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-failed-page')).toHaveTextContent('Page 1 of 2');
+    });
+  });
+
+  it('shows an empty state when nothing failed', async () => {
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      if (url.includes('/api/v1/frontier/failed')) {
+        return { urls: [], total: 0, limit: 20, offset: 0 };
+      }
+      return STATUS;
+    });
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-failed-empty')).toBeInTheDocument();
+  });
 });
 
 describe('FrontierDrawer crawl-request review', () => {

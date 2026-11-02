@@ -8,6 +8,7 @@ import type {
   AdminConfigDoc,
   AiCitation,
   AnalyticsCounts,
+  AnalyticsTop,
   CacheStatus,
   CrawlRequest,
   CrawlRequestList,
@@ -16,6 +17,8 @@ import type {
   FeedbackResponse,
   FeedbackSummary,
   FrontierDiscovery,
+  FrontierFailedList,
+  FrontierFailedUrl,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -324,6 +327,47 @@ export function isAnalyticsCounts(value: unknown): value is AnalyticsCounts {
     typeof value.days === 'number' &&
     typeof value.total === 'number' &&
     isNumberRecord(value.by_name)
+  );
+}
+
+/** One failed URL entry. */
+function isFrontierFailedUrl(value: unknown): value is FrontierFailedUrl {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.url === 'string' &&
+    (value.reason === undefined || value.reason === null || typeof value.reason === 'string') &&
+    (value.attempts === undefined || typeof value.attempts === 'number')
+  );
+}
+
+/** `GET /api/v1/frontier/failed` response shape. */
+export function isFrontierFailedList(value: unknown): value is FrontierFailedList {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.urls) &&
+    value.urls.every(isFrontierFailedUrl) &&
+    typeof value.total === 'number' &&
+    typeof value.limit === 'number' &&
+    typeof value.offset === 'number'
+  );
+}
+
+/** One top-values entry. */
+function isAnalyticsTopEntry(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.value === 'string' && typeof value.count === 'number';
+}
+
+/** `GET /api/v1/admin/analytics/top` response shape. */
+export function isAnalyticsTop(value: unknown): value is AnalyticsTop {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.name === 'string' &&
+    typeof value.prop === 'string' &&
+    typeof value.days === 'number' &&
+    typeof value.total === 'number' &&
+    Array.isArray(value.top) &&
+    value.top.every(isAnalyticsTopEntry)
   );
 }
 

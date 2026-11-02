@@ -115,6 +115,9 @@ def test_legacy_double_keeps_working() -> None:
         def pending(self, limit: int = 500, offset: int = 0):  # type: ignore[no-untyped-def]
             return []
 
+        def failed(self, limit: int = 100, offset: int = 0):  # type: ignore[no-untyped-def]
+            return []
+
         def counts(self):  # type: ignore[no-untyped-def]
             return {"total": 0}
 

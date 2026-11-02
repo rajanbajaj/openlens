@@ -388,6 +388,14 @@ class FrontierStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def failed(self, limit: int = 100, offset: int = 0) -> list[FrontierEntry]:
+        """List ``failed`` rows, most-retried first.
+
+        Powers the admin failed-URL view (URL + short reason per row).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def counts(self) -> dict[str, int]:
         """Row counts keyed by status plus ``total``."""
         raise NotImplementedError
@@ -1958,6 +1966,26 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def failed(self, limit: int = 100, offset: int = 0) -> list[FrontierEntry]:
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT url, depth, status, parent_url, attempts,"
+                    " last_error, etag, last_modified, priority"
+                    " FROM frontier_queue WHERE status = 'failed'"
+                    " ORDER BY attempts DESC, rowid DESC LIMIT ? OFFSET ?",
+                    (capped, skipped),
+                ).fetchall()
+                return [_entry_from_row(row) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list failed frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {"total": 0}
         try:
@@ -3198,6 +3226,41 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to list pending frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed(self, limit: int = 100, offset: int = 0) -> list[FrontierEntry]:
+        table = self._qualified("frontier_queue")
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        cols = (
+            "url",
+            "depth",
+            "status",
+            "parent_url",
+            "attempts",
+            "last_error",
+            "etag",
+            "last_modified",
+            "priority",
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT {', '.join(cols)} FROM {table}"  # noqa: S608
+                        " WHERE status = 'failed'"
+                        " ORDER BY attempts DESC, discovered_at DESC"
+                        " LIMIT %s OFFSET %s",
+                        (capped, skipped),
+                    )
+                    return [
+                        _entry_from_row(dict(zip(cols, row))) for row in cur.fetchall()
+                    ]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to list failed frontier URLs: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

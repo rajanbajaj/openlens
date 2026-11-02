@@ -51,6 +51,26 @@ def _crawler(**overrides: Any) -> PoliteCrawler:
 # --- store -----------------------------------------------------------------
 
 
+def test_failed_lists_reasons_most_retried_first() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        for url in ("https://example.com/a", "https://example.com/b"):
+            assert store.enqueue(url, 0) is True
+        store.mark_failed("https://example.com/a", "fetch timeout")
+        store.mark_failed("https://example.com/a", "fetch timeout")
+        store.mark_failed("https://example.com/b", "denied by deny_domains")
+        rows = store.failed(limit=10)
+        assert [(row.url, row.attempts, row.last_error) for row in rows] == [
+            ("https://example.com/a", 2, "fetch timeout"),
+            ("https://example.com/b", 1, "denied by deny_domains"),
+        ]
+        assert [row.url for row in store.failed(limit=1, offset=1)] == [
+            "https://example.com/b"
+        ]
+    finally:
+        store.close()
+
+
 def test_enqueue_dedups_normalized_urls() -> None:
     store = SqliteFrontierStore(":memory:")
     try:

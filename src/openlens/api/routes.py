@@ -44,6 +44,7 @@ from openlens.api.schemas import AdminConfigDocResponseSchema, AdminConfigPutSch
 from openlens.api.schemas import CrawlRequestListSchema, CrawlRequestSchema
 from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
+from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
 from openlens.api.schemas import FrontierWorkersResponseSchema
@@ -660,6 +661,23 @@ class AnalyticsCountsSchema(BaseModel):
     by_name: dict[str, int]
 
 
+class AnalyticsTopEntrySchema(BaseModel):
+    """One top prop value with its count."""
+
+    value: str
+    count: int = Field(ge=0)
+
+
+class AnalyticsTopSchema(BaseModel):
+    """Admin top-values breakdown for one event prop over a window."""
+
+    name: str
+    prop: str
+    days: int = Field(ge=1)
+    total: int = Field(ge=0)
+    top: list[AnalyticsTopEntrySchema] = Field(default_factory=list)
+
+
 @router.post(
     "/feedback",
     response_model=FeedbackResponseSchema,
@@ -793,6 +811,84 @@ def admin_analytics_counts(
             store.close()
     return AnalyticsCountsSchema(
         days=window, total=sum(by_name.values()), by_name=by_name
+    )
+
+
+@router.get("/admin/analytics/top", response_model=AnalyticsTopSchema)
+def admin_analytics_top(
+    request: Request,
+    name: str = "crawl.page",
+    prop: str = Query(default="reason", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
+    days: int = 30,
+    limit: int = 10,
+) -> AnalyticsTopSchema | JSONResponse:
+    """Admin-only top-values breakdown for one analytics event prop.
+
+    Same gate as the counts endpoint; fail-open store (503 when
+    unreachable). ``name`` must be a known event and ``prop`` a plain
+    identifier (fail-closed, 422 otherwise) so no user input reaches
+    the aggregation query.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    from openlens.analytics.events import EVENT_NAMES
+
+    if name not in EVENT_NAMES:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", f"unknown analytics event: {name}"),
+        )
+    window = days if isinstance(days, int) and days >= 1 else 30
+    window = min(window, 365)
+    capped = max(1, min(int(limit or 10), 100))
+    try:
+        from openlens.analytics.store import open_analytics_store
+
+        app_config = getattr(request.app.state, "config", None)
+        section: dict[str, Any] = {}
+        if isinstance(app_config, dict):
+            raw = app_config.get("analytics", {})
+            if isinstance(raw, Mapping):
+                section = dict(raw.get("store", {}))
+        store = open_analytics_store(section)
+    except Exception as exc:
+        logger.warning("analytics top: store unavailable: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    try:
+        pairs = store.top_props(name, prop, since_days=window, limit=capped)
+    except ProviderError as exc:
+        if exc.code == ProviderError.INVALID_REQUEST:
+            return JSONResponse(
+                status_code=422,
+                content=error_body("invalid_request", str(exc)),
+            )
+        logger.warning("analytics top: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    except Exception as exc:
+        logger.warning("analytics top: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
+    finally:
+        with suppress(Exception):
+            store.close()
+    total = sum(count for _, count in pairs)
+    return AnalyticsTopSchema(
+        name=name,
+        prop=prop,
+        days=window,
+        total=total,
+        top=[
+            AnalyticsTopEntrySchema(value=value, count=count) for value, count in pairs
+        ],
     )
 
 
@@ -1162,6 +1258,45 @@ def frontier_status(request: Request) -> FrontierStatusSchema:
         )
     except Exception:
         return FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
+
+
+@router.get("/frontier/failed", response_model=FrontierFailedListSchema)
+def frontier_failed(
+    request: Request, limit: int = 100, offset: int = 0
+) -> FrontierFailedListSchema:
+    """Paginated failed-URL list with reasons for the admin dashboard.
+
+    Open read like ``/frontier/status`` (URLs + short error strings only).
+    Never 500s: store failures degrade to the empty list.
+    """
+    capped = max(0, min(int(limit or 0), 500))
+    skipped = max(0, int(offset or 0))
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return FrontierFailedListSchema(
+                urls=[], total=0, limit=capped, offset=skipped
+            )
+        try:
+            total = int(store.counts().get("failed", 0))
+        except Exception:
+            total = 0
+        rows = store.failed(limit=capped, offset=skipped)
+        return FrontierFailedListSchema(
+            urls=[
+                FrontierFailedUrlSchema(
+                    url=entry.url,
+                    reason=entry.last_error or "",
+                    attempts=max(0, int(entry.attempts or 0)),
+                )
+                for entry in rows
+            ],
+            total=total,
+            limit=capped,
+            offset=skipped,
+        )
+    except Exception:
+        return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
 
 
 #: Seconds between pushes on the live frontier websocket. Tests

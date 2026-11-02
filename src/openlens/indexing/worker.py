@@ -996,6 +996,32 @@ def _reporter_loop(report: Callable[[], None], stop: Any) -> None:
             report()
 
 
+def _outcome_sink(
+    app_config: Any,
+) -> Callable[[str, str, str | None], None]:
+    """Build the crawl.outcome analytics emitter (fail-open no-op).
+
+    The crawler only emits ``(url, outcome, reason)`` per processed
+    page; all aggregation happens downstream in the analytics store.
+    A sick broker (or missing driver) degrades to a silent no-op, never
+    a stalled crawl — same contract as the API's search-event publishing.
+    """
+    try:
+        from openlens.analytics.events import AnalyticsQueue, crawl_page_event
+
+        queue = AnalyticsQueue.from_app_config(
+            app_config if isinstance(app_config, Mapping) else {}
+        )
+    except Exception:
+        return lambda url, outcome, reason: None
+
+    def _report(url: str, outcome: str, reason: str | None) -> None:
+        with contextlib.suppress(Exception):
+            queue.publish_event(crawl_page_event(url, outcome, reason))
+
+    return _report
+
+
 def run_kafka_worker(
     seed_urls: list[str],
     app_config: dict[str, Any],
@@ -1080,6 +1106,17 @@ def run_kafka_worker(
                 for url, depth, priority in batch:
                     kafka.publish(url, depth, priority=priority)
 
+    # Crawl-outcome sink for the analytics event queue: the crawler only
+    # emits (url, outcome, reason) per processed page; all aggregation
+    # happens downstream in the analytics store. Fail-open: a sick
+    # broker degrades to dropped events, never a stalled crawl — same
+    # contract as the API's search-event publishing.
+    def _report_outcome(url: str, outcome: str, reason: str | None) -> None:
+        with contextlib.suppress(Exception):
+            outcome_sink(url, outcome, reason)
+
+    outcome_sink = _outcome_sink(app_config)
+
     def _drain_once() -> None:
         worker.refresh_limits()
         with contextlib.suppress(Exception):
@@ -1094,6 +1131,7 @@ def run_kafka_worker(
             should_stop=worker.should_stop,
             crawl_id=crawl_id,
             on_link=_publish_link,
+            on_outcome=_report_outcome,
         )
         _flush_links()
         counts["added"] += int(getattr(drain_stats, "added", 0) or 0)
@@ -1264,6 +1302,7 @@ def run_kafka_worker(
                     should_stop=worker.should_stop,
                     crawl_id=crawl_id,
                     on_link=_publish_link,
+                    on_outcome=_report_outcome,
                 )
             finally:
                 # Restore before commit/discovery: the next message's

@@ -33,6 +33,41 @@ _PROVIDER_NAME = "analytics"
 DEFAULT_DATABASE = "openlens_analytics"
 DEFAULT_RETENTION_DAYS = 90
 
+#: Prop keys eligible for top-value aggregation: plain identifiers only,
+#: so the key can be embedded in the JSON path / extractor safely.
+_TOP_PROP_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _window_cutoff(since_days: int) -> str:
+    """Trailing-window cutoff matching the stored timestamp format.
+
+    Rows store naive UTC ``YYYY-MM-DD HH:MM:SS`` (space separator);
+    the ``T``-separated ISO form sorts *after* same-day rows and would
+    silently drop the boundary day's events from every window.
+    """
+    return time.strftime(
+        "%Y-%m-%d %H:%M:%S",
+        time.gmtime(time.time() - max(0, int(since_days)) * 86400),
+    )
+
+
+def _check_top_args(name: str, prop: str) -> None:
+    """Fail-closed validation for top-prop aggregation arguments."""
+    from openlens.analytics.events import EVENT_NAMES
+
+    if name not in EVENT_NAMES:
+        raise ProviderError(
+            f"unknown analytics event: {name}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+    if not isinstance(prop, str) or not _TOP_PROP_KEY_RE.match(prop):
+        raise ProviderError(
+            f"invalid analytics prop key: {prop!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+
 
 class AnalyticsStore:
     """SQLite analytics store: same contract, offline backend."""
@@ -99,10 +134,7 @@ class AnalyticsStore:
 
     def counts_by_name(self, since_days: int = 30) -> dict[str, int]:
         """Event counts per name over the trailing window."""
-        cutoff = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() - max(0, since_days) * 86400),
-        )
+        cutoff = _window_cutoff(since_days)
         try:
             with self._lock:
                 rows = self._conn.execute(
@@ -118,11 +150,40 @@ class AnalyticsStore:
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def top_props(
+        self, name: str, prop: str, since_days: int = 30, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        """Top prop values for one event name over the trailing window.
+
+        ``name`` must be a known event and ``prop`` a plain identifier
+        (fail-closed); returns ``(value, count)`` pairs, most common
+        first. Powers the admin top-reasons view.
+        """
+        _check_top_args(name, prop)
+        capped = max(1, min(int(limit or 10), 100))
+        cutoff = _window_cutoff(since_days)
+        path = f"$.{prop}"
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT json_extract(props, ?) AS v, COUNT(*) AS n"
+                    " FROM analytics_events"
+                    " WHERE name = ? AND at >= ?"
+                    " AND v IS NOT NULL AND v != ''"
+                    " GROUP BY v ORDER BY n DESC, v ASC LIMIT ?",
+                    (path, name, cutoff, capped),
+                ).fetchall()
+                return [(str(row["v"]), int(row["n"])) for row in rows]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate analytics props: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def purge_older_than(self, days: int) -> int:
         """Delete events older than ``days``; returns the removed count."""
-        cutoff = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max(0, days) * 86400)
-        )
+        cutoff = _window_cutoff(days)
         try:
             with self._lock, self._conn:
                 cursor = self._conn.execute(
@@ -337,6 +398,32 @@ class ClickHouseAnalyticsStore:
         except Exception as exc:
             raise ProviderError(
                 f"failed to count analytics events: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def top_props(
+        self, name: str, prop: str, since_days: int = 30, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        """Top prop values for one event name (fail-closed, see SQLite)."""
+        _check_top_args(name, prop)
+        window = max(0, int(since_days))
+        capped = max(1, min(int(limit or 10), 100))
+        # Both interpolations are allowlisted above: ``name`` is a known
+        # event, ``prop`` a plain identifier — no user input reaches SQL.
+        value_sql = f"JSONExtractString(props, '{prop}')"
+        try:
+            result = self._client.query(
+                f"SELECT {value_sql} AS v, COUNT() AS n "  # noqa: S608
+                f"FROM {self._table()} "
+                f"WHERE name = '{name}' "
+                f"AND at >= now() - INTERVAL {window} DAY "
+                f"AND v != '' GROUP BY v ORDER BY n DESC, v ASC LIMIT {capped}"
+            )
+            return [(str(v), int(n)) for v, n in result.result_rows]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate analytics props: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

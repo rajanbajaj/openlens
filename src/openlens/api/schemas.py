@@ -342,6 +342,23 @@ class FrontierNewUrlSchema(BaseModel):
     status: str = "added"
 
 
+class FrontierFailedUrlSchema(BaseModel):
+    """One failed URL for the admin failed-URL view."""
+
+    url: str
+    reason: str = ""
+    attempts: int = Field(default=0, ge=0)
+
+
+class FrontierFailedListSchema(BaseModel):
+    """Paginated failed-URL list (HTTP 200 always; empty when unreadable)."""
+
+    urls: list[FrontierFailedUrlSchema] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=0)
+    offset: int = Field(default=0, ge=0)
+
+
 class FrontierDiscoverySchema(BaseModel):
     """A worker's last discovery-pass summary (feeds + refresh).
 

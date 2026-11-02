@@ -697,6 +697,44 @@ def test_run_kafka_worker_idle_drain_sends_heartbeat(
     assert len(calls) >= 3, f"expected an idle-drain heartbeat, got {len(calls)}"
 
 
+def test_outcome_sink_emits_crawl_page_and_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker sink emits crawl.page events and never raises."""
+    import openlens.indexing.worker as worker_mod
+    from openlens.analytics.events import normalize_event
+
+    published: list[dict] = []
+
+    class _Queue:
+        @classmethod
+        def from_app_config(cls, config, **kwargs):
+            return cls()
+
+        def publish_event(self, event) -> bool:
+            published.append(event.to_payload())
+            return True
+
+    monkeypatch.setattr("openlens.analytics.events.AnalyticsQueue", _Queue)
+    sink = worker_mod._outcome_sink({"kafka": {}, "analytics": {}})
+    sink("https://example.com/a", "skipped", "denied by deny_domains")
+    assert len(published) == 1
+    normalized = normalize_event(published[0])
+    assert normalized is not None
+    assert normalized.name == "crawl.page"
+    assert normalized.props["outcome"] == "skipped"
+    assert normalized.props["reason"] == "denied by deny_domains"
+
+    class _Broken:
+        @classmethod
+        def from_app_config(cls, config, **kwargs):
+            raise RuntimeError("no broker")
+
+    monkeypatch.setattr("openlens.analytics.events.AnalyticsQueue", _Broken)
+    # Sick broker (or missing driver) is a silent no-op, never a crash.
+    worker_mod._outcome_sink({})("https://example.com/a", "fetched", None)
+
+
 def test_run_kafka_worker_beats_during_blocking_drain(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

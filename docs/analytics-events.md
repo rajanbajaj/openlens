@@ -31,15 +31,25 @@ re-instrumentation.
 Closed allowlist in `src/openlens/analytics/events.py` — unknown names,
 non-`server` sources, and oversized props are dropped, never stored:
 
-| name | props |
-|---|---|
-| `search.served` | `query_hash`, `mode`, `result_count` |
-| `search.feedback` | `doc_id`, `action`, `reason?` |
+| name | props | producer |
+|---|---|---|
+| `search.served` | `query_hash`, `mode`, `result_count` | API per search |
+| `search.feedback` | `doc_id`, `action`, `reason?` | API per feedback tally |
+| `crawl.page` | `url`, `outcome`, `reason?` | worker per processed page |
 
-Raw query text is never stored — only its SHA-256 hex digest. No identity,
-sessions, cookies, or IPs. When the user-side track ships, add `client.*`
-names to the allowlist with their own prop caps, plus a `source: server\|client`
-split so the firehose can be routed/sampled separately.
+Raw query text is never stored — only its SHA-256 hex digest. Crawled
+page URLs are stored (like feedback `doc_id`) with only the outcome
+(`fetched` / `failed` / `skipped`) and the short terminal reason
+alongside. No identity, sessions, cookies, or IPs. When the user-side
+track ships, add `client.*` names to the allowlist with their own prop
+caps, plus a `source: server\|client` split so the firehose can be
+routed/sampled separately.
+
+`crawl.page` is the crawler's only analytics responsibility: one
+fire-and-forget event per processed page, emitted through the same
+`analytics.events` queue. Workers never aggregate — the admin
+`GET /api/v1/admin/analytics/top?name=crawl.page&prop=reason` endpoint
+(and the Analytics tab's Crawler card) does the counting.
 
 ## Services
 
@@ -51,9 +61,12 @@ split so the firehose can be routed/sampled separately.
   `--batch-size` events or 5 s; offsets commit only after the store flush,
   so restarts replay uncommitted events (redeliveries are idempotent
   inserts, not deduped — counts tolerate replays).
-- Backend publishes on every search (`served`) and feedback tally, and
-  serves `GET /api/v1/admin/analytics/counts?days=N` (admin-gated, 503
-  when the store is unreachable).
+- Backend publishes on every search (`served`) and feedback tally.
+  Crawl workers publish one `crawl.page` event per processed page
+  (fetched/failed/skipped + reason). The admin API serves
+  `GET /api/v1/admin/analytics/counts?days=N` and
+  `GET /api/v1/admin/analytics/top?name=&prop=&days=` (admin-gated,
+  503 when the store is unreachable, 422 for unknown names/props).
 
 ## Operations
 

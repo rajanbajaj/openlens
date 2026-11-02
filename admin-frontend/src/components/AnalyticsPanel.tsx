@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { fetchAnalyticsCounts, fetchFeedbackSummary } from '../api/client.ts';
-import type { AnalyticsCounts, FeedbackSummary } from '../api/types.ts';
+import { fetchAnalyticsCounts, fetchAnalyticsTop, fetchFeedbackSummary } from '../api/client.ts';
+import type { AnalyticsCounts, AnalyticsTop, FeedbackSummary } from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
@@ -40,9 +40,25 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
+  const crawlOutcomeQuery = useQuery({
+    queryKey: ['admin', 'analytics-top', 'crawl.page', 'outcome', days, adminToken],
+    queryFn: () => fetchAnalyticsTop('crawl.page', 'outcome', days, 10, adminToken),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const crawlReasonQuery = useQuery({
+    queryKey: ['admin', 'analytics-top', 'crawl.page', 'reason', days, adminToken],
+    queryFn: () => fetchAnalyticsTop('crawl.page', 'reason', days, 10, adminToken),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
 
   const counts: AnalyticsCounts | null | undefined = countsQuery.data;
   const feedback: FeedbackSummary | null | undefined = feedbackQuery.data;
+  const crawlOutcomes: AnalyticsTop | null | undefined = crawlOutcomeQuery.data;
+  const crawlReasons: AnalyticsTop | null | undefined = crawlReasonQuery.data;
 
   useEffect(() => {
     if (countsQuery.isError || (countsQuery.isSuccess && countsQuery.data === null)) {
@@ -56,16 +72,27 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   }, [feedbackQuery.isError, feedbackQuery.isSuccess, feedbackQuery.data]);
 
   async function refresh() {
-    const [countsResult, feedbackResult] = await Promise.all([
+    const [countsResult, feedbackResult, outcomeResult, reasonResult] = await Promise.all([
       countsQuery.refetch(),
       feedbackQuery.refetch(),
+      crawlOutcomeQuery.refetch(),
+      crawlReasonQuery.refetch(),
     ]);
-    if (countsResult.isError || feedbackResult.isError) {
+    if (
+      countsResult.isError ||
+      feedbackResult.isError ||
+      outcomeResult.isError ||
+      reasonResult.isError
+    ) {
       pushToast('Refresh failed.', 'error');
     }
   }
 
-  const loading = countsQuery.isPending || feedbackQuery.isPending;
+  const loading =
+    countsQuery.isPending ||
+    feedbackQuery.isPending ||
+    crawlOutcomeQuery.isPending ||
+    crawlReasonQuery.isPending;
   const eventEntries = counts ? Object.entries(counts.by_name).sort((a, b) => b[1] - a[1]) : [];
   const actionEntries = feedback
     ? Object.entries(feedback.by_action).sort((a, b) => b[1] - a[1])
@@ -124,6 +151,39 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
                   ))}
                 </ul>
               )}
+            </Card>
+          )}
+
+          <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawler</h4>
+          {crawlOutcomes == null && crawlReasons == null ? (
+            <p data-testid="crawler-empty" className="my-ol-s text-ol-s">
+              No crawler activity — workers have not reported page outcomes yet.
+            </p>
+          ) : (
+            <Card data-testid="crawler-summary">
+              {crawlOutcomes != null && crawlOutcomes.top.length > 0 && (
+                <ul
+                  data-testid="crawler-by-outcome"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {crawlOutcomes.top.map((entry) => (
+                    <li key={entry.value} className="break-all">
+                      <Badge>{entry.count}</Badge> {entry.value}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {crawlReasons != null && crawlReasons.top.length > 0 && (
+                <p data-testid="crawler-by-reason" className="my-ol-s text-ol-s">
+                  Top reasons:{' '}
+                  {crawlReasons.top.map((entry) => `${entry.value} (${entry.count})`).join(', ')}
+                </p>
+              )}
+              {crawlOutcomes != null &&
+                crawlOutcomes.top.length === 0 &&
+                (crawlReasons == null || crawlReasons.top.length === 0) && (
+                  <p className="my-ol-s text-ol-s">No page outcomes recorded in this window.</p>
+                )}
             </Card>
           )}
 

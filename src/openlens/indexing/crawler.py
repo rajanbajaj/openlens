@@ -2029,6 +2029,7 @@ class PoliteCrawler:
         crawl_id: str = "default",
         checkpoint_interval: int | None = None,
         on_link: Callable[[str, int, int | None], None] | None = None,
+        on_outcome: Callable[[str, str, str | None], None] | None = None,
     ) -> list[Document]:
         """Fetch seeds (following discovered links) into raw Documents.
 
@@ -2055,6 +2056,18 @@ class PoliteCrawler:
         self.last_checkpoint = {}
         # One robots fetch per host per crawl: the cache lives only here.
         self._robots_cache = _BoundedLru(self.max_tracked_domains)
+
+        def _notify(url: str, outcome: str, reason: str | None = None) -> None:
+            """Report one terminal page outcome (fail-open, analytics sinks).
+
+            The crawler only emits — sinks (e.g. the analytics event
+            queue) own all aggregation. Never raises, never blocks.
+            """
+            if on_outcome is None:
+                return
+            with contextlib.suppress(Exception):
+                on_outcome(url, outcome, reason)
+
         store = frontier_store if self.frontier_enabled else None
         interval = (
             checkpoint_interval
@@ -2176,26 +2189,31 @@ class PoliteCrawler:
                     stats.skipped_domain += 1
                     if store is not None:
                         store.mark_failed(raw, "denied by deny_domains")
+                    _notify(raw, "skipped", "denied by deny_domains")
                     continue
                 if not self._policy_allowed(host):
                     stats.skipped_policy += 1
                     if store is not None:
                         store.mark_failed(raw, "denied by domain policy")
+                    _notify(raw, "skipped", "denied by domain policy")
                     continue
                 if not self._policy_exempt(host) and not self._domain_allowed(host):
                     stats.skipped_domain += 1
                     if store is not None:
                         store.mark_failed(raw, "domain not allowlisted")
+                    _notify(raw, "skipped", "domain not allowlisted")
                     continue
                 if not self._depth_allowed(host, depth):
                     stats.skipped_depth += 1
                     if store is not None:
                         store.mark_failed(raw, "depth cap exceeded")
+                    _notify(raw, "skipped", "depth cap exceeded")
                     continue
                 if self.respect_robots and not self._allowed_by_robots(raw):
                     stats.skipped_robots += 1
                     if store is not None:
                         store.mark_failed(raw, "disallowed by robots.txt")
+                    _notify(raw, "skipped", "disallowed by robots.txt")
                     continue
                 self._wait_polite(host.lower(), raw)
                 attempts += 1
@@ -2207,6 +2225,7 @@ class PoliteCrawler:
                         store.mark_failed(raw, "fetch timeout")
                         if entry_attempts + 1 < self.max_attempts_per_url:
                             store.requeue(raw)
+                    _notify(raw, "failed", "fetch timeout")
                     continue
                 except Exception:
                     stats.errors += 1
@@ -2214,15 +2233,18 @@ class PoliteCrawler:
                         store.mark_failed(raw, "fetch error")
                         if entry_attempts + 1 < self.max_attempts_per_url:
                             store.requeue(raw)
+                    _notify(raw, "failed", "fetch error")
                     continue
                 if page is None:
                     if store is not None:
                         store.mark_failed(raw, "empty fetch")
+                    _notify(raw, "failed", "empty fetch")
                     continue
                 if page.status == 304:
                     stats.skipped_not_modified += 1
                     if store is not None:
                         store.mark_done(raw)
+                    _notify(raw, "skipped", "not-modified")
                     continue
                 if page.status != 200:
                     stats.errors += 1
@@ -2230,16 +2252,19 @@ class PoliteCrawler:
                         store.mark_failed(raw, f"http {page.status}")
                         if entry_attempts + 1 < self.max_attempts_per_url:
                             store.requeue(raw)
+                    _notify(raw, "failed", f"http {page.status}")
                     continue
                 if page.bytes_aborted:
                     stats.aborted_bytes += 1
                     if store is not None:
                         store.mark_failed(raw, "max_bytes abort")
+                    _notify(raw, "failed", "max_bytes abort")
                     continue
                 if not self._content_type_allowed(page.content_type):
                     stats.skipped_content_type += 1
                     if store is not None:
                         store.mark_failed(raw, "content-type skipped")
+                    _notify(raw, "skipped", "content-type skipped")
                     continue
                 stats.fetched += 1
                 doc = self._to_document(page)
@@ -2254,8 +2279,10 @@ class PoliteCrawler:
                     stats.skipped_quality += 1
                     if store is not None:
                         store.mark_failed(raw, reason)
+                    _notify(raw, "skipped", reason)
                     continue
                 documents.append(doc)
+                _notify(raw, "fetched")
                 if store is not None:
                     store.mark_done(
                         raw,

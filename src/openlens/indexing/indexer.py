@@ -200,6 +200,7 @@ def run_index(
     should_stop: Any | None = None,
     crawl_id: str = "default",
     on_link: Any | None = None,
+    on_outcome: Any | None = None,
 ) -> IndexStats:
     """Crawl seeds and incrementally index the results (CLI entry point).
 
@@ -229,6 +230,7 @@ def run_index(
             should_stop=should_stop,
             crawl_id=crawl_id,
             on_link=on_link,
+            on_outcome=on_outcome,
         )
     return DocumentIndexer(repository).index_incremental(docs, chunk_size)
 

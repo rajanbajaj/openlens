@@ -1,15 +1,17 @@
 """Analytics event pipeline: Kafka topic, worker, and separate store.
 
-Server-side analytics (search feedback today; user-side interaction
-events later) flow ``API -> analytics.events topic -> analytics worker ->
-analytics database``. The API path only publishes (fire-and-forget, never
-in the search latency path); the worker batch-inserts and enforces
+Server-side analytics (search feedback plus crawler page outcomes)
+flow ``producer -> analytics.events topic -> analytics worker ->
+analytics database``. Producers only publish (fire-and-forget, never
+in the latency path); the worker batch-inserts and enforces
 retention. The analytics database is separate from the index database so
 append volume can never contend with search reads or frontier writes.
 
 Privacy: event names and prop keys are a closed allowlist (fail-closed
 like the feedback endpoint). Raw query text is never stored — only its
-hash. No identity, no sessions, no cookies.
+hash; crawled page URLs are stored (like feedback ``doc_id``) with only
+the outcome and short reason alongside. No identity, no sessions, no
+cookies.
 """
 
 from __future__ import annotations
@@ -28,10 +30,14 @@ EVENT_SCHEMA_VERSION = 1
 
 #: Server-produced event names. ``client.*`` is reserved for the future
 #: user-side track and rejected until it ships (fail-closed).
+#: ``crawl.page`` is emitted by crawl workers (one fire-and-forget event
+#: per processed page: fetched/failed/skipped plus the short reason);
+#: workers never aggregate — the analytics store does the counting.
 EVENT_NAMES = frozenset(
     {
         "search.feedback",
         "search.served",
+        "crawl.page",
     }
 )
 
@@ -39,6 +45,7 @@ EVENT_NAMES = frozenset(
 EVENT_PROPS: dict[str, frozenset[str]] = {
     "search.feedback": frozenset({"doc_id", "action", "reason"}),
     "search.served": frozenset({"query_hash", "mode", "result_count"}),
+    "crawl.page": frozenset({"url", "outcome", "reason"}),
 }
 
 MAX_PROP_KEYS = 16
@@ -128,6 +135,21 @@ def served_event(query: str, mode: str, result_count: int) -> AnalyticsEvent:
             "result_count": max(0, int(result_count)),
         },
     )
+
+
+def crawl_page_event(
+    url: str, outcome: str, reason: str | None = None
+) -> AnalyticsEvent:
+    """Build the worker-side event for one processed crawl page.
+
+    ``outcome`` is one of ``fetched`` / ``failed`` / ``skipped`` and
+    ``reason`` is the short terminal reason (deny rule, robots, fetch
+    error, ...). Fire-and-forget: workers emit, never aggregate.
+    """
+    props: dict[str, Any] = {"url": url, "outcome": outcome}
+    if reason:
+        props["reason"] = reason
+    return AnalyticsEvent(name="crawl.page", props=props)
 
 
 class AnalyticsQueue:

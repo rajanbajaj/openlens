@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from openlens.analytics.events import (
+    crawl_page_event,
     feedback_event,
     hash_query,
     normalize_event,
@@ -15,6 +16,7 @@ from openlens.analytics.events import (
 )
 from openlens.analytics.store import AnalyticsStore
 from openlens.analytics.worker import run_analytics_worker
+from openlens.core.interfaces import ProviderError
 from openlens.api import frontier_state
 from openlens.api.routes import ALLOW_OPEN_ADMIN_ENV
 from openlens.main import create_app
@@ -80,6 +82,34 @@ def test_feedback_and_served_event_shapes() -> None:
     assert served.props["query_hash"] == hash_query("Python")
 
 
+def test_crawl_page_event_shape_and_normalize() -> None:
+    event = crawl_page_event(
+        "https://example.com/a", "skipped", "denied by deny_domains"
+    )
+    assert event.name == "crawl.page"
+    assert event.props == {
+        "url": "https://example.com/a",
+        "outcome": "skipped",
+        "reason": "denied by deny_domains",
+    }
+    normalized = normalize_event(event.to_payload())
+    assert normalized is not None
+    assert normalized.name == "crawl.page"
+    assert normalized.props["outcome"] == "skipped"
+    assert normalized.props["reason"] == "denied by deny_domains"
+    # Reason is optional; unknown props still dropped.
+    bare = normalize_event(
+        crawl_page_event("https://example.com/b", "fetched").to_payload()
+    )
+    assert bare is not None
+    assert "reason" not in bare.props
+    dropped = normalize_event(
+        {"name": "crawl.page", "props": {"url": "u", "outcome": "x", "evil": 1}}
+    )
+    assert dropped is not None
+    assert "evil" not in dropped.props
+
+
 def test_store_batch_insert_counts_and_purge(tmp_path) -> None:
     store = AnalyticsStore(str(tmp_path / "a.db"))
     try:
@@ -123,6 +153,59 @@ class _FakeAnalyticsQueue:
     def publish_event(self, event) -> bool:
         self.published.append(event.to_payload())
         return True
+
+
+def test_top_props_groups_reasons_and_rejects_junk(tmp_path) -> None:
+    store = AnalyticsStore(str(tmp_path / "top.db"))
+    try:
+        assert (
+            store.insert_many(
+                [
+                    crawl_page_event(
+                        "https://a.example/1", "skipped", "denied by deny_domains"
+                    ).to_payload(),
+                    crawl_page_event(
+                        "https://a.example/2", "skipped", "denied by deny_domains"
+                    ).to_payload(),
+                    crawl_page_event(
+                        "https://b.example/1", "failed", "fetch timeout"
+                    ).to_payload(),
+                    crawl_page_event("https://c.example/1", "fetched").to_payload(),
+                ]
+            )
+            == 4
+        )
+        assert store.top_props("crawl.page", "reason") == [
+            ("denied by deny_domains", 2),
+            ("fetch timeout", 1),
+        ]
+        assert store.top_props("crawl.page", "outcome") == [
+            ("skipped", 2),
+            ("failed", 1),
+            ("fetched", 1),
+        ]
+        assert store.top_props("crawl.page", "reason", limit=1) == [
+            ("denied by deny_domains", 2)
+        ]
+        assert store.top_props("search.served", "mode") == []
+        with pytest.raises(ProviderError):
+            store.top_props("nope.unknown", "reason")
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "reason; DROP TABLE x")
+    finally:
+        store.close()
+
+
+def test_window_cutoff_matches_stored_format(tmp_path) -> None:
+    """Events written today must count (space, not T, cutoff separator)."""
+    store = AnalyticsStore(str(tmp_path / "cutoff.db"))
+    try:
+        assert store.insert_many([served_event("q", "default", 1).to_payload()]) == 1
+        # With the old "T"-separated cutoff, same-day rows compared less
+        # than the bound and a 1-day window came back empty.
+        assert sum(store.counts_by_name(since_days=1).values()) == 1
+    finally:
+        store.close()
 
 
 def test_worker_consumes_batches_and_purges(tmp_path) -> None:
@@ -240,6 +323,45 @@ def test_admin_counts_reads_store(
         body = resp.json()
         assert body["by_name"] == {"search.feedback": 1}
         assert body["total"] == 1
+    finally:
+        store.close()
+
+
+def test_admin_top_groups_and_rejects(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = AnalyticsStore(str(tmp_path / "t.db"))
+    try:
+        assert (
+            store.insert_many(
+                [
+                    crawl_page_event(
+                        "https://a.example/1", "skipped", "denied by deny_domains"
+                    ).to_payload(),
+                    crawl_page_event(
+                        "https://b.example/1", "failed", "fetch timeout"
+                    ).to_payload(),
+                ]
+            )
+            == 2
+        )
+        monkeypatch.setattr(
+            "openlens.analytics.store.open_analytics_store", lambda section: store
+        )
+        resp = client.get(
+            "/api/v1/admin/analytics/top?name=crawl.page&prop=reason&days=30"
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["name"] == "crawl.page"
+        assert body["prop"] == "reason"
+        assert body["total"] == 2
+        assert {entry["value"] for entry in body["top"]} == {
+            "denied by deny_domains",
+            "fetch timeout",
+        }
+        assert client.get("/api/v1/admin/analytics/top?name=bogus").status_code == 422
+        assert client.get("/api/v1/admin/analytics/top?prop=a-b").status_code == 422
     finally:
         store.close()
 
