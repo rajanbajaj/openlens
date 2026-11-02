@@ -461,7 +461,10 @@ services:
     cpus: 0.25
     # Replica count from the environment (default 1). The worker consumes
     # the analytics.events group, so replicas split partitions.
-    scale: ${ANALYTICS_WORKER_SCALE:-1}
+    deploy:
+      replicas: ${ANALYTICS_WORKER_SCALE:-1}
+      restart_policy:
+        condition: on-failure
     logging: *default-logging
     environment:
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
@@ -482,10 +485,6 @@ services:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
     healthcheck:
       test: ["CMD-SHELL", "grep -q analytics-worker /proc/1/cmdline || exit 1"]
       interval: 10s
