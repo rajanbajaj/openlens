@@ -331,6 +331,57 @@ def test_open_analytics_store_defaults_to_shared_file(
     assert seen == ["data/openlens-analytics.db", "data/openlens-analytics.db"]
 
 
+def test_clickhouse_insert_serializes_datetimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """insert_many must hand datetime objects (not strings) to the driver.
+
+    Regression: pre-formatted timestamp strings crashed
+    clickhouse-connect with AttributeError, so the analytics-worker never
+    stored anything and admin counts read permanently zero.
+    """
+    import datetime as datetime_mod
+
+    from openlens.analytics import store as store_module
+
+    calls: dict[str, object] = {}
+
+    class _FakeClient:
+        def command(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def insert(
+            self,
+            table: object,
+            rows: object,
+            column_names: object = None,
+        ) -> None:
+            calls["rows"] = rows
+            calls["table"] = table
+            calls["columns"] = column_names
+
+        def close(self) -> None:
+            return None
+
+    class _FakeDriver:
+        @staticmethod
+        def get_client(**kwargs: object) -> _FakeClient:
+            return _FakeClient()
+
+    monkeypatch.setattr(store_module, "_load_clickhouse", lambda: _FakeDriver)
+    store = store_module.ClickHouseAnalyticsStore(database="test_db")
+    try:
+        assert store.insert_many([served_event("q", "default", 3).to_payload()]) == 1
+        rows = calls["rows"]
+        assert isinstance(rows, list) and len(rows) == 1
+        at = rows[0][2]
+        assert isinstance(at, datetime_mod.datetime), (
+            f"expected datetime for the DateTime column, got {type(at)}"
+        )
+    finally:
+        store.close()
+
+
 def test_analytics_store_creates_parent_dirs(tmp_path) -> None:
     from openlens.analytics.store import AnalyticsStore
 

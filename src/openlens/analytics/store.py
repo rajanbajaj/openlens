@@ -301,9 +301,12 @@ class ClickHouseAnalyticsStore:
                 [
                     name.strip(),
                     str(event.get("source", "server") or "server"),
-                    datetime.fromtimestamp(at, tz=timezone.utc).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
+                    # Naive UTC wall time: the column is plain DateTime
+                    # (server TZ, UTC on our hosts) and clickhouse-connect
+                    # only serializes datetime objects — pre-formatted
+                    # strings crash the insert with AttributeError, so the
+                    # worker never stored anything.
+                    datetime.fromtimestamp(at, tz=timezone.utc).replace(tzinfo=None),
                     json.dumps(props if isinstance(props, dict) else {}),
                 ]
             )
