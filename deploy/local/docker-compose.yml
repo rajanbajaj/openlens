@@ -515,7 +515,7 @@ services:
       # Probe as the app user: the entrypoint removes the `default`
       # user when CLICKHOUSE_USER is set, so a default-user probe
       # always fails auth. Container env supplies both values.
-      test: ["CMD-SHELL", "clickhouse-client --user \"$CLICKHOUSE_USER\" --password \"$CLICKHOUSE_PASSWORD\" --query 'SELECT 1' || exit 1"]
+      test: ["CMD-SHELL", "clickhouse-client --user \"${CLICKHOUSE_USER:-openlens}\" --password \"${CLICKHOUSE_PASSWORD:-openlens}\" --query 'SELECT 1' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
