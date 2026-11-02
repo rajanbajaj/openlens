@@ -278,13 +278,15 @@ services:
   # Kafka monitor UI (Kafbat/kafka-ui): topics, consumer-group lag,
   # and message browser for the crawl.urls queue. Local dev only —
   # bound to localhost with no login, like the rest of this stack.
+  # Set KAFKA_UI_HOST=0.0.0.0 to reach it from the LAN (it has no
+  # login, so only do that on a trusted network).
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     mem_limit: 512M
     cpus: 0.5
     logging: *default-logging
     ports:
-      - "127.0.0.1:${KAFKA_UI_PORT:-8080}:8080"
+      - "${KAFKA_UI_HOST:-127.0.0.1}:${KAFKA_UI_PORT:-8080}:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:19092,kafka-2:19092,kafka-3:19092
@@ -412,6 +414,9 @@ services:
     networks:
       - openlens
 
+  # Set PGADMIN_HOST=0.0.0.0 to reach pgAdmin from the LAN — and
+  # change PGADMIN_DEFAULT_PASSWORD first (the shipped default is
+  # public in .env.example).
   pgadmin:
     image: dpage/pgadmin4:8
     mem_limit: 512M
@@ -422,7 +427,7 @@ services:
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-openlens}
       PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
-      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+      - "${PGADMIN_HOST:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
     depends_on:

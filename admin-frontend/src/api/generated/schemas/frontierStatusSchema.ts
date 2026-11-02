@@ -26,6 +26,7 @@ export interface FrontierStatusSchema {
   kafka_purged?: boolean;
   kafka_lag_total?: number | null;
   kafka_lag_partitions?: number | null;
+  kafka_enabled?: boolean;
   /** @minimum 0 */
   cluster_config_version?: number;
   discovery?: FrontierDiscoverySchema | null;

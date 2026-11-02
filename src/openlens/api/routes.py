@@ -1085,8 +1085,13 @@ def _latest_discovery_summary(
     return None
 
 
-def _frontier_status_payload() -> FrontierStatusSchema:
-    """Shape the in-memory frontier snapshot into the status schema."""
+def _frontier_status_payload(app_config: Any = None) -> FrontierStatusSchema:
+    """Shape the in-memory frontier snapshot into the status schema.
+
+    ``app_config`` (when given) seeds the ``kafka_enabled`` flag only —
+    the lag probe itself stays in ``_overlay_kafka_status`` (GET only),
+    so the 2s live-socket cadence never pays for a throwaway consumer.
+    """
     snap = frontier_state.snapshot()
     queue = [
         {
@@ -1112,6 +1117,12 @@ def _frontier_status_payload() -> FrontierStatusSchema:
         discovery = _latest_discovery_summary(workers)
     except Exception:
         discovery = None
+    try:
+        queue_enabled = bool(
+            kafka_enabled(app_config if isinstance(app_config, dict) else None)
+        )
+    except Exception:
+        queue_enabled = False
     return FrontierStatusSchema(
         paused=bool(snap["paused"]),
         queue=queue,  # type: ignore[arg-type]
@@ -1124,6 +1135,7 @@ def _frontier_status_payload() -> FrontierStatusSchema:
         new_urls=new_urls,  # type: ignore[arg-type]
         workers=workers,  # type: ignore[arg-type]
         discovery=discovery,  # type: ignore[arg-type]
+        kafka_enabled=queue_enabled,
     )
 
 
@@ -1139,7 +1151,8 @@ def frontier_status(request: Request) -> FrontierStatusSchema:
         frontier_state.seed_settings_from_config(app_config)
         return _overlay_kafka_status(
             _overlay_store_status(
-                _frontier_status_payload(), _frontier_read_store(request)
+                _frontier_status_payload(app_config),
+                _frontier_read_store(request),
             ),
             app_config,
         )
@@ -1183,7 +1196,10 @@ async def frontier_live(websocket: WebSocket) -> None:
         while True:
             try:
                 payload = _overlay_store_status(
-                    _frontier_status_payload(), _frontier_read_store(websocket)
+                    _frontier_status_payload(
+                        getattr(websocket.app.state, "config", None)
+                    ),
+                    _frontier_read_store(websocket),
                 )
             except Exception:
                 payload = FrontierStatusSchema(queue=[], queue_depth=0, new_urls=[])
@@ -1436,7 +1452,7 @@ def frontier_clear(request: Request) -> FrontierStatusSchema | JSONResponse:
         except ProviderError as exc:
             logger.warning("frontier clear: Kafka purge failed: %s", exc)
     payload = _overlay_store_status(
-        _frontier_status_payload(), _frontier_read_store(request)
+        _frontier_status_payload(app_config), _frontier_read_store(request)
     )
     payload.cleared_queued = cleared
     payload.kafka_purged = purged
@@ -1458,7 +1474,7 @@ def frontier_pause(request: Request) -> FrontierStatusSchema | JSONResponse:
     app_config = getattr(request.app.state, "config", None)
     _store_set_paused(app_config, True)
     return _overlay_store_status(
-        _frontier_status_payload(), _frontier_read_store(request)
+        _frontier_status_payload(app_config), _frontier_read_store(request)
     )
 
 
@@ -1504,7 +1520,7 @@ def frontier_resume(
             logger.warning("frontier resume: store reseed failed: %s", exc)
     _store_set_paused(app_config, False)
     return _overlay_store_status(
-        _frontier_status_payload(), _frontier_read_store(request)
+        _frontier_status_payload(app_config), _frontier_read_store(request)
     )
 
 

@@ -427,6 +427,10 @@ class FrontierStatusSchema(BaseModel):
     # broker is unreachable or Kafka is disabled); the scale signal.
     kafka_lag_total: int | None = None
     kafka_lag_partitions: int | None = None
+    # Whether the serving config enables the Kafka queue. False means
+    # the queue is store-backed and lag is not applicable; True with
+    # null lag means the lag probe failed.
+    kafka_enabled: bool = False
     cluster_config_version: int = Field(default=0, ge=0)
     # Most recently active worker's discovery summary (None when no
     # worker ever reported one).

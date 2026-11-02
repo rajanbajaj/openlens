@@ -204,7 +204,20 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       if (closed) return;
       try {
         const data: unknown = JSON.parse(String(event.data));
-        if (isFrontierStatus(data)) setStatus(data);
+        if (isFrontierStatus(data)) {
+          // The socket skips the lag probe by design (GET only), so its
+          // nulls mean "no fresh probe", not "lag unknown": keep the
+          // last GET values instead of flashing back to unknown.
+          setStatus((prev) =>
+            prev && data.kafka_lag_total == null
+              ? {
+                  ...data,
+                  kafka_lag_total: prev.kafka_lag_total,
+                  kafka_lag_partitions: prev.kafka_lag_partitions,
+                }
+              : data,
+          );
+        }
       } catch {
         /* malformed frames never break the dashboard */
       }
@@ -421,6 +434,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const newUrls = status ? readFrontierNewUrls(status) : [];
   const checkpoint = status?.checkpoint;
   const discovery = status ? readFrontierDiscovery(status) : null;
+  const kafkaEnabled = status?.kafka_enabled === true;
   const kafkaLag = typeof status?.kafka_lag_total === 'number' ? status.kafka_lag_total : null;
 
   return (
@@ -467,7 +481,11 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
 
             <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl diagnostics</h4>
             <p data-testid="frontier-kafka-lag" className="my-ol-s text-ol-s">
-              Kafka lag: {kafkaLag === null ? 'unknown' : `${kafkaLag} urls`}
+              {kafkaEnabled
+                ? kafkaLag === null
+                  ? 'Kafka lag: unknown — probe failed'
+                  : `Kafka lag: ${kafkaLag} urls`
+                : 'Kafka lag: disabled — store-backed queue'}
             </p>
             <p data-testid="frontier-discovery" className="my-ol-s text-ol-s">
               {discovery

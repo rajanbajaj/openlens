@@ -2106,6 +2106,11 @@
             ],
             "title": "Kafka Lag Partitions"
           },
+          "kafka_enabled": {
+            "type": "boolean",
+            "title": "Kafka Enabled",
+            "default": false
+          },
           "cluster_config_version": {
             "type": "integer",
             "minimum": 0.0,

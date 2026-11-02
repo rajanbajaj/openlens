@@ -48,6 +48,35 @@ def test_status_empty_defaults(client: TestClient) -> None:
     assert body["new_urls"] == []
 
 
+def test_status_reports_kafka_disabled_by_default(client: TestClient) -> None:
+    """Without a kafka-enabled config the status says so explicitly.
+
+    A bare null lag cannot distinguish "queue is store-backed" from
+    "probe failed"; the flag lets the dashboard explain which.
+    """
+    body = client.get("/api/v1/frontier/status").json()
+    assert body["kafka_enabled"] is False
+    assert body["kafka_lag_total"] is None
+
+
+def test_status_payload_flags_kafka_enabled() -> None:
+    from openlens.api.routes import _frontier_status_payload
+
+    enabled = _frontier_status_payload(
+        {
+            "kafka": {
+                "enabled": True,
+                "bootstrap_servers": ["kafka-1:19092"],
+                "topic": "crawl.urls",
+                "group_id": "crawlers",
+            }
+        }
+    )
+    assert enabled.kafka_enabled is True
+    disabled = _frontier_status_payload({"kafka": {"enabled": False}})
+    assert disabled.kafka_enabled is False
+
+
 def test_pause_and_resume_cycle(client: TestClient) -> None:
     paused = client.post("/api/v1/frontier/pause")
     assert paused.status_code == 200

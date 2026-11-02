@@ -107,6 +107,42 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     });
   });
 
+  it('explains a disabled kafka queue instead of unknown lag', async () => {
+    stubBackend({ ...STATUS });
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-kafka-lag')).toHaveTextContent('store-backed queue');
+  });
+
+  it('shows the lag count when kafka is enabled', async () => {
+    stubBackend({
+      ...STATUS,
+      kafka_enabled: true,
+      kafka_lag_total: 12,
+      kafka_lag_partitions: 3,
+    });
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-kafka-lag')).toHaveTextContent('12 urls');
+  });
+
+  it('keeps the last lag probe across live frames that skip it', async () => {
+    MockSocket.instances = [];
+    stubBackend({
+      ...STATUS,
+      kafka_enabled: true,
+      kafka_lag_total: 12,
+      kafka_lag_partitions: 3,
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-kafka-lag')).toHaveTextContent('12 urls');
+    MockSocket.instances[0].open();
+    MockSocket.instances[0].push({ ...STATUS, kafka_enabled: true });
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-queue')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('frontier-kafka-lag')).toHaveTextContent('12 urls');
+  });
+
   it('ignores malformed live frames without breaking the dashboard', async () => {
     MockSocket.instances = [];
     stubBackend();

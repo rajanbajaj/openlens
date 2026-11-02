@@ -237,6 +237,8 @@ export interface FrontierStatus {
   cleared_queued?: number;
   /** POST /api/v1/frontier/clear echo; absent or false elsewhere. */
   kafka_purged?: boolean;
+  /** Whether the serving config enables the Kafka queue. */
+  kafka_enabled?: boolean;
   /** Best-effort consumer-group lag for the crawl topic (null when unknown). */
   kafka_lag_total?: number | null;
   /** Lag broken down per partition (null when unknown). */
