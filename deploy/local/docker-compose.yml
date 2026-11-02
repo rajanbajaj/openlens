@@ -175,8 +175,12 @@ services:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
+    # Replica count from the environment (default 1): 12 matches the
+    # crawl.urls partition count so each replica owns a partition.
+    # Env-driven because a plain `up -d` reconciles to this number —
+    # a hardcoded 1 kept shrinking the fleet back after every deploy.
     deploy:
-      replicas: 1
+      replicas: ${CRAWLER_SCALE:-1}
       restart_policy:
         condition: on-failure
     healthcheck:
