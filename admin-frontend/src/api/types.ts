@@ -289,10 +289,11 @@ export interface FrontierFailedList {
   offset: number;
 }
 
-/** One failed host with its failure count. */
+/** One failed host with its failure count and most common reason. */
 export interface FrontierFailedDomain {
   domain: string;
   failed: number;
+  top_reason: string;
 }
 
 /** Paginated failed-domain rollup response. */

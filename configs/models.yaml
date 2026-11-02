@@ -8,7 +8,7 @@
 # Per-entry keys:
 #   type:      model-type name resolved via the model registry
 #              (defaults to the entry name):
-#              fake | claude | muse | local | openai_compat.
+#              fake | local | openai_compat.
 #   enabled:   instantiate this backend at startup (default false).
 #   timeout_s: bounded per-call timeout in seconds (default 10).
 #
@@ -19,7 +19,7 @@
 # which enabled backend answers (default openai_compat).
 #
 # The `fake` backend is the deterministic offline stand-in used by tests and
-# the AI plugin stub. Real backends (claude/muse/local) validate their own
+# the AI plugin stub. Real backends (local/openai_compat) validate their own
 # credentials at startup when enabled, but perform no live calls yet.
 
 models:
@@ -28,22 +28,6 @@ models:
   fake:
     enabled: false
     type: fake
-    timeout_s: 10
-
-  claude:
-    enabled: false
-    type: claude
-    # api_key resolves at load time; required when enabled.
-    api_key: ${ANTHROPIC_API_KEY:-}
-    model: claude-3-5-sonnet-latest
-    timeout_s: 10
-
-  muse:
-    enabled: false
-    type: muse
-    # api_key resolves at load time; required when enabled.
-    api_key: ${MUSE_API_KEY:-}
-    model: muse-3.5
     timeout_s: 10
 
   local:

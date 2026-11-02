@@ -216,8 +216,12 @@ describe('ChatView persistence', () => {
     await waitFor(() => {
       expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
     });
-    const stored = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) as string) as unknown[];
-    expect(stored.length).toBeGreaterThanOrEqual(2);
+    // The persist effect flushes after render; wait for the write
+    // instead of racing it — same end state, no timing assumption.
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) as string) as unknown[];
+      expect(stored.length).toBeGreaterThanOrEqual(2);
+    });
     unmount();
     cleanup();
 

@@ -364,6 +364,7 @@ class FrontierFailedDomainSchema(BaseModel):
 
     domain: str
     failed: int = Field(default=0, ge=0)
+    top_reason: str = ""
 
 
 class FrontierFailedDomainListSchema(BaseModel):

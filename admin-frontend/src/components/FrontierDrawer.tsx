@@ -728,7 +728,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 >
                   {failedDomains.domains.map((entry) => (
                     <li key={entry.domain} className="break-all">
-                      <Badge>{entry.failed}</Badge> {entry.domain}{' '}
+                      <Badge>{entry.failed}</Badge> {entry.domain} · {entry.top_reason}{' '}
                       <Button
                         variant="secondary"
                         data-testid={`frontier-domain-requeue-${entry.domain}`}

@@ -25,6 +25,8 @@ backends are swappable via config.
 ## Developer pages
 
 - [Architecture](Architecture) — pipeline, plugins, engine seams
+- [Search Path](Search-Path) — stages, providers, ranking, agent mode
+- [Crawl Path](Crawl-Path) — frontier, fetch pipeline, retry budget
 - [Backend Setup](Backend-Setup) — API, Postgres, config, env vars
 - [Frontend Setup](Frontend-Setup) — user app and admin app
 - [API Reference](API-Reference) — routes, envelopes, generated clients

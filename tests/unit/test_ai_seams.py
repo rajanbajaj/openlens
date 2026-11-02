@@ -219,7 +219,8 @@ def test_models_yaml_loads_offline_with_everything_disabled() -> None:
     config = load_config(REPO_ROOT / "configs" / "models.yaml")
     section = config["models"]
     entries = {k: v for k, v in section.items() if k != "primary"}
-    assert {"fake", "claude", "muse", "local"} <= set(entries)
+    assert {"fake", "local", "openai_compat"} <= set(entries)
+    assert not ({"claude", "muse"} & set(entries))
     assert all(
         not _is_enabled(entry.get("enabled", False)) for entry in entries.values()
     )

@@ -357,7 +357,11 @@ export function isFrontierFailedList(value: unknown): value is FrontierFailedLis
 
 function isFrontierFailedDomain(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return typeof value.domain === 'string' && typeof value.failed === 'number';
+  return (
+    typeof value.domain === 'string' &&
+    typeof value.failed === 'number' &&
+    typeof value.top_reason === 'string'
+  );
 }
 
 /** `GET /api/v1/frontier/failed/domains` response shape. */

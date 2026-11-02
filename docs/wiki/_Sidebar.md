@@ -11,6 +11,8 @@
   - [FAQ](FAQ)
 - Developer
   - [Architecture](Architecture)
+  - [Search Path](Search-Path)
+  - [Crawl Path](Crawl-Path)
   - [Backend Setup](Backend-Setup)
   - [Frontend Setup](Frontend-Setup)
   - [API Reference](API-Reference)

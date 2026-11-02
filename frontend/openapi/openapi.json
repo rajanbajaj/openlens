@@ -2414,6 +2414,11 @@
             "minimum": 0.0,
             "title": "Failed",
             "default": 0
+          },
+          "top_reason": {
+            "type": "string",
+            "title": "Top Reason",
+            "default": ""
           }
         },
         "type": "object",

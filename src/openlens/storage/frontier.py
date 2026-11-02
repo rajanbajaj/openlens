@@ -398,11 +398,12 @@ class FrontierStore(ABC):
     @abstractmethod
     def failed_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
-        """Aggregate ``failed`` rows by host: ``(domain, count)`` pairs.
+    ) -> list[tuple[str, int, str]]:
+        """Aggregate ``failed`` rows by host: ``(domain, count, top_reason)``.
 
         Powers the admin failed-domains view (one row per offending
-        host with its failure count, most-failed first).
+        host with its failure count and most common reason,
+        most-failed first).
         """
         raise NotImplementedError
 
@@ -686,6 +687,34 @@ def normalize_skip_domain(entry: Any) -> str | None:
     if not _SKIP_DOMAIN_RE.fullmatch(text):
         return None
     return text
+
+
+#: Postgres host extraction for the failed-domains rollup. Must not
+#: contain a literal ``%`` outside ``%s`` placeholders: psycopg scans
+#: ``%X`` client-side and rejects e.g. the ``%:`` in ``'http%://%'``
+#: (ProgrammingError), so the scheme check uses split_part/IN.
+FAILED_DOMAIN_HOST_EXPR_PG = (
+    "CASE WHEN lower(split_part(url, ':', 1)) IN ('http', 'https')"
+    " AND split_part(split_part(split_part(url, '://', 2),"
+    " '?', 1), '/', 1) <> ''"
+    " THEN lower(split_part(split_part(split_part(url, '://', 2),"
+    " '?', 1), '/', 1)) ELSE '(invalid)' END"
+)
+
+
+#: SQLite host extraction for the failed-domains rollup (mirrors the
+#: Postgres constant below; ``?`` placeholders are bound params here).
+FAILED_DOMAIN_HOST_EXPR_SQLITE = (
+    "CASE WHEN lower(url) LIKE 'http%://%'"
+    " THEN lower(substr(hq, 1, instr(hq || '/', '/') - 1))"
+    " ELSE '(invalid)' END"
+)
+_FAILED_DOMAIN_HOST_FROM_SQLITE = (
+    "FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
+    " AS hq, url, last_error FROM (SELECT"
+    " substr(url, instr(url, '://') + 3) AS h, url, last_error"
+    " FROM frontier_queue WHERE status = 'failed'))"
+)
 
 
 def normalize_skip_domains(domains: Any) -> list[str] | None:
@@ -2023,30 +2052,40 @@ class SqliteFrontierStore(FrontierStore):
 
     def failed_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
-        """Aggregate ``failed`` rows by host, most-failed first.
+    ) -> list[tuple[str, int, str]]:
+        """Aggregate ``failed`` rows by host with the top reason each.
 
-        Host parsing is pure SQL (``://`` split, cut at first ``/``,
-        lowercased); non-http(s) rows bucket as ``(invalid)``. Values
-        are bound; only fixed fragments interpolate.
+        Host parsing is pure SQL (``://`` split, cut at first ``/`` or
+        ``?``, lowercased); non-http(s) rows bucket as ``(invalid)``.
+        The per-host reason is the mode of ``last_error`` (ties break
+        alphabetically). Values are bound; only fixed fragments
+        interpolate.
         """
         capped = max(0, int(limit or 0))
         skipped = max(0, int(offset or 0))
+        inner = (
+            f"SELECT {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain,"
+            " COALESCE(last_error, '') AS reason"
+            f" {_FAILED_DOMAIN_HOST_FROM_SQLITE}"
+        )
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT CASE WHEN lower(url) LIKE 'http%://%'"
-                    " THEN lower(substr(hq, 1, instr(hq || '/', '/') - 1))"
-                    " ELSE '(invalid)' END AS domain, COUNT(*) AS n"
-                    " FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
-                    " AS hq, url FROM (SELECT"
-                    " substr(url, instr(url, '://') + 3) AS h, url"
-                    " FROM frontier_queue WHERE status = 'failed'))"
-                    " GROUP BY domain ORDER BY n DESC, domain ASC"
+                    "SELECT t.domain, t.failed, r.reason AS top_reason"  # noqa: S608
+                    f" FROM (SELECT domain, COUNT(*) AS failed FROM ({inner})"
+                    " GROUP BY domain) AS t JOIN (SELECT domain, reason,"
+                    " ROW_NUMBER() OVER (PARTITION BY domain"
+                    " ORDER BY COUNT(*) DESC, reason ASC) AS rn"
+                    f" FROM ({inner}) GROUP BY domain, reason) AS r"
+                    " ON r.domain = t.domain AND r.rn = 1"
+                    " ORDER BY t.failed DESC, t.domain ASC"
                     " LIMIT ? OFFSET ?",
                     (capped, skipped),
                 ).fetchall()
-                return [(str(row["domain"]), int(row["n"])) for row in rows]
+                return [
+                    (str(row["domain"]), int(row["failed"]), str(row["top_reason"]))
+                    for row in rows
+                ]
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to aggregate failed domains: {exc}",
@@ -2058,14 +2097,9 @@ class SqliteFrontierStore(FrontierStore):
         try:
             with self._lock:
                 row = self._conn.execute(
-                    "SELECT COUNT(*) AS n FROM (SELECT DISTINCT"
-                    " CASE WHEN lower(url) LIKE 'http%://%'"
-                    " THEN lower(substr(hq, 1, instr(hq || '/', '/') - 1))"
-                    " ELSE '(invalid)' END AS domain"
-                    " FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
-                    " AS hq, url FROM (SELECT"
-                    " substr(url, instr(url, '://') + 3) AS h, url"
-                    " FROM frontier_queue WHERE status = 'failed')))"
+                    "SELECT COUNT(*) AS n FROM (SELECT DISTINCT"  # noqa: S608
+                    f" {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain"
+                    f" {_FAILED_DOMAIN_HOST_FROM_SQLITE})"
                 ).fetchone()
                 return int(row["n"]) if row is not None else 0
         except sqlite3.Error as exc:
@@ -3417,32 +3451,41 @@ class PostgresFrontierStore(FrontierStore):
 
     def failed_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
-        """Aggregate ``failed`` rows by host, most-failed first.
+    ) -> list[tuple[str, int, str]]:
+        """Aggregate ``failed`` rows by host with the top reason each.
 
         Postgres mirror of the SQLite implementation (``split_part``
         chains instead of ``substr``/``instr``); non-http(s) rows
-        bucket as ``(invalid)``.
+        bucket as ``(invalid)``. The per-host reason is the mode of
+        ``last_error`` (ties break alphabetically).
         """
         table = self._qualified("frontier_queue")
         capped = max(0, int(limit or 0))
         skipped = max(0, int(offset or 0))
-        host_expr = (
-            "CASE WHEN lower(url) LIKE 'http%://%'"
-            " THEN lower(split_part(split_part(split_part(url, '://', 2),"
-            " '?', 1), '/', 1)) ELSE '(invalid)' END"
+        host_expr = FAILED_DOMAIN_HOST_EXPR_PG
+        inner = (
+            f"SELECT {host_expr} AS domain, COALESCE(last_error, '') AS reason"
+            f" FROM {table} WHERE status = 'failed'"
         )
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"SELECT {host_expr} AS domain, COUNT(*) AS n"  # noqa: S608
-                        f" FROM {table} WHERE status = 'failed'"
-                        " GROUP BY domain ORDER BY n DESC, domain ASC"
+                        "SELECT t.domain, t.failed, r.reason AS top_reason"  # noqa: S608
+                        f" FROM (SELECT domain, COUNT(*) AS failed FROM ({inner})"
+                        " AS totals GROUP BY domain) AS t JOIN (SELECT domain, reason,"
+                        " ROW_NUMBER() OVER (PARTITION BY domain"
+                        " ORDER BY COUNT(*) DESC, reason ASC) AS rn"
+                        f" FROM ({inner}) AS reasons GROUP BY domain, reason) AS r"
+                        " ON r.domain = t.domain AND r.rn = 1"
+                        " ORDER BY t.failed DESC, t.domain ASC"
                         " LIMIT %s OFFSET %s",
                         (capped, skipped),
                     )
-                    return [(str(row[0]), int(row[1])) for row in cur.fetchall()]
+                    return [
+                        (str(row[0]), int(row[1]), str(row[2] or ""))
+                        for row in cur.fetchall()
+                    ]
         except Exception as exc:
             raise ProviderError(
                 f"failed to aggregate failed domains: {exc}",
@@ -3452,11 +3495,7 @@ class PostgresFrontierStore(FrontierStore):
 
     def failed_domain_count(self) -> int:
         table = self._qualified("frontier_queue")
-        host_expr = (
-            "CASE WHEN lower(url) LIKE 'http%://%'"
-            " THEN lower(split_part(split_part(split_part(url, '://', 2),"
-            " '?', 1), '/', 1)) ELSE '(invalid)' END"
-        )
+        host_expr = FAILED_DOMAIN_HOST_EXPR_PG
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:

@@ -61,8 +61,9 @@ repeated full-price failures.
 ## Failed-domain operations
 
 `GET /frontier/failed/domains` rolls failed rows up by host with
-per-host counts (paginated, open read). Each row offers four
-admin-only actions, all fail-closed on malformed host lists:
+per-host counts and the most common reason each (paginated, open
+read). Each row offers four admin-only actions, all fail-closed on
+malformed host lists:
 
 - **Requeue** (`POST /frontier/domains/requeue`) — failed rows back
   to queued with attempts reset and the error cleared (reseed

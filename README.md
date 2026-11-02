@@ -21,11 +21,13 @@ enrichment owned by independent plugins behind stable interfaces
 - Anonymous usefulness feedback (`POST /api/v1/feedback`) with reasons
   (privacy, kids-safety, …) to steer ranking work.
 - Admin app (`admin-frontend/`): URL-frontier dashboard (queue, pause,
-  resume, priority, clear), models/providers/ranking/query/plugins
+  resume, priority, clear), failed-domain operations (per-host counts
+  with requeue/flush/skip/block), models/providers/ranking/query/plugins
   editors — all mutations behind the `X-Admin-Token` gate.
 - Distributed crawling: Postgres frontier + Kafka topic with
-  multi-worker consumer groups, heartbeat leases, and per-domain
-  politeness (see below).
+  multi-worker consumer groups, heartbeat leases, per-domain
+  politeness and page budgets; 4xx fails terminally, only 429/5xx
+  and timeouts retry (see below).
 
 ## Install
 
@@ -129,8 +131,6 @@ set the ones for the backends you turn on.
 | `MODEL_API_KEY` | (none — required when enabled) | Key for the `openai_compat` model backend (`configs/models.yaml`) |
 | `MODEL_BASE_URL` | `https://api.meta.ai/v1` | Endpoint for the `openai_compat` model backend |
 | `MODEL_NAME` | `muse-spark-1.3` | Model name sent to the `openai_compat` backend |
-| `ANTHROPIC_API_KEY` | (none — required when enabled) | Key for the `claude` model backend |
-| `MUSE_API_KEY` | (none — required when enabled) | Key for the `muse` model backend |
 | `LOCAL_MODEL_ENDPOINT` | `http://localhost:11434` | Endpoint for the `local` model backend |
 | `OPENLENS_MYSQL_HOST` / `OPENLENS_MYSQL_PORT` / `OPENLENS_MYSQL_DATABASE` / `OPENLENS_MYSQL_USER` / `OPENLENS_MYSQL_PASSWORD` | `localhost` / `3306` / `openlens` / `root` / (empty) | MySQL storage backend (`storage.mysql` in `configs/default.yaml`) |
 | `OPENLENS_PG_HOST` / `OPENLENS_PG_PORT` / `OPENLENS_PG_DBNAME` / `OPENLENS_PG_USER` / `OPENLENS_PG_PASSWORD` | `localhost` / `5432` / `openlens` / `postgres` / (empty) | Postgres storage backend (`storage.postgres` in `configs/default.yaml`) |
@@ -296,6 +296,11 @@ normalization → deduplication → filtering → scoring → ranking → enrich
 explanation. Plugins declare their stage, type, dependencies, and whether
 they are mandatory (fail closed) or optional (failures isolated and recorded
 in `SearchContext` diagnostics).
+
+Deep dives: [Search Path](docs/wiki/Search-Path.md) (stages,
+providers, ranking, agent mode), [Crawl
+Path](docs/wiki/Crawl-Path.md) (frontier, fetch pipeline, retry
+budget), [Architecture](docs/wiki/Architecture.md) (system HLD).
 
 ## Operations
 

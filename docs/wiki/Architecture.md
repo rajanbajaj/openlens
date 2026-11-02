@@ -104,6 +104,10 @@ dead one. Kafka lag without members means nobody has polled yet —
 watch heartbeats and `queue_depth`, not the member count
 ([troubleshoot](../troubleshoots/kafka-group-fewer-members-than-crawlers.md)).
 
+Deep dives: [Search Path](Search-Path) (stages, providers, ranking,
+agent mode) and [Crawl Path](Crawl-Path) (frontier, fetch pipeline,
+retry budget).
+
 ## Request path
 
 `POST /api/v1/search` → validate (`api/schemas.py`) → `SearchEngine`

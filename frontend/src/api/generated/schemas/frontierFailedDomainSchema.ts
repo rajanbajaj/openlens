@@ -12,4 +12,5 @@ export interface FrontierFailedDomainSchema {
   domain: string;
   /** @minimum 0 */
   failed?: number;
+  top_reason?: string;
 }

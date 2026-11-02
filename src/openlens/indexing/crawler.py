@@ -592,19 +592,16 @@ def classify_content_quality(
     if visible < _SOFT_404_MAX_CHARS:
         haystack = f"{head}\n{text[:_SOFT_404_MAX_CHARS]}"
         if any(pattern.search(haystack) for pattern in _SOFT_404_PATTERNS):
-            return (
-                "soft_404",
-                f"soft-404 page ({visible} chars): error markers on thin content",
-            )
+            # Static reason: embedding counts would splinter the
+            # top-reasons rollup into one bucket per page.
+            return ("soft_404", "soft-404 page")
     try:
         floor = int(min_visible_chars)
     except (TypeError, ValueError):
         floor = DEFAULT_MIN_VISIBLE_CHARS
     if visible < max(0, floor):
-        return (
-            "thin_content",
-            f"thin content ({visible} chars < {max(0, floor)})",
-        )
+        # Static reason (see above): aggregate, don't fingerprint.
+        return ("thin_content", "thin content")
     return ("ok", "")
 
 

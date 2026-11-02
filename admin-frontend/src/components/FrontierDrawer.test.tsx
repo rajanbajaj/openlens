@@ -627,8 +627,8 @@ describe('FrontierDrawer worker throughput', () => {
 describe('FrontierDrawer failed domains', () => {
   const DOMAINS = {
     domains: [
-      { domain: 'example.com', failed: 12 },
-      { domain: 'other.example', failed: 3 },
+      { domain: 'example.com', failed: 12, top_reason: 'fetch timeout' },
+      { domain: 'other.example', failed: 3, top_reason: 'http 404' },
     ],
     total: 2,
     limit: 20,
@@ -698,6 +698,7 @@ describe('FrontierDrawer failed domains', () => {
       expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('example.com');
     });
     expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('12');
+    expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('fetch timeout');
     expect(screen.getByTestId('frontier-domain-requeue-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-domain-flush-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-domain-skip-example.com')).toBeInTheDocument();

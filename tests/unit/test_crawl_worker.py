@@ -508,13 +508,15 @@ def test_classify_content_quality_soft_404() -> None:
     body = "404 - Page Not Found /authors/ol5116752a does not exist."
     verdict, reason = classify_content_quality(title, body)
     assert verdict == "soft_404"
-    assert "soft-404" in reason
+    # Static string: embedding counts would splinter top-reasons.
+    assert reason == "soft-404 page"
 
 
 def test_classify_content_quality_thin_content() -> None:
     verdict, reason = classify_content_quality("A title", "too short")
     assert verdict == "thin_content"
-    assert "thin content" in reason
+    # Static string: embedding counts would splinter top-reasons.
+    assert reason == "thin content"
 
 
 def test_classify_content_quality_long_article_mentioning_404_is_ok() -> None:

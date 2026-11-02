@@ -1448,8 +1448,12 @@ def frontier_failed_domains(
         pairs = store.failed_domains(limit=capped, offset=skipped)
         return FrontierFailedDomainListSchema(
             domains=[
-                FrontierFailedDomainSchema(domain=domain, failed=max(0, int(count)))
-                for domain, count in pairs
+                FrontierFailedDomainSchema(
+                    domain=domain,
+                    failed=max(0, int(count)),
+                    top_reason=reason or "",
+                )
+                for domain, count, reason in pairs
             ],
             total=total,
             limit=capped,

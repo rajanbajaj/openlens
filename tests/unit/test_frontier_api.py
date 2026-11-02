@@ -146,6 +146,16 @@ def _failed_domain_store(tmp_path) -> SqliteFrontierStore:
     return store
 
 
+def test_failed_domain_postgres_expr_has_no_literal_percent() -> None:
+    """psycopg scans %X client-side: a literal %: in SQL is a fatal
+    ProgrammingError, so the rollup expression must only carry %s."""
+    import re
+
+    from openlens.storage.frontier import FAILED_DOMAIN_HOST_EXPR_PG
+
+    assert re.findall(r"%(?!s)", FAILED_DOMAIN_HOST_EXPR_PG) == []
+
+
 def test_failed_domains_groups_hosts_with_counts(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -157,10 +167,12 @@ def test_failed_domains_groups_hosts_with_counts(
         monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
         body = client.get("/api/v1/frontier/failed/domains").json()
         assert body["total"] == 3
-        assert [(d["domain"], d["failed"]) for d in body["domains"]] == [
-            ("example.com", 2),
-            ("(invalid)", 1),
-            ("other.example", 1),
+        assert [
+            (d["domain"], d["failed"], d["top_reason"]) for d in body["domains"]
+        ] == [
+            ("example.com", 2, "fetch timeout"),
+            ("(invalid)", 1, "invalid url"),
+            ("other.example", 1, "http 401"),
         ]
         page = client.get("/api/v1/frontier/failed/domains?limit=1&offset=1").json()
         assert [(d["domain"], d["failed"]) for d in page["domains"]] == [
