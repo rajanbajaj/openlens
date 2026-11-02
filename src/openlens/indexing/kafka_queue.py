@@ -556,6 +556,13 @@ def topic_group_lag(
     if not bootstrap_servers or not topic.strip() or not group_id.strip():
         raise _error("group lag needs bootstrap servers, a topic, and a group id.")
     kafka, _ = _load_driver()
+    request_timeout_ms = max(1000, int(timeout_s * 1000))
+    # kafka-python requires request_timeout_ms > session_timeout_ms; the
+    # probe never joins the group (manual assignment only), so fit the
+    # session inside the probe budget instead of stretching the request.
+    # Without this the 2s dashboard probe raised KafkaConfigurationError
+    # on every poll (10s default session) and lag read permanently null.
+    session_timeout_ms = max(1, min(6000, request_timeout_ms - 1))
     consumer = None
     try:
         try:
@@ -563,7 +570,8 @@ def topic_group_lag(
                 group_id=group_id.strip(),
                 bootstrap_servers=list(bootstrap_servers),
                 enable_auto_commit=False,
-                request_timeout_ms=max(1000, int(timeout_s * 1000)),
+                request_timeout_ms=request_timeout_ms,
+                session_timeout_ms=session_timeout_ms,
             )
         except Exception as exc:
             raise _error(f"cannot create lag-probe consumer: {exc}") from exc

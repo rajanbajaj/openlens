@@ -505,6 +505,63 @@ def test_missing_driver_fails_closed() -> None:
         KafkaQueue(bootstrap_servers=["b:1"], producer=None)
 
 
+def test_topic_group_lag_consumer_satisfies_driver_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe consumer must satisfy request_timeout > session_timeout.
+
+    Regression: the dashboard probe (timeout_s=2.0) left the session at
+    the 10s driver default, so every poll raised KafkaConfigurationError
+    and kafka_lag_total read permanently null.
+    """
+    import openlens.indexing.kafka_queue as kafka_queue_mod
+
+    seen: dict[str, Any] = {}
+
+    class _ProbeConsumer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            request = kwargs.get("request_timeout_ms")
+            session = kwargs.get("session_timeout_ms", 10000)
+            if not (
+                isinstance(request, int)
+                and isinstance(session, int)
+                and request > session
+            ):
+                raise Exception(
+                    "KafkaConfigurationError: Request timeout "
+                    f"({request}) must be larger than session timeout ({session})"
+                )
+            seen.update(kwargs)
+
+        def partitions_for_topic(self, topic: str) -> list[int]:
+            return [0]
+
+        def end_offsets(self, parts: Any) -> dict[Any, int]:
+            return {part: 10 for part in parts}
+
+        def committed(self, part: Any) -> int | None:
+            return 4
+
+        def close(self, autocommit: bool = False) -> None:
+            return None
+
+    class _FakeKafka:
+        KafkaConsumer = _ProbeConsumer
+
+        @staticmethod
+        def TopicPartition(topic: str, part: int) -> tuple[str, int]:
+            return (topic, part)
+
+    monkeypatch.setattr(
+        kafka_queue_mod, "_load_driver", lambda: (_FakeKafka(), Exception)
+    )
+    lag = kafka_queue_mod.topic_group_lag(
+        ["b:1"], "crawl.urls", "crawlers", timeout_s=2.0
+    )
+    assert lag == {"total_lag": 6, "partitions": 1}
+    assert seen["request_timeout_ms"] <= 2000
+
+
 def test_open_kafka_queue_factory() -> None:
     queue = open_kafka_queue(
         {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=_FakeProducer()
