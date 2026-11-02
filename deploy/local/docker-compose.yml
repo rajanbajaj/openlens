@@ -368,7 +368,7 @@ services:
   postgres:
     image: postgres:16
     mem_limit: 1G
-    cpus: 1.0
+    cpus: 2.0
     logging: *default-logging
     # Connection headroom for crawler scale-out: each backend/crawler
     # process holds ~2 pools x OPENLENS_PG_POOL_SIZE connections
