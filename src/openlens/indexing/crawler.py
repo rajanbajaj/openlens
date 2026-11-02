@@ -85,7 +85,9 @@ _PERSIST_DIRTY_THRESHOLD = 100
 _PERSIST_MAX_AGE_S = 5.0
 
 #: Allowed per-domain policy keys inside ``domain_policies``.
-ALLOWED_DOMAIN_POLICY_KEYS = frozenset({"allow", "rate_limit_s", "max_depth"})
+ALLOWED_DOMAIN_POLICY_KEYS = frozenset(
+    {"allow", "rate_limit_s", "max_depth", "max_pages"}
+)
 
 #: Allowed ``configure()`` keys; anything else raises ConfigError because
 #: the config loader itself is permissive and rejects nothing.
@@ -250,6 +252,53 @@ def normalize_url(url: str) -> str:
     if kept:
         canonical += "?" + urllib.parse.urlencode(kept)
     return canonical
+
+
+#: URL schemes that are never page fetches. Archive-wrapped variants of
+#: these arrive as http(s) URLs with the scheme buried in the path.
+_NON_PAGE_SCHEMES = (
+    "mailto",
+    "tel",
+    "sms",
+    "javascript",
+    "data",
+    "ftp",
+    "file",
+    "about",
+    "blob",
+)
+
+_NESTED_SCHEME_RE = re.compile(r"(?:^|[/:?&;])(?:%s):" % "|".join(_NON_PAGE_SCHEMES))
+
+
+def _is_retriable_http_status(status: int) -> bool:
+    """Transient HTTP failures worth another attempt (429/5xx).
+
+    Every other non-200 (400/401/403/404/...) is terminal: the server
+    already decided, so retrying only burns crawl budget.
+    """
+    return status == 429 or 500 <= status < 600
+
+
+def _is_fetchable_url(url: str) -> bool:
+    """True when ``url`` can plausibly be fetched as a page.
+
+    Rejects non-http(s) schemes, hostless URLs (``http:/path``), and
+    http(s) URLs with a nested non-page scheme in the path/query
+    (archive-wrapped ``mailto:`` links). Runs before robots/fetch so
+    junk seeds and outlinks die terminally without network traffic.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+    except Exception:
+        return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False
+    if not parts.hostname:
+        return False
+    if _NESTED_SCHEME_RE.search(parts.path):
+        return False
+    return not _NESTED_SCHEME_RE.search(parts.query)
 
 
 class CrawlError(Exception):
@@ -1929,6 +1978,18 @@ class PoliteCrawler:
                         f"crawler: 'max_depth' for domain {domain!r} must "
                         f"be >= 0, got {depth!r}. Startup validation failed."
                     )
+            if "max_pages" in policy:
+                budget = policy["max_pages"]
+                if isinstance(budget, bool) or not isinstance(budget, int):
+                    raise ConfigError(
+                        f"crawler: 'max_pages' for domain {domain!r} must "
+                        f"be an int, got {budget!r}. Startup validation failed."
+                    )
+                if budget < 1:
+                    raise ConfigError(
+                        f"crawler: 'max_pages' for domain {domain!r} must "
+                        f"be >= 1, got {budget!r}. Startup validation failed."
+                    )
             normalized_policies[domain.strip().lower()] = dict(policy)
         default_depth = config.get("default_max_depth", DEFAULT_MAX_DEPTH)
         if default_depth is not None and (
@@ -2151,6 +2212,7 @@ class PoliteCrawler:
             stats.evicted = frontier.evicted
             documents: list[Document] = []
             seen: set[str] = set()
+            domain_fetches: dict[str, int] = {}
             attempts = 0
             if store is not None:
                 _save_checkpoint(PHASE_RUNNING)
@@ -2209,6 +2271,19 @@ class PoliteCrawler:
                         store.mark_failed(raw, "depth cap exceeded")
                     _notify(raw, "skipped", "depth cap exceeded")
                     continue
+                if not _is_fetchable_url(raw):
+                    stats.errors += 1
+                    if store is not None:
+                        store.mark_failed(raw, "invalid url")
+                    _notify(raw, "failed", "invalid url")
+                    continue
+                budget = self._domain_page_budget(host)
+                if budget is not None and domain_fetches.get(host, 0) >= budget:
+                    stats.skipped_domain += 1
+                    if store is not None:
+                        store.mark_failed(raw, "domain page budget exceeded")
+                    _notify(raw, "skipped", "domain page budget exceeded")
+                    continue
                 if self.respect_robots and not self._allowed_by_robots(raw):
                     stats.skipped_robots += 1
                     if store is not None:
@@ -2217,6 +2292,7 @@ class PoliteCrawler:
                     continue
                 self._wait_polite(host.lower(), raw)
                 attempts += 1
+                domain_fetches[host] = domain_fetches.get(host, 0) + 1
                 try:
                     page = self._fetch_bounded(raw)
                 except CrawlError:
@@ -2248,11 +2324,14 @@ class PoliteCrawler:
                     continue
                 if page.status != 200:
                     stats.errors += 1
+                    reason = f"http {page.status}"
                     if store is not None:
-                        store.mark_failed(raw, f"http {page.status}")
-                        if entry_attempts + 1 < self.max_attempts_per_url:
+                        store.mark_failed(raw, reason)
+                        if _is_retriable_http_status(page.status) and (
+                            entry_attempts + 1 < self.max_attempts_per_url
+                        ):
                             store.requeue(raw)
-                    _notify(raw, "failed", f"http {page.status}")
+                    _notify(raw, "failed", reason)
                     continue
                 if page.bytes_aborted:
                     stats.aborted_bytes += 1
@@ -2377,6 +2456,20 @@ class PoliteCrawler:
                     best = policy
                     best_len = len(domain)
         return best
+
+    def _domain_page_budget(self, host: str) -> int | None:
+        """Per-domain fetch budget for this ``crawl()`` call, if configured.
+
+        Reads the ``max_pages`` policy (exact or parent-domain match);
+        ``None`` means unbounded. Bounds trap damage: a host with
+        thousands of near-empty pages (JS demos, doc farms) can only
+        consume its budget per run instead of the whole crawl.
+        """
+        policy = self._policy_for(host)
+        budget = policy.get("max_pages")
+        if isinstance(budget, bool) or not isinstance(budget, int):
+            return None
+        return budget if budget >= 1 else None
 
     def _policy_allowed(self, host: str) -> bool:
         """Enforce a per-domain ``allow`` override (fail-closed default).

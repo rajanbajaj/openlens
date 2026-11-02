@@ -341,7 +341,7 @@ def test_default_yaml_indexing_section_still_configures() -> None:
         config = yaml.safe_load(handle)
     crawler = PoliteCrawler()
     crawler.configure(dict(config["indexing"]))
-    assert crawler.domain_policies == {}
+    assert crawler.domain_policies == {"arxiv.org": {"rate_limit_s": 3.0}}
     assert crawler.default_max_depth is None
 
 

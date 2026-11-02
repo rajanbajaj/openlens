@@ -147,6 +147,179 @@ def test_crawl_reports_page_outcomes(stub_base: str) -> None:
     assert not any(url.endswith("/private") for url, _, _ in seen)
 
 
+def _failed_page(url: str, status: int) -> object:
+    from openlens.indexing.crawler import _FetchedPage
+
+    return _FetchedPage(
+        status=status, url=url, content_type="text/plain", body=b"nope", headers={}
+    )
+
+
+def test_http_4xx_terminal_no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4xx rejections fail once: retrying a decided rejection burns budget.
+
+    The in-memory ``seen`` set fetches each URL at most once per
+    ``crawl()`` call, so retries surface across calls — drive several
+    and assert the 404 is never refetched.
+    """
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    hits: list[str] = []
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        return _failed_page(url, 404)
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        events: list[tuple[str, str, str | None]] = []
+        crawler = _crawler(max_pages=10, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        for _ in range(5):
+            crawler.crawl(
+                ["https://example.com/nope"],
+                frontier_store=store,
+                on_outcome=lambda url, outcome, reason: events.append(
+                    (url, outcome, reason)
+                ),
+            )
+        assert hits == ["https://example.com/nope"]
+        assert ("https://example.com/nope", "failed", "http 404") in events
+        failed = {entry.url: entry for entry in store.failed(limit=10)}
+        assert failed["https://example.com/nope"].attempts == 1
+    finally:
+        store.close()
+
+
+def test_http_transient_retried_then_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """429/5xx keep the old retry budget (max_attempts_per_url fetches)."""
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    hits: list[str] = []
+    statuses = {
+        "https://example.com/throttled": 429,
+        "https://example.com/broken": 500,
+    }
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        return _failed_page(url, statuses[url])
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        events: list[tuple[str, str, str | None]] = []
+        crawler = _crawler(max_pages=20, max_attempts_per_url=3, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        for _ in range(5):
+            crawler.crawl(
+                list(statuses),
+                frontier_store=store,
+                on_outcome=lambda url, outcome, reason: events.append(
+                    (url, outcome, reason)
+                ),
+            )
+        assert sorted(hits) == sorted(list(statuses) * 3)
+        by_url = {url: (outcome, reason) for url, outcome, reason in events}
+        assert by_url["https://example.com/throttled"] == ("failed", "http 429")
+        assert by_url["https://example.com/broken"] == ("failed", "http 500")
+    finally:
+        store.close()
+
+
+def test_unfetchable_urls_fail_without_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """mailto:/hostless URLs never reach the network; one terminal failure."""
+    from openlens.indexing.crawler import _is_fetchable_url
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    assert not _is_fetchable_url("mailto:info@example.com")
+    assert not _is_fetchable_url("http:/no-such-host-xyz/path")
+    assert not _is_fetchable_url(
+        "https://web.archive.org/web/20211221001342/mailto:info@example.com"
+    )
+    assert _is_fetchable_url("https://example.com/page1")
+    assert _is_fetchable_url("https://web.archive.org/web/2021/https://example.com/")
+
+    def _must_not_fetch(url: str) -> object:
+        raise AssertionError(f"unfetchable URL reached fetch: {url}")
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        seen: list[tuple[str, str, str | None]] = []
+        crawler = _crawler(max_pages=10, respect_robots=False)
+        monkeypatch.setattr(crawler, "_fetch_bounded", _must_not_fetch)
+        crawler.crawl(
+            ["mailto:info@example.com", "http:/no-such-host-xyz/path"],
+            frontier_store=store,
+            on_outcome=lambda url, outcome, reason: seen.append((url, outcome, reason)),
+        )
+        by_url = {url: (outcome, reason) for url, outcome, reason in seen}
+        assert by_url["mailto:info@example.com"] == ("failed", "invalid url")
+        assert by_url["http:/no-such-host-xyz/path"] == ("failed", "invalid url")
+    finally:
+        store.close()
+
+
+def _ok_page(url: str) -> object:
+    from openlens.indexing.crawler import _FetchedPage
+
+    body = (
+        b"<html><head><title>Real page</title></head><body>"
+        + b"<p>Informative crawlable prose about the topic. </p>" * 12
+        + b"</body></html>"
+    )
+    return _FetchedPage(
+        status=200, url=url, content_type="text/html", body=body, headers={}
+    )
+
+
+def test_domain_page_budget_caps_trap_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A budgeted domain stops fetching after max_pages; the rest skip."""
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    hits: list[str] = []
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        return _ok_page(url)
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        events: list[tuple[str, str, str | None]] = []
+        crawler = _crawler(
+            max_pages=10,
+            respect_robots=False,
+            domain_policies={"example.com": {"max_pages": 2}},
+        )
+        monkeypatch.setattr(crawler, "_fetch_bounded", _fetch)
+        seeds = [f"https://example.com/p{i}" for i in range(5)]
+        crawler.crawl(
+            seeds,
+            frontier_store=store,
+            on_outcome=lambda url, outcome, reason: events.append(
+                (url, outcome, reason)
+            ),
+        )
+        assert hits == seeds[:2]
+        by_url = {url: (outcome, reason) for url, outcome, reason in events}
+        assert by_url[seeds[0]] == ("fetched", None)
+        assert by_url[seeds[2]] == ("skipped", "domain page budget exceeded")
+    finally:
+        store.close()
+
+
+def test_domain_policy_max_pages_validated() -> None:
+    with pytest.raises(ConfigError):
+        _crawler(domain_policies={"example.com": {"max_pages": 0}})
+    with pytest.raises(ConfigError):
+        _crawler(domain_policies={"example.com": {"max_pages": "many"}})
+    with pytest.raises(ConfigError):
+        _crawler(domain_policies={"example.com": {"nope": 1}})
+
+
 def test_crawl_without_sink_stays_silent(stub_base: str) -> None:
     """No on_outcome means zero reporting overhead and no behavior change."""
     crawler = _crawler(max_pages=10)
