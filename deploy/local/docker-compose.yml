@@ -343,6 +343,9 @@ services:
     networks:
       - openlens
 
+  # Set POSTGRES_HOST=0.0.0.0 to reach Postgres from the LAN — and
+  # change POSTGRES_PASSWORD first (the shipped default is public in
+  # .env.example). Same pattern as KAFKA_UI_HOST / PGADMIN_HOST.
   postgres:
     image: postgres:16
     mem_limit: 1G
@@ -366,7 +369,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openlens}
       POSTGRES_DB: ${POSTGRES_DB:-openlens}
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./pg_hba.conf:/etc/pg_hba/pg_hba.conf:ro
@@ -465,6 +468,10 @@ services:
   # (the v0.4.33-v0.4.35 incident chain). Native TTL owns retention, so
   # expiry costs no DELETE traffic. New event names are allowlisted in
   # `src/openlens/analytics/events.py`; raw query text is never stored.
+  # Set CLICKHOUSE_HOST=0.0.0.0 to reach it from the LAN — and set a
+  # real ClickHouse password first: the app connects as user `default`
+  # with an empty password (see `analytics:` in configs/default.yaml),
+  # so a LAN-bound ClickHouse is currently open to the whole network.
   clickhouse:
     image: clickhouse/clickhouse-server:24.12-alpine
     mem_limit: 2G
@@ -477,8 +484,8 @@ services:
         soft: 262144
         hard: 262144
     ports:
-      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123"
-      - "127.0.0.1:${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+      - "${CLICKHOUSE_HOST:-127.0.0.1}:${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_HOST:-127.0.0.1}:${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-openlens_analytics}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-openlens}
