@@ -124,6 +124,134 @@ def test_failed_lists_reasons_with_pagination(
     assert second.json()["urls"][0]["reason"] == ""
 
 
+def _failed_domain_store(tmp_path) -> SqliteFrontierStore:
+    """Seeded store: two failed hosts, one invalid URL, one queued row."""
+    from openlens.storage.frontier import SqliteFrontierStore as _Store
+
+    store = _Store(str(tmp_path / "domains.db"))
+    for url in (
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://other.example/c",
+        "mailto:info@example.com",
+        "https://example.com/queued",
+    ):
+        assert store.enqueue(url, 0) is True
+    for _ in range(3):
+        store.mark_failed("https://example.com/a", "fetch timeout")
+    for _ in range(2):
+        store.mark_failed("https://example.com/b", "http 404")
+    store.mark_failed("https://other.example/c", "http 401")
+    store.mark_failed("mailto:info@example.com", "invalid url")
+    return store
+
+
+def test_failed_domains_groups_hosts_with_counts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The domains view rolls failed rows up by host, most-failed first."""
+    from openlens.api import routes as routes_mod
+
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        body = client.get("/api/v1/frontier/failed/domains").json()
+        assert body["total"] == 3
+        assert [(d["domain"], d["failed"]) for d in body["domains"]] == [
+            ("example.com", 2),
+            ("(invalid)", 1),
+            ("other.example", 1),
+        ]
+        page = client.get("/api/v1/frontier/failed/domains?limit=1&offset=1").json()
+        assert [(d["domain"], d["failed"]) for d in page["domains"]] == [
+            ("(invalid)", 1)
+        ]
+    finally:
+        store.close()
+
+
+def test_domains_requeue_revives_with_reset_attempts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Requeue resets the retry budget so rows actually refetch."""
+    from openlens.api import routes as routes_mod
+
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post(
+            "/api/v1/frontier/domains/requeue", json={"domains": ["example.com"]}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"domains": ["example.com"], "affected": 2}
+        assert {e.url for e in store.failed(limit=100)} == {
+            "https://other.example/c",
+            "mailto:info@example.com",
+        }
+        pending = {e.url: e for e in store.pending(limit=100)}
+        assert pending["https://example.com/a"].attempts == 0
+    finally:
+        store.close()
+
+
+def test_domains_purge_deletes_only_failed_rows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Purge removes failed history, never queued work."""
+    from openlens.api import routes as routes_mod
+
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post(
+            "/api/v1/frontier/domains/purge", json={"domains": ["example.com"]}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["affected"] == 2
+        assert {e.url for e in store.pending(limit=100)} == {
+            "https://example.com/queued"
+        }
+    finally:
+        store.close()
+
+
+def test_domains_skip_moves_queued_rows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Skip marks queued rows without touching failed history."""
+    from openlens.api import routes as routes_mod
+
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post(
+            "/api/v1/frontier/domains/skip", json={"domains": ["example.com"]}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"domains": ["example.com"], "affected": 1}
+        assert {e.url for e in store.failed(limit=100)} == {
+            "https://example.com/a",
+            "https://example.com/b",
+            "https://other.example/c",
+            "mailto:info@example.com",
+        }
+    finally:
+        store.close()
+
+
+def test_domains_actions_reject_bad_bodies(client: TestClient) -> None:
+    """Domain actions are fail-closed on malformed host lists."""
+    for path in (
+        "/api/v1/frontier/domains/requeue",
+        "/api/v1/frontier/domains/purge",
+        "/api/v1/frontier/domains/skip",
+    ):
+        assert client.post(path, json={}).status_code == 422
+        assert client.post(path, json={"domains": []}).status_code == 422
+        assert client.post(path, json={"domains": "example.com"}).status_code == 422
+        assert client.post(path, json={"domains": [":::"]}).status_code == 422
+
+
 def test_store_overlay_preserves_kafka_enabled() -> None:
     """The store overlay rebuilds the payload; it must not drop the flag.
 

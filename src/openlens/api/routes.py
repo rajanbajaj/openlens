@@ -45,6 +45,12 @@ from openlens.api.schemas import CrawlRequestListSchema, CrawlRequestSchema
 from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
+from openlens.api.schemas import (
+    FrontierDomainsActionSchema,
+    FrontierDomainsResultSchema,
+    FrontierFailedDomainListSchema,
+    FrontierFailedDomainSchema,
+)
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
 from openlens.api.schemas import FrontierWorkersResponseSchema
@@ -1416,6 +1422,139 @@ def frontier_failed(
         )
     except Exception:
         return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
+
+
+@router.get("/frontier/failed/domains", response_model=FrontierFailedDomainListSchema)
+def frontier_failed_domains(
+    request: Request, limit: int = 100, offset: int = 0
+) -> FrontierFailedDomainListSchema:
+    """Failed-URL rollup by host with per-host counts (admin failed view).
+
+    Open read like ``/frontier/failed`` (hosts + counts only, no
+    secrets). Never 500s: store failures degrade to the empty list.
+    """
+    capped = max(0, int(limit or 0))
+    skipped = max(0, int(offset or 0))
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return FrontierFailedDomainListSchema(
+                domains=[], total=0, limit=capped, offset=skipped
+            )
+        try:
+            total = int(store.failed_domain_count() or 0)
+        except Exception:
+            total = 0
+        pairs = store.failed_domains(limit=capped, offset=skipped)
+        return FrontierFailedDomainListSchema(
+            domains=[
+                FrontierFailedDomainSchema(domain=domain, failed=max(0, int(count)))
+                for domain, count in pairs
+            ],
+            total=total,
+            limit=capped,
+            offset=skipped,
+        )
+    except Exception:
+        return FrontierFailedDomainListSchema(
+            domains=[], total=0, limit=capped, offset=skipped
+        )
+
+
+def _frontier_domain_targets(body: Any) -> list[str] | None:
+    """Validated host list for a domain-scoped failed-queue action.
+
+    Fail-closed: non-list bodies, empty lists, and fully-malformed
+    lists all return None (the endpoint answers 422).
+    """
+    from openlens.storage.frontier import normalize_skip_domains
+
+    domains = getattr(body, "domains", None)
+    if not isinstance(domains, list) or not domains:
+        return None
+    targets = normalize_skip_domains(domains)
+    return targets or None
+
+
+def _frontier_domains_action(
+    request: Request,
+    body: FrontierDomainsActionSchema,
+    op: str,
+) -> FrontierDomainsResultSchema | JSONResponse:
+    """Shared admin gate + dispatch for failed-domain actions."""
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    targets = _frontier_domain_targets(body)
+    if targets is None:
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "invalid_request", "domains must be a non-empty host list"
+            ),
+        )
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable", "frontier store unavailable"
+                ),
+            )
+        if op == "requeue":
+            affected = int(store.requeue_failed_domains(targets) or 0)
+        elif op == "purge":
+            affected = int(store.purge_failed_domains(targets) or 0)
+        elif op == "skip":
+            affected = int(store.skip_queued_domains(targets) or 0)
+        else:  # pragma: no cover - dispatch is closed above
+            return JSONResponse(
+                status_code=422,
+                content=error_body("invalid_request", f"unknown domain op: {op}"),
+            )
+    except ProviderError as exc:
+        logger.warning("frontier domains %s failed: %s", op, exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+    except Exception as exc:
+        logger.warning("frontier domains %s failed: %s", op, exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+    return FrontierDomainsResultSchema(domains=targets, affected=affected)
+
+
+@router.post("/frontier/domains/requeue", response_model=FrontierDomainsResultSchema)
+def frontier_domains_requeue(
+    body: FrontierDomainsActionSchema, request: Request
+) -> FrontierDomainsResultSchema | JSONResponse:
+    """Retry a failed host: failed rows back to queued, attempts reset.
+
+    Admin-only. Attempts reset to 0 with the error cleared (reseed
+    semantics), so the rows actually refetch instead of re-terminating
+    on the spent retry budget.
+    """
+    return _frontier_domains_action(request, body, "requeue")
+
+
+@router.post("/frontier/domains/purge", response_model=FrontierDomainsResultSchema)
+def frontier_domains_purge(
+    body: FrontierDomainsActionSchema, request: Request
+) -> FrontierDomainsResultSchema | JSONResponse:
+    """Delete a failed host's history rows (admin-only, irreversible)."""
+    return _frontier_domains_action(request, body, "purge")
+
+
+@router.post("/frontier/domains/skip", response_model=FrontierDomainsResultSchema)
+def frontier_domains_skip(
+    body: FrontierDomainsActionSchema, request: Request
+) -> FrontierDomainsResultSchema | JSONResponse:
+    """Skip a host's queued rows (admin-only; same as bulk domain skip)."""
+    return _frontier_domains_action(request, body, "skip")
 
 
 #: Seconds between pushes on the live frontier websocket. Tests

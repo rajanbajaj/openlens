@@ -359,6 +359,35 @@ class FrontierFailedListSchema(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
+class FrontierFailedDomainSchema(BaseModel):
+    """One failed host for the admin failed-domains view."""
+
+    domain: str
+    failed: int = Field(default=0, ge=0)
+
+
+class FrontierFailedDomainListSchema(BaseModel):
+    """Paginated failed-domain rollup (HTTP 200 always; empty when unreadable)."""
+
+    domains: list[FrontierFailedDomainSchema] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=0)
+    offset: int = Field(default=0, ge=0)
+
+
+class FrontierDomainsActionSchema(BaseModel):
+    """Domain-scoped failed-queue action: normalized host list in."""
+
+    domains: list[str] = Field(default_factory=list)
+
+
+class FrontierDomainsResultSchema(BaseModel):
+    """Result of a domain-scoped failed-queue action."""
+
+    domains: list[str] = Field(default_factory=list)
+    affected: int = Field(default=0, ge=0)
+
+
 class FrontierDiscoverySchema(BaseModel):
     """A worker's last discovery-pass summary (feeds + refresh).
 

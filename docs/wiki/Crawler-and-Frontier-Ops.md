@@ -58,6 +58,25 @@ cuts the host entirely. For never-succeed hosts (bot-wall 401s,
 tarpitted timeouts) prefer `deny_domains`/tight budgets over
 repeated full-price failures.
 
+## Failed-domain operations
+
+`GET /frontier/failed/domains` rolls failed rows up by host with
+per-host counts (paginated, open read). Each row offers four
+admin-only actions, all fail-closed on malformed host lists:
+
+- **Requeue** (`POST /frontier/domains/requeue`) — failed rows back
+  to queued with attempts reset and the error cleared (reseed
+  semantics), so the host actually refetches.
+- **Flush** (`POST /frontier/domains/purge`) — deletes the host's
+  failed history only; queued/active/done rows are untouched.
+  Confirm in the UI: irreversible.
+- **Skip** (`POST /frontier/domains/skip`) — marks the host's queued
+  rows skipped with a naming `last_error`.
+- **Block** — no endpoint: the admin UI reads the `indexing` config
+  doc, merges the host into `deny_domains` (deduped, lowercased),
+  and PUTs it back. Policy gates apply on the next claim; workers
+  pick the config up on refresh.
+
 ## Scaling crawler throughput
 
 Each worker fetches pages sequentially, so per-worker rate is ~1 page

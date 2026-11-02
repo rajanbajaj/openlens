@@ -15,6 +15,8 @@ import {
   isCrawlRequestList,
   isErrorEnvelope,
   isFeedbackSummary,
+  isFrontierDomainsResult,
+  isFrontierFailedDomainList,
   isFrontierFailedList,
   isFrontierSettingsResponse,
   isFrontierStatus,
@@ -29,7 +31,11 @@ import {
   adminFeedbackSummaryApiV1AdminFeedbackSummaryGet,
   frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
   frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
+  frontierDomainsPurgeApiV1FrontierDomainsPurgePost,
+  frontierDomainsRequeueApiV1FrontierDomainsRequeuePost,
+  frontierDomainsSkipApiV1FrontierDomainsSkipPost,
   frontierFailedApiV1FrontierFailedGet,
+  frontierFailedDomainsApiV1FrontierFailedDomainsGet,
   frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet,
 } from './generated/openlens.ts';
 import type {
@@ -42,6 +48,8 @@ import type {
   CrawlRequestList,
   FeedbackRequest,
   FeedbackSummary,
+  FrontierDomainsResult,
+  FrontierFailedDomainList,
   FrontierFailedList,
   FrontierSettings,
   FrontierSettingsResponse,
@@ -783,4 +791,81 @@ export async function fetchFailedUrls(
   }
   if (res.status !== 200) return null;
   return isFrontierFailedList(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/failed/domains` (open read).
+ * Resolves to `null` on transport or shape failures so the domains
+ * view degrades to an empty section instead of crashing the page.
+ */
+export async function fetchFailedDomains(
+  limit: number = 20,
+  offset: number = 0,
+): Promise<FrontierFailedDomainList | null> {
+  let res;
+  try {
+    res = await frontierFailedDomainsApiV1FrontierFailedDomainsGet({ limit, offset });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFrontierFailedDomainList(res.data) ? res.data : null;
+}
+
+/** Domain actions shared by the failed-domains buttons. */
+export type FrontierDomainOp = 'requeue' | 'purge' | 'skip';
+
+/**
+ * Issue `POST {API_URL}/api/v1/frontier/domains/{requeue|purge|skip}`.
+ * Throws {@link SearchApiError} on failure so the drawer can toast
+ * the backend message. Pass `adminToken` when the backend sets
+ * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function domainAction(
+  op: FrontierDomainOp,
+  domains: string[],
+  adminToken: string = '',
+): Promise<FrontierDomainsResult> {
+  const call = {
+    requeue: frontierDomainsRequeueApiV1FrontierDomainsRequeuePost,
+    purge: frontierDomainsPurgeApiV1FrontierDomainsPurgePost,
+    skip: frontierDomainsSkipApiV1FrontierDomainsSkipPost,
+  }[op];
+  let res;
+  try {
+    res = await call({ domains }, { headers: { ...frontierAdminHeaders(adminToken) } });
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  if (res.status === 200 && isFrontierDomainsResult(res.data)) return res.data;
+  if (isErrorEnvelope(res.data)) {
+    throw new SearchApiError(res.data.error.code, res.data.error.message);
+  }
+  throw new SearchApiError('invalid_response', 'Unexpected response shape.');
+}
+
+/**
+ * Block hosts: merge them into the `indexing` doc's `deny_domains`
+ * (deduped, lowercased) and save. Throws {@link SearchApiError} on
+ * failure, including when the doc shape is unexpected.
+ */
+export async function blockDomains(domains: string[], adminToken: string = ''): Promise<void> {
+  const doc = await fetchAdminConfig('indexing');
+  if (doc == null || Array.isArray(doc.body) || typeof doc.body !== 'object') {
+    throw new SearchApiError('invalid_response', 'Indexing config unavailable.');
+  }
+  const current = Array.isArray((doc.body as Record<string, unknown>).deny_domains)
+    ? ((doc.body as Record<string, unknown>).deny_domains as unknown[]).filter(
+        (entry): entry is string => typeof entry === 'string',
+      )
+    : [];
+  const merged = [...current];
+  for (const domain of domains) {
+    const host = domain.trim().toLowerCase();
+    if (host && !merged.includes(host)) merged.push(host);
+  }
+  await saveAdminConfig('indexing', { ...doc.body, deny_domains: merged }, fetch, adminToken);
 }

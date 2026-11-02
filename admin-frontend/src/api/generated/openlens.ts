@@ -23,7 +23,11 @@ import type {
   FeedbackRequestSchema,
   FeedbackResponseSchema,
   FeedbackSummarySchema,
+  FrontierDomainsActionSchema,
+  FrontierDomainsResultSchema,
   FrontierFailedApiV1FrontierFailedGetParams,
+  FrontierFailedDomainListSchema,
+  FrontierFailedDomainsApiV1FrontierFailedDomainsGetParams,
   FrontierFailedListSchema,
   FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
   FrontierResumeSchema,
@@ -771,6 +775,298 @@ export const frontierFailedApiV1FrontierFailedGet = async (
     status: res.status,
     headers: res.headers,
   } as frontierFailedApiV1FrontierFailedGetResponse;
+};
+
+export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse200 = {
+  data: FrontierFailedDomainListSchema;
+  status: 200;
+};
+
+export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponseSuccess =
+  frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponseError =
+  frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse =
+  | frontierFailedDomainsApiV1FrontierFailedDomainsGetResponseSuccess
+  | frontierFailedDomainsApiV1FrontierFailedDomainsGetResponseError;
+
+export const getFrontierFailedDomainsApiV1FrontierFailedDomainsGetUrl = (
+  params?: FrontierFailedDomainsApiV1FrontierFailedDomainsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/failed/domains?${stringifiedParams}`
+    : `/api/v1/frontier/failed/domains`;
+};
+
+/**
+ * Failed-URL rollup by host with per-host counts (admin failed view).
+ *
+ * Open read like ``/frontier/failed`` (hosts + counts only, no
+ * secrets). Never 500s: store failures degrade to the empty list.
+ * @summary Frontier Failed Domains
+ */
+export const frontierFailedDomainsApiV1FrontierFailedDomainsGet = async (
+  params?: FrontierFailedDomainsApiV1FrontierFailedDomainsGetParams,
+  options?: RequestInit,
+): Promise<frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse> => {
+  const res = await fetch(getFrontierFailedDomainsApiV1FrontierFailedDomainsGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse;
+};
+
+export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse200 = {
+  data: FrontierDomainsResultSchema;
+  status: 200;
+};
+
+export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponseSuccess =
+  frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponseError =
+  frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse =
+  | frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponseSuccess
+  | frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponseError;
+
+export const getFrontierDomainsRequeueApiV1FrontierDomainsRequeuePostUrl = () => {
+  return `/api/v1/frontier/domains/requeue`;
+};
+
+/**
+ * Retry a failed host: failed rows back to queued, attempts reset.
+ *
+ * Admin-only. Attempts reset to 0 with the error cleared (reseed
+ * semantics), so the rows actually refetch instead of re-terminating
+ * on the spent retry budget.
+ * @summary Frontier Domains Requeue
+ */
+export const frontierDomainsRequeueApiV1FrontierDomainsRequeuePost = async (
+  frontierDomainsActionSchema: FrontierDomainsActionSchema,
+  options?: RequestInit,
+): Promise<frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierDomainsRequeueApiV1FrontierDomainsRequeuePostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(frontierDomainsActionSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse;
+};
+
+export type frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse200 = {
+  data: FrontierDomainsResultSchema;
+  status: 200;
+};
+
+export type frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponseSuccess =
+  frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse200 & {
+    headers: Headers;
+  };
+export type frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponseError =
+  frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse =
+  | frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponseSuccess
+  | frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponseError;
+
+export const getFrontierDomainsPurgeApiV1FrontierDomainsPurgePostUrl = () => {
+  return `/api/v1/frontier/domains/purge`;
+};
+
+/**
+ * Delete a failed host's history rows (admin-only, irreversible).
+ * @summary Frontier Domains Purge
+ */
+export const frontierDomainsPurgeApiV1FrontierDomainsPurgePost = async (
+  frontierDomainsActionSchema: FrontierDomainsActionSchema,
+  options?: RequestInit,
+): Promise<frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierDomainsPurgeApiV1FrontierDomainsPurgePostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(frontierDomainsActionSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierDomainsPurgeApiV1FrontierDomainsPurgePostResponse;
+};
+
+export type frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse200 = {
+  data: FrontierDomainsResultSchema;
+  status: 200;
+};
+
+export type frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierDomainsSkipApiV1FrontierDomainsSkipPostResponseSuccess =
+  frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierDomainsSkipApiV1FrontierDomainsSkipPostResponseError =
+  frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse =
+  | frontierDomainsSkipApiV1FrontierDomainsSkipPostResponseSuccess
+  | frontierDomainsSkipApiV1FrontierDomainsSkipPostResponseError;
+
+export const getFrontierDomainsSkipApiV1FrontierDomainsSkipPostUrl = () => {
+  return `/api/v1/frontier/domains/skip`;
+};
+
+/**
+ * Skip a host's queued rows (admin-only; same as bulk domain skip).
+ * @summary Frontier Domains Skip
+ */
+export const frontierDomainsSkipApiV1FrontierDomainsSkipPost = async (
+  frontierDomainsActionSchema: FrontierDomainsActionSchema,
+  options?: RequestInit,
+): Promise<frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierDomainsSkipApiV1FrontierDomainsSkipPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(frontierDomainsActionSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse;
 };
 
 export type frontierClearApiV1FrontierClearPostResponse200 = {

@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
+  blockDomains,
   clearFrontier,
   decideCrawlRequest,
+  domainAction,
+  fetchFailedDomains,
   fetchFailedUrls,
   frontierLiveUrl,
   listCrawlRequests,
@@ -10,6 +13,7 @@ import {
   resumeFrontier,
   saveFrontierSettings,
 } from '../api/client.ts';
+import type { FrontierDomainOp } from '../api/client.ts';
 import {
   frontierGetSettingsApiV1FrontierSettingsGet,
   frontierListWorkersApiV1FrontierWorkersGet,
@@ -25,6 +29,7 @@ import {
 } from '../api/guard.ts';
 import type {
   CrawlRequest,
+  FrontierFailedDomainList,
   FrontierFailedList,
   FrontierSettings,
   FrontierStatus,
@@ -183,8 +188,26 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const failedTotal = failed?.total ?? 0;
   const failedPages = Math.max(1, Math.ceil(failedTotal / FAILED_PAGE_SIZE));
 
+  // Failed URLs rolled up by host with per-host counts. Same paging
+  // rule as the URL list: the page resets whenever the drawer opens.
+  const [failedDomainPage, setFailedDomainPage] = useState(0);
+  const failedDomainsQuery = useQuery({
+    queryKey: ['frontier', 'failed-domains', failedDomainPage],
+    queryFn: () => fetchFailedDomains(FAILED_PAGE_SIZE, failedDomainPage * FAILED_PAGE_SIZE),
+    enabled: open,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const failedDomains: FrontierFailedDomainList | null | undefined = failedDomainsQuery.data;
+  const failedDomainTotal = failedDomains?.total ?? 0;
+  const failedDomainPages = Math.max(1, Math.ceil(failedDomainTotal / FAILED_PAGE_SIZE));
+
   useEffect(() => {
-    if (open) setFailedPage(0);
+    if (open) {
+      setFailedPage(0);
+      setFailedDomainPage(0);
+    }
   }, [open]);
 
   const [workers, setWorkers] = useState<FrontierWorker[]>([]);
@@ -337,6 +360,51 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       setPriority('');
     } catch {
       pushToast('Resume failed.', 'error');
+    }
+  }
+
+  const DOMAIN_OP_LABEL: Record<FrontierDomainOp, string> = {
+    requeue: 'Requeued',
+    purge: 'Flushed',
+    skip: 'Skipped',
+  };
+
+  async function refreshFailed() {
+    await Promise.all([failedQuery.refetch(), failedDomainsQuery.refetch(), snapshot.refetch()]);
+  }
+
+  async function handleDomainAction(domain: string, op: FrontierDomainOp) {
+    if (
+      op === 'purge' &&
+      !window.confirm(
+        `Permanently delete all failed history for ${domain}? Queued, active, and done rows are kept.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      const result = await domainAction(op, [domain], adminToken);
+      pushToast(`${DOMAIN_OP_LABEL[op]} — ${domain}: ${result.affected} row(s).`, 'success');
+      await refreshFailed();
+    } catch {
+      pushToast(`${DOMAIN_OP_LABEL[op]} failed.`, 'error');
+    }
+  }
+
+  async function handleBlockDomain(domain: string) {
+    if (
+      !window.confirm(
+        `Add ${domain} to deny_domains? Its queued rows keep their policy gate immediately; workers pick the config up on refresh.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await blockDomains([domain], adminToken);
+      pushToast(`Blocked — ${domain} added to deny_domains.`, 'success');
+      await refreshFailed();
+    } catch {
+      pushToast('Block failed.', 'error');
     }
   }
 
@@ -638,6 +706,79 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     data-testid="frontier-failed-next"
                     onClick={() => setFailedPage((page) => Math.min(failedPages - 1, page + 1))}
                     disabled={failedPage >= failedPages - 1}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            )}
+
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed domains ({failedDomainTotal})</h4>
+            {failedDomainsQuery.isPending ? (
+              <p className="my-ol-s text-ol-s">Loading failed domains…</p>
+            ) : failedDomains == null || failedDomains.domains.length === 0 ? (
+              <p data-testid="frontier-failed-domains-empty" className="my-ol-s text-ol-s">
+                No failed domains
+              </p>
+            ) : (
+              <>
+                <ul
+                  data-testid="frontier-failed-domains"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {failedDomains.domains.map((entry) => (
+                    <li key={entry.domain} className="break-all">
+                      <Badge>{entry.failed}</Badge> {entry.domain}{' '}
+                      <Button
+                        variant="secondary"
+                        data-testid={`frontier-domain-requeue-${entry.domain}`}
+                        onClick={() => void handleDomainAction(entry.domain, 'requeue')}
+                      >
+                        Requeue
+                      </Button>{' '}
+                      <Button
+                        variant="secondary"
+                        data-testid={`frontier-domain-flush-${entry.domain}`}
+                        onClick={() => void handleDomainAction(entry.domain, 'purge')}
+                      >
+                        Flush
+                      </Button>{' '}
+                      <Button
+                        variant="ghost"
+                        data-testid={`frontier-domain-skip-${entry.domain}`}
+                        onClick={() => void handleDomainAction(entry.domain, 'skip')}
+                      >
+                        Skip
+                      </Button>{' '}
+                      <Button
+                        variant="ghost"
+                        data-testid={`frontier-domain-block-${entry.domain}`}
+                        onClick={() => void handleBlockDomain(entry.domain)}
+                      >
+                        Block
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-center gap-ol-s my-ol-s">
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-failed-domains-prev"
+                    onClick={() => setFailedDomainPage((page) => Math.max(0, page - 1))}
+                    disabled={failedDomainPage <= 0}
+                  >
+                    Previous
+                  </Button>
+                  <span data-testid="frontier-failed-domains-page" className="text-ol-s">
+                    Page {failedDomainPage + 1} of {failedDomainPages}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-failed-domains-next"
+                    onClick={() =>
+                      setFailedDomainPage((page) => Math.min(failedDomainPages - 1, page + 1))
+                    }
+                    disabled={failedDomainPage >= failedDomainPages - 1}
                   >
                     Next
                   </Button>

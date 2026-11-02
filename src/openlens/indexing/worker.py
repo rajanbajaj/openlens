@@ -1055,7 +1055,10 @@ def run_kafka_worker(
     of busy-spinning on nothing.
     """
     from openlens.indexing.indexer import run_index
-    from openlens.indexing.kafka_queue import open_kafka_queue
+    from openlens.indexing.kafka_queue import (
+        DEFAULT_MAX_POLL_INTERVAL_MS,
+        open_kafka_queue,
+    )
 
     worker, repository, frontier_store, indexing_config = _build_worker(
         app_config,
@@ -1119,10 +1122,31 @@ def run_kafka_worker(
 
     outcome_sink = _outcome_sink(app_config)
 
+    # Guide-derived bound (Kafka lag playbook: keep worst-case poll gaps
+    # well under max_poll_interval_ms or the broker mistakes a busy
+    # consumer for a dead one and rebalances). The backlog still drains
+    # across passes, but a poll — and the group membership with it —
+    # always lands inside the window.
+    poll_interval_ms = getattr(kafka, "_max_poll_interval_ms", 0) or (
+        DEFAULT_MAX_POLL_INTERVAL_MS
+    )
+    drain_budget_s = max(1.0, float(poll_interval_ms) / 1000.0 / 4.0)
+
     def _drain_once() -> None:
         worker.refresh_limits()
         with contextlib.suppress(Exception):
             worker.maybe_run_discovery()
+        drain_started = time.monotonic()
+        base_should_stop = worker.should_stop
+
+        def _drain_should_stop() -> bool:
+            try:
+                if callable(base_should_stop) and base_should_stop():
+                    return True
+            except Exception:
+                return True
+            return (time.monotonic() - drain_started) > drain_budget_s
+
         drain_stats = run_index(
             [],
             repository,
@@ -1130,7 +1154,7 @@ def run_kafka_worker(
             chunk_size,
             crawler=worker.crawler,
             frontier_store=worker.guarded_store(),
-            should_stop=worker.should_stop,
+            should_stop=_drain_should_stop,
             crawl_id=crawl_id,
             on_link=_publish_link,
             on_outcome=_report_outcome,

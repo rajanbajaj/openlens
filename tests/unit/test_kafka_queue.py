@@ -107,7 +107,9 @@ class _FakeQueue:
         self,
         messages: list[tuple[str, int] | tuple[str, int, int | None]] | None = None,
         available: bool = True,
+        max_poll_interval_ms: int = 900_000,
     ) -> None:
+        self._max_poll_interval_ms = max_poll_interval_ms
         self._messages = []
         for item in messages or []:
             if len(item) == 3:
@@ -921,6 +923,69 @@ def test_run_kafka_worker_idle_polls_drain_store_backlog(
     # Reached purely through the idle drain (404s retry per
     # max_attempts_per_url, so only presence is asserted).
     assert hits.get("https://kafka.test/c", 0) >= 1
+
+
+def test_run_kafka_worker_drain_respects_poll_budget(tmp_path: Path) -> None:
+    """An over-budget drain yields instead of starving the poll loop.
+
+    Five slow seeds against a 1 s drain budget (200 ms poll interval):
+    the startup drain must stop partway — fetching some but not all —
+    while the poll loop completes its iterations. The remainder stays
+    queued for a later pass. This is what keeps a slow backlog from
+    looking like a dead consumer to the broker.
+    """
+    import time as _time
+
+    db_path = str(tmp_path / "frontier.db")
+    seeds = [f"https://kafka.test/slow{i}" for i in range(5)]
+    store = SqliteFrontierStore(db_path)
+    try:
+        for seed in seeds:
+            assert store.enqueue(seed, 0) is True
+    finally:
+        store.close()
+    hits: dict[str, int] = {}
+
+    def factory() -> PoliteCrawler:
+        crawler = PoliteCrawler()
+        crawler.configure(
+            {
+                "timeout_s": 5,
+                "crawl_delay_s": 0,
+                "max_pages": 10,
+                "respect_robots": False,
+            }
+        )
+
+        def slow_fetch(url: str) -> _FetchedPage | None:
+            hits[url] = hits.get(url, 0) + 1
+            _time.sleep(0.4)
+            return _FetchedPage(
+                status=404, url=url, content_type="text/plain", body=b""
+            )
+
+        crawler._fetch_bounded = slow_fetch  # type: ignore[method-assign]
+        return crawler
+
+    fake = _FakeQueue([], max_poll_interval_ms=200)
+    counts = run_kafka_worker(
+        [],
+        _kafka_app_config(db_path),
+        worker_id="w1",
+        crawler_factory=factory,
+        queue=fake,
+        max_iterations=6,
+        idle_sleep_s=0.01,
+    )
+    assert counts["received"] == 0
+    assert 1 <= len(hits) < len(seeds)
+    store = SqliteFrontierStore(db_path)
+    try:
+        assert {entry.url for entry in store.pending(limit=100)} == set(seeds) - set(
+            hits
+        )
+    finally:
+        store.close()
 
 
 def test_run_kafka_worker_respects_pause(tmp_path: Path) -> None:

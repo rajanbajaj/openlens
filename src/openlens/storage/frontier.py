@@ -396,6 +396,41 @@ class FrontierStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def failed_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``failed`` rows by host: ``(domain, count)`` pairs.
+
+        Powers the admin failed-domains view (one row per offending
+        host with its failure count, most-failed first).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def failed_domain_count(self) -> int:
+        """Number of distinct hosts among ``failed`` rows."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def requeue_failed_domains(self, domains: Any) -> int:
+        """Revive ``failed`` rows from ``domains`` back to ``queued``.
+
+        Attempts reset to 0 and the error clears (mirror of
+        :meth:`reseed` semantics), so the rows actually refetch instead
+        of re-terminating on the spent retry budget. Returns rows moved.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def purge_failed_domains(self, domains: Any) -> int:
+        """Delete ``failed`` rows from ``domains`` (exact+subdomain).
+
+        History only — queued/active/done rows are untouched. Returns
+        rows deleted.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def counts(self) -> dict[str, int]:
         """Row counts keyed by status plus ``total``."""
         raise NotImplementedError
@@ -1986,6 +2021,121 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def failed_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``failed`` rows by host, most-failed first.
+
+        Host parsing is pure SQL (``://`` split, cut at first ``/``,
+        lowercased); non-http(s) rows bucket as ``(invalid)``. Values
+        are bound; only fixed fragments interpolate.
+        """
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT CASE WHEN lower(url) LIKE 'http%://%'"
+                    " THEN lower(substr(hq, 1, instr(hq || '/', '/') - 1))"
+                    " ELSE '(invalid)' END AS domain, COUNT(*) AS n"
+                    " FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
+                    " AS hq, url FROM (SELECT"
+                    " substr(url, instr(url, '://') + 3) AS h, url"
+                    " FROM frontier_queue WHERE status = 'failed'))"
+                    " GROUP BY domain ORDER BY n DESC, domain ASC"
+                    " LIMIT ? OFFSET ?",
+                    (capped, skipped),
+                ).fetchall()
+                return [(str(row["domain"]), int(row["n"])) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to aggregate failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed_domain_count(self) -> int:
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM (SELECT DISTINCT"
+                    " CASE WHEN lower(url) LIKE 'http%://%'"
+                    " THEN lower(substr(hq, 1, instr(hq || '/', '/') - 1))"
+                    " ELSE '(invalid)' END AS domain"
+                    " FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
+                    " AS hq, url FROM (SELECT"
+                    " substr(url, instr(url, '://') + 3) AS h, url"
+                    " FROM frontier_queue WHERE status = 'failed')))"
+                ).fetchone()
+                return int(row["n"]) if row is not None else 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to count failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def requeue_failed_domains(self, domains: Any) -> int:
+        """Revive ``failed`` rows from ``domains`` (exact+subdomain).
+
+        One ``UPDATE`` per normalized domain (malformed entries
+        ignored, never fatal); attempts reset to 0 with owner/lease
+        fields and the error cleared, mirroring :meth:`reseed`.
+        """
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        total = 0
+        try:
+            with self._lock, self._conn:
+                for domain in targets:
+                    patterns = _skip_domain_like_patterns(domain)
+                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+                    statement = (
+                        "UPDATE frontier_queue SET status = 'queued',"  # noqa: S608
+                        " attempts = 0, last_error = NULL"
+                        " WHERE status = 'failed'"
+                        f" AND ({condition})"
+                    )
+                    cursor = self._conn.execute(statement, (*patterns,))
+                    total += cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to requeue failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
+
+    def purge_failed_domains(self, domains: Any) -> int:
+        """Delete ``failed`` rows from ``domains`` (exact+subdomain).
+
+        One ``DELETE`` per normalized domain (malformed entries
+        ignored, never fatal). Queued/active/done rows are untouched.
+        """
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        total = 0
+        try:
+            with self._lock, self._conn:
+                for domain in targets:
+                    patterns = _skip_domain_like_patterns(domain)
+                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+                    cursor = self._conn.execute(
+                        "DELETE FROM frontier_queue"  # noqa: S608
+                        f" WHERE status = 'failed' AND ({condition})",
+                        (*patterns,),
+                    )
+                    total += cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to purge failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
+
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {"total": 0}
         try:
@@ -3264,6 +3414,132 @@ class PostgresFrontierStore(FrontierStore):
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc
+
+    def failed_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``failed`` rows by host, most-failed first.
+
+        Postgres mirror of the SQLite implementation (``split_part``
+        chains instead of ``substr``/``instr``); non-http(s) rows
+        bucket as ``(invalid)``.
+        """
+        table = self._qualified("frontier_queue")
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        host_expr = (
+            "CASE WHEN lower(url) LIKE 'http%://%'"
+            " THEN lower(split_part(split_part(split_part(url, '://', 2),"
+            " '?', 1), '/', 1)) ELSE '(invalid)' END"
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT {host_expr} AS domain, COUNT(*) AS n"  # noqa: S608
+                        f" FROM {table} WHERE status = 'failed'"
+                        " GROUP BY domain ORDER BY n DESC, domain ASC"
+                        " LIMIT %s OFFSET %s",
+                        (capped, skipped),
+                    )
+                    return [(str(row[0]), int(row[1])) for row in cur.fetchall()]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed_domain_count(self) -> int:
+        table = self._qualified("frontier_queue")
+        host_expr = (
+            "CASE WHEN lower(url) LIKE 'http%://%'"
+            " THEN lower(split_part(split_part(split_part(url, '://', 2),"
+            " '?', 1), '/', 1)) ELSE '(invalid)' END"
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM (SELECT DISTINCT"  # noqa: S608
+                        f" {host_expr} AS domain FROM {table}"
+                        " WHERE status = 'failed') AS d"
+                    )
+                    row = cur.fetchone()
+                    return int(row[0]) if row is not None else 0
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to count failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def requeue_failed_domains(self, domains: Any) -> int:
+        """Revive ``failed`` rows from ``domains`` (exact+subdomain).
+
+        Postgres mirror of the SQLite implementation: attempts reset
+        to 0 and the error clears (reseed semantics), so the rows
+        actually refetch.
+        """
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        table = self._qualified("frontier_queue")
+        total = 0
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for domain in targets:
+                        patterns = _skip_domain_like_patterns(domain)
+                        condition = " OR ".join(
+                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
+                        )
+                        cur.execute(
+                            f"UPDATE {table} SET status = 'queued',"  # noqa: S608
+                            " attempts = 0, last_error = NULL"
+                            " WHERE status = 'failed'"
+                            f" AND ({condition})",
+                            (*patterns,),
+                        )
+                        total += cur.rowcount or 0
+                conn.commit()
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to requeue failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
+
+    def purge_failed_domains(self, domains: Any) -> int:
+        """Delete ``failed`` rows from ``domains`` (exact+subdomain)."""
+        targets = normalize_skip_domains(domains)
+        if not targets:
+            return 0
+        table = self._qualified("frontier_queue")
+        total = 0
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for domain in targets:
+                        patterns = _skip_domain_like_patterns(domain)
+                        condition = " OR ".join(
+                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
+                        )
+                        cur.execute(
+                            f"DELETE FROM {table}"  # noqa: S608
+                            f" WHERE status = 'failed' AND ({condition})",
+                            (*patterns,),
+                        )
+                        total += cur.rowcount or 0
+                conn.commit()
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to purge failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
 
     def counts(self) -> dict[str, int]:
         # One indexed COUNT per known status instead of a GROUP BY full

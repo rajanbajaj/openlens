@@ -623,3 +623,124 @@ describe('FrontierDrawer worker throughput', () => {
     expect(screen.getByTestId('frontier-workers')).toHaveTextContent('w-2');
   });
 });
+
+describe('FrontierDrawer failed domains', () => {
+  const DOMAINS = {
+    domains: [
+      { domain: 'example.com', failed: 12 },
+      { domain: 'other.example', failed: 3 },
+    ],
+    total: 2,
+    limit: 20,
+    offset: 0,
+  };
+
+  function stubDomainBackend(capture: {
+    posts: { url: string; body: unknown }[];
+    puts: { url: string; body: unknown }[];
+  }): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: { method?: string; body?: string }) => {
+        const text = String(url);
+        const method = init?.method ?? 'GET';
+        let payload: unknown = STATUS;
+        if (text.includes('/api/v1/frontier/settings')) payload = { settings: SETTINGS };
+        else if (text.includes('/api/v1/frontier/workers'))
+          payload = { workers: [], worker_count: 0 };
+        else if (text.includes('/api/v1/frontier/failed/domains')) payload = DOMAINS;
+        else if (text.includes('/api/v1/frontier/failed')) payload = { urls: [], total: 0 };
+        else if (text.includes('/api/v1/frontier/domains/requeue') && method === 'POST') {
+          capture.posts.push({ url: text, body: init?.body });
+          payload = { domains: ['example.com'], affected: 12 };
+        } else if (text.includes('/api/v1/admin/config/indexing') && method === 'PUT') {
+          capture.puts.push({ url: text, body: init?.body });
+          payload = {
+            doc: 'indexing',
+            body: { deny_domains: ['blocked.example', 'example.com'] },
+            version: 2,
+            updated_at: null,
+            source: 'db',
+          };
+        } else if (text.includes('/api/v1/admin/config/indexing')) {
+          payload = {
+            doc: 'indexing',
+            body: { deny_domains: ['blocked.example'] },
+            version: 1,
+            updated_at: null,
+            source: 'file',
+          };
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify(payload)),
+          json: () => Promise.resolve(payload),
+        });
+      }),
+    );
+  }
+
+  it('renders failed domains with counts and action buttons', async () => {
+    MockSocket.instances = [];
+    const empty: {
+      posts: { url: string; body: unknown }[];
+      puts: { url: string; body: unknown }[];
+    } = {
+      posts: [],
+      puts: [],
+    };
+    stubDomainBackend(empty);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('example.com');
+    });
+    expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('12');
+    expect(screen.getByTestId('frontier-domain-requeue-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-domain-flush-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-domain-skip-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-domain-block-example.com')).toBeInTheDocument();
+  });
+
+  it('requeues a domain and toasts the affected count', async () => {
+    MockSocket.instances = [];
+    const capture = {
+      posts: [] as { url: string; body: unknown }[],
+      puts: [] as { url: string; body: unknown }[],
+    };
+    stubDomainBackend(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="secret" />);
+    fireEvent.click(await screen.findByTestId('frontier-domain-requeue-example.com'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Requeued — example.com: 12 row(s).');
+    });
+    expect(capture.posts).toHaveLength(1);
+    expect(capture.posts[0].url).toContain('/api/v1/frontier/domains/requeue');
+  });
+
+  it('blocks a domain by merging deny_domains behind a confirm', async () => {
+    MockSocket.instances = [];
+    const capture = { posts: [], puts: [] as { url: string; body: unknown }[] };
+    stubDomainBackend(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
+    render(<FrontierDrawer adminToken="secret" />);
+    fireEvent.click(await screen.findByTestId('frontier-domain-block-example.com'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Blocked — example.com added to deny_domains.',
+      );
+    });
+    expect(capture.puts).toHaveLength(1);
+    expect(capture.puts[0].url).toContain('/api/v1/admin/config/indexing');
+    expect(JSON.parse(capture.puts[0].body as string)).toMatchObject({
+      body: { deny_domains: ['blocked.example', 'example.com'] },
+    });
+  });
+});

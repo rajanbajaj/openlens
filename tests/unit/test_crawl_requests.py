@@ -118,6 +118,18 @@ def test_legacy_double_keeps_working() -> None:
         def failed(self, limit: int = 100, offset: int = 0):  # type: ignore[no-untyped-def]
             return []
 
+        def failed_domains(self, limit: int = 100, offset: int = 0):  # type: ignore[no-untyped-def]
+            return []
+
+        def failed_domain_count(self) -> int:
+            return 0
+
+        def requeue_failed_domains(self, domains) -> int:  # type: ignore[no-untyped-def]
+            return 0
+
+        def purge_failed_domains(self, domains) -> int:  # type: ignore[no-untyped-def]
+            return 0
+
         def counts(self):  # type: ignore[no-untyped-def]
             return {"total": 0}
 

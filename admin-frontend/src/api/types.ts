@@ -289,6 +289,26 @@ export interface FrontierFailedList {
   offset: number;
 }
 
+/** One failed host with its failure count. */
+export interface FrontierFailedDomain {
+  domain: string;
+  failed: number;
+}
+
+/** Paginated failed-domain rollup response. */
+export interface FrontierFailedDomainList {
+  domains: FrontierFailedDomain[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Result of a domain-scoped failed-queue action. */
+export interface FrontierDomainsResult {
+  domains: string[];
+  affected: number;
+}
+
 /** One top prop value with its count. */
 export interface AnalyticsTopEntry {
   value: string;

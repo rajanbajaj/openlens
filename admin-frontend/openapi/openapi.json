@@ -564,6 +564,186 @@
         }
       }
     },
+    "/api/v1/frontier/failed/domains": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Failed Domains",
+        "description": "Failed-URL rollup by host with per-host counts (admin failed view).\n\nOpen read like ``/frontier/failed`` (hosts + counts only, no\nsecrets). Never 500s: store failures degrade to the empty list.",
+        "operationId": "frontier_failed_domains_api_v1_frontier_failed_domains_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierFailedDomainListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/domains/requeue": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Domains Requeue",
+        "description": "Retry a failed host: failed rows back to queued, attempts reset.\n\nAdmin-only. Attempts reset to 0 with the error cleared (reseed\nsemantics), so the rows actually refetch instead of re-terminating\non the spent retry budget.",
+        "operationId": "frontier_domains_requeue_api_v1_frontier_domains_requeue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierDomainsActionSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierDomainsResultSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/domains/purge": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Domains Purge",
+        "description": "Delete a failed host's history rows (admin-only, irreversible).",
+        "operationId": "frontier_domains_purge_api_v1_frontier_domains_purge_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierDomainsActionSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierDomainsResultSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/domains/skip": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Domains Skip",
+        "description": "Skip a host's queued rows (admin-only; same as bulk domain skip).",
+        "operationId": "frontier_domains_skip_api_v1_frontier_domains_skip_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierDomainsActionSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierDomainsResultSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/clear": {
       "post": {
         "tags": [
@@ -2156,6 +2336,92 @@
         "type": "object",
         "title": "FrontierDiscoverySchema",
         "description": "A worker's last discovery-pass summary (feeds + refresh).\n\n``at`` is a unix-epoch timestamp for when the worker reported the\nsummary; ``worker_id`` names the reporting worker (empty on\nper-worker entries where the parent already names it)."
+      },
+      "FrontierDomainsActionSchema": {
+        "properties": {
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Domains"
+          }
+        },
+        "type": "object",
+        "title": "FrontierDomainsActionSchema",
+        "description": "Domain-scoped failed-queue action: normalized host list in."
+      },
+      "FrontierDomainsResultSchema": {
+        "properties": {
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "affected": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Affected",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierDomainsResultSchema",
+        "description": "Result of a domain-scoped failed-queue action."
+      },
+      "FrontierFailedDomainListSchema": {
+        "properties": {
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierFailedDomainSchema"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierFailedDomainListSchema",
+        "description": "Paginated failed-domain rollup (HTTP 200 always; empty when unreadable)."
+      },
+      "FrontierFailedDomainSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "failed": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Failed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain"
+        ],
+        "title": "FrontierFailedDomainSchema",
+        "description": "One failed host for the admin failed-domains view."
       },
       "FrontierFailedListSchema": {
         "properties": {

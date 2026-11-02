@@ -18,6 +18,8 @@ import type {
   FeedbackResponse,
   FeedbackSummary,
   FrontierDiscovery,
+  FrontierDomainsResult,
+  FrontierFailedDomainList,
   FrontierFailedList,
   FrontierFailedUrl,
   FrontierSettings,
@@ -350,6 +352,33 @@ export function isFrontierFailedList(value: unknown): value is FrontierFailedLis
     typeof value.total === 'number' &&
     typeof value.limit === 'number' &&
     typeof value.offset === 'number'
+  );
+}
+
+function isFrontierFailedDomain(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.domain === 'string' && typeof value.failed === 'number';
+}
+
+/** `GET /api/v1/frontier/failed/domains` response shape. */
+export function isFrontierFailedDomainList(value: unknown): value is FrontierFailedDomainList {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.domains) &&
+    value.domains.every(isFrontierFailedDomain) &&
+    typeof value.total === 'number' &&
+    typeof value.limit === 'number' &&
+    typeof value.offset === 'number'
+  );
+}
+
+/** Domain action (`requeue`/`purge`/`skip`) result shape. */
+export function isFrontierDomainsResult(value: unknown): value is FrontierDomainsResult {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.domains) &&
+    value.domains.every((entry) => typeof entry === 'string') &&
+    typeof value.affected === 'number'
   );
 }
 
