@@ -3464,8 +3464,8 @@ class PostgresFrontierStore(FrontierStore):
         skipped = max(0, int(offset or 0))
         host_expr = FAILED_DOMAIN_HOST_EXPR_PG
         inner = (
-            f"SELECT {host_expr} AS domain, COALESCE(last_error, '') AS reason"
-            f" FROM {table} WHERE status = 'failed'"
+            f"SELECT {host_expr} AS domain, COALESCE(last_error, '') AS reason"  # noqa: S608
+            f" FROM {table} WHERE status = 'failed'"  # noqa: S608
         )
         try:
             with self._connection() as conn:
