@@ -141,8 +141,8 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
     command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
-    mem_limit: 2G
-    cpus: 1.0
+    mem_limit: 1G
+    cpus: 0.5
     logging: *default-logging
     volumes:
       - openlens-data:/app/data
