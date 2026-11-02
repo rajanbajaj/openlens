@@ -1,0 +1,19 @@
+<clickhouse>
+  <!--
+    Shipped default override: widen the entrypoint-created app user to the
+    whole Docker network. The image's entrypoint only allows IPv6
+    (`::/0`), so backends reaching ClickHouse over IPv4 fail auth no
+    matter the password. This file carries NO password on purpose — the
+    entrypoint's own user file keeps owning auth. Prod overlays a second
+    file (same directory, must sort later, e.g. `zz-override.xml`) via
+    CLICKHOUSE_USERS_D_FILE when it needs to pin the password too.
+  -->
+  <users>
+    <openlens>
+      <networks>
+        <ip>::/0</ip>
+        <ip>0.0.0.0/0</ip>
+      </networks>
+    </openlens>
+  </users>
+</clickhouse>
