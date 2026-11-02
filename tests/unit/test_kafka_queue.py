@@ -630,6 +630,82 @@ def test_run_kafka_worker_idle_drain_sends_heartbeat(
     assert len(calls) >= 3, f"expected an idle-drain heartbeat, got {len(calls)}"
 
 
+def test_run_kafka_worker_beats_during_blocking_drain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A deep store backlog must not silence heartbeats mid-drain.
+
+    Regression: the initial _drain_once is one blocking run_index call
+    that can outlast the worker-stale window, so the API registry pruned
+    live replicas and the admin screen read zero workers while crawlers
+    were mid-pass. The live reporter beats through the drain.
+    """
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    import openlens.indexing.worker as worker_mod
+
+    monkeypatch.setattr(worker_mod, "_LIVE_REPORTER_TICK_S", 0.05)
+
+    real_build = worker_mod._build_worker
+
+    def _fast_build(*args: Any, **kwargs: Any) -> Any:
+        worker, repository, store, cfg = real_build(*args, **kwargs)
+        worker.heartbeat_interval_s = 0.15
+        return worker, repository, store, cfg
+
+    monkeypatch.setattr(worker_mod, "_build_worker", _fast_build)
+
+    beats: list[float] = []
+    drain_entered = threading.Event()
+    drain_release = threading.Event()
+    draining = True
+
+    def _blocking_run_index(*args: Any, **kwargs: Any) -> Any:
+        nonlocal draining
+        if draining:
+            draining = False
+            drain_entered.set()
+            assert drain_release.wait(timeout=10), "drain was never released"
+        return SimpleNamespace(added=0, updated=0)
+
+    monkeypatch.setattr("openlens.indexing.indexer.run_index", _blocking_run_index)
+
+    def _fake_beat(api_url: str, worker_id: str, **kwargs: Any) -> dict[str, object]:
+        beats.append(time.monotonic())
+        return {"workers": [], "worker_count": 0}
+
+    monkeypatch.setattr(worker_mod, "heartbeat_once", _fake_beat)
+
+    outcome: dict[str, Any] = {}
+
+    def _run() -> None:
+        outcome["counts"] = run_kafka_worker(
+            [],
+            _kafka_app_config(str(tmp_path / "frontier.db")),
+            worker_id="w-drain",
+            queue=_FakeQueue([]),
+            max_iterations=2,
+            idle_sleep_s=0.01,
+        )
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    try:
+        assert drain_entered.wait(timeout=10), "drain never started"
+        drain_start = time.monotonic()
+        time.sleep(0.6)
+        mid_drain = [b for b in beats if b >= drain_start]
+        assert len(mid_drain) >= 2, (
+            f"expected repeated beats during the drain, got {len(mid_drain)}"
+        )
+    finally:
+        drain_release.set()
+        thread.join(timeout=15)
+    assert not thread.is_alive(), "worker did not shut down after the drain"
+
+
 def test_run_kafka_worker_passes_message_priority_to_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

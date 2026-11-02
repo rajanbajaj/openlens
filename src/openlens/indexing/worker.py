@@ -967,6 +967,34 @@ def run_standalone_worker(
 #: when the frontier is empty.
 _IDLE_DRAIN_EVERY_POLLS = 30
 
+#: Live-reporter tick: beats through blocking drains. The initial drain
+#: can outlast the worker-stale window (240s), pruning live replicas
+#: off the dashboard; the reporter calls the throttled progress beat on
+#: this cadence so the registry keeps seeing the replica.
+_LIVE_REPORTER_TICK_S = 5.0
+
+
+def _reporter_loop(report: Callable[[], None], stop: Any) -> None:
+    """Call throttled ``report`` until ``stop`` is set (fail-open).
+
+    ``report`` throttles itself to the heartbeat cadence; the tick only
+    bounds how stale a beat can get inside one blocking drain.
+    """
+    waiter = getattr(stop, "wait", None)
+    while True:
+        try:
+            if callable(waiter):
+                if waiter(_LIVE_REPORTER_TICK_S):
+                    break
+            else:
+                time.sleep(_LIVE_REPORTER_TICK_S)
+                if stop is not None and bool(getattr(stop, "is_set", lambda: False)()):
+                    break
+        except Exception:
+            break
+        with contextlib.suppress(Exception):
+            report()
+
 
 def run_kafka_worker(
     seed_urls: list[str],
@@ -1136,6 +1164,18 @@ def run_kafka_worker(
     )
     with contextlib.suppress(Exception):
         _report_progress(force=True)
+    # Beat through the blocking drain below: without this the only
+    # beats are the forced startup ones, and a deep store backlog
+    # outlasts the worker-stale window (pruned = "0 crawlers" while
+    # healthy). Fail-open daemon; stopped in the finally below.
+    reporter_stop = threading.Event()
+    with contextlib.suppress(Exception):
+        threading.Thread(
+            target=_reporter_loop,
+            args=(_report_progress, reporter_stop),
+            name="ol-kafka-reporter",
+            daemon=True,
+        ).start()
     try:
         for seed in seed_urls:
             if isinstance(seed, str) and seed.strip():
@@ -1240,6 +1280,8 @@ def run_kafka_worker(
             with contextlib.suppress(Exception):
                 _report_progress()
     finally:
+        with contextlib.suppress(Exception):
+            reporter_stop.set()
         _flush_links()
         with contextlib.suppress(Exception):
             _report_progress(force=True)

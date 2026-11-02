@@ -1051,6 +1051,10 @@ def _overlay_store_status(
         new_urls=list(payload.new_urls),  # type: ignore[union-attr,arg-type]
         workers=list(payload.workers),  # type: ignore[union-attr,arg-type]
         discovery=discovery_payload,  # type: ignore[arg-type]
+        # The rebuild must preserve the serving-config flag: the lag
+        # probe runs after this overlay (GET only), so dropping it here
+        # reads as "disabled" on every store-backed server.
+        kafka_enabled=bool(payload.kafka_enabled),
     )
 
 

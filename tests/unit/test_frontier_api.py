@@ -77,6 +77,37 @@ def test_status_payload_flags_kafka_enabled() -> None:
     assert disabled.kafka_enabled is False
 
 
+def test_store_overlay_preserves_kafka_enabled() -> None:
+    """The store overlay rebuilds the payload; it must not drop the flag.
+
+    On a server with a live store the overlay always rebuilds, so a
+    dropped flag reads as "disabled" no matter the real config.
+    """
+    from openlens.api.routes import _frontier_status_payload, _overlay_store_status
+
+    class _StubStore:
+        def load_checkpoint(self):
+            return None
+
+        def pending(self, limit: int = 500):
+            return []
+
+        def counts(self):
+            return {}
+
+    payload = _frontier_status_payload(
+        {
+            "kafka": {
+                "enabled": True,
+                "bootstrap_servers": ["kafka-1:19092"],
+                "topic": "crawl.urls",
+                "group_id": "crawlers",
+            }
+        }
+    )
+    assert _overlay_store_status(payload, _StubStore()).kafka_enabled is True
+
+
 def test_pause_and_resume_cycle(client: TestClient) -> None:
     paused = client.post("/api/v1/frontier/pause")
     assert paused.status_code == 200
