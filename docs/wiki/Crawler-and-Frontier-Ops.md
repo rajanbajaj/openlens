@@ -28,6 +28,36 @@ only after crawl + index; the Postgres seen-set dedupes twins.
 `POST /api/v1/frontier/clear` pauses, deletes queued rows, and
 purges the topic so published messages cannot refill the queue.
 
+Members join the group on the **first poll**, which runs only after
+the initial store-backlog drain (`_drain_once`). Zero members during
+a deep drain is expected; flapping membership afterwards means a
+drain outran `max_poll_interval_ms` (900 s) and the broker kicked
+the member mid-drain. Watch heartbeats + `queue_depth`, not the
+member count — see
+[`kafka-group-fewer-members-than-crawlers`](../troubleshoots/kafka-group-fewer-members-than-crawlers.md).
+
+## Fetch outcomes, retries, and trap defense
+
+Each claim costs at most 3 fetch attempts (`max_attempts_per_url`;
+retries surface across `crawl()` calls, one fetch per URL per call):
+
+- **Terminal on first hit:** any 4xx, `invalid url`
+  (non-http(s) scheme, hostless URL, archive-wrapped `mailto:`),
+  empty fetch, content-type/quality skips. No requeue.
+- **Retried:** 429 and 5xx, fetch timeouts and transport errors.
+- Every attempt emits one `crawl.page` analytics event, so the
+  admin Crawler card counts *attempts*, not URLs.
+
+Quality-skipped pages never expand outlinks, and junk nav never
+leaves extraction — but hosts with thousands of near-empty pages
+(demo farms, doc mirrors) still burn one fetch each. Bound them
+with `domain_policies` (`configs/default.yaml`): `max_pages` caps
+fetches per domain per run, `rate_limit_s` spaces hits (arxiv.org
+ships at 3.0 s), `max_depth` caps link-following, `allow: false`
+cuts the host entirely. For never-succeed hosts (bot-wall 401s,
+tarpitted timeouts) prefer `deny_domains`/tight budgets over
+repeated full-price failures.
+
 ## Scaling crawler throughput
 
 Each worker fetches pages sequentially, so per-worker rate is ~1 page

@@ -121,6 +121,24 @@ message and diff is scanned for leaked credentials.
   discovery, and reporting failures are suppressed at the boundary —
   the store row is the durable record — so a full queue or a down
   Kafka stalls progress but never crash-loops the fleet.
+- Retries are budgeted for transient failures only
+  (`crawler._is_retriable_http_status`): 429/5xx, timeouts, and
+  transport errors requeue up to `max_attempts_per_url` fetches;
+  decided rejections (4xx) and unfetchable URLs fail terminally on
+  first hit. A retry that cannot change the outcome is burned budget.
+- Fetch-validity runs before robots and network
+  (`crawler._is_fetchable_url`): scheme + host + nested-scheme gate,
+  so junk seeds and archive-wrapped `mailto:` links die without a
+  fetch, a retry, or a queue row that looks like real work.
+- Trap hosts get a per-domain budget, not global hope
+  (`domain_policies.max_pages` per run, `rate_limit_s`,
+  `max_depth`, `allow: false`): quality-skipped pages already refuse
+  to expand outlinks, so the remaining exposure is one fetch per
+  trap page — cap how many the fleet will pay for.
+- Analytics counts attempts, not URLs: one `crawl.page` event per
+  fetch attempt means retry policy changes move the dashboard even
+  when the failure set does not. Read outcome ratios per URL only
+  from the store-backed failed list.
 - Workers are visible from second one: a startup banner plus a forced
   heartbeat before the first drain, so a long initial backlog reads
   as alive-with-work instead of silent-and-missing.

@@ -46,8 +46,10 @@ caps, plus a `source: server\|client` split so the firehose can be
 routed/sampled separately.
 
 `crawl.page` is the crawler's only analytics responsibility: one
-fire-and-forget event per processed page, emitted through the same
-`analytics.events` queue. Workers never aggregate — the admin
+fire-and-forget event per fetch *attempt* (including retries),
+emitted through the same `analytics.events` queue. Dashboard counts
+therefore track attempts, not distinct URLs — per-URL truth lives
+in the store-backed failed list. Workers never aggregate — the admin
 `GET /api/v1/admin/analytics/top?name=crawl.page&prop=reason` endpoint
 (and the Analytics tab's Crawler card) does the counting. `top` also
 accepts `filter_prop` + `filter_value` to restrict rows first (e.g.
