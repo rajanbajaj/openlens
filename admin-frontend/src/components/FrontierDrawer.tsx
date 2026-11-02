@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
   blockDomains,
+  bumpDomainPriority,
   clearFrontier,
   decideCrawlRequest,
   domainAction,
   fetchFailedDomains,
   fetchFailedUrls,
+  fetchQueuedDomains,
   frontierLiveUrl,
   listCrawlRequests,
   pauseFrontier,
@@ -31,6 +33,7 @@ import type {
   CrawlRequest,
   FrontierFailedDomainList,
   FrontierFailedList,
+  FrontierQueuedDomainList,
   FrontierSettings,
   FrontierStatus,
   FrontierWorker,
@@ -203,10 +206,26 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const failedDomainTotal = failedDomains?.total ?? 0;
   const failedDomainPages = Math.max(1, Math.ceil(failedDomainTotal / FAILED_PAGE_SIZE));
 
+  // Queued URLs rolled up by host with per-host counts. Same paging
+  // rule: the page resets whenever the drawer opens.
+  const [queuedDomainPage, setQueuedDomainPage] = useState(0);
+  const queuedDomainsQuery = useQuery({
+    queryKey: ['frontier', 'queued-domains', queuedDomainPage],
+    queryFn: () => fetchQueuedDomains(FAILED_PAGE_SIZE, queuedDomainPage * FAILED_PAGE_SIZE),
+    enabled: open,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const queuedDomains: FrontierQueuedDomainList | null | undefined = queuedDomainsQuery.data;
+  const queuedDomainTotal = queuedDomains?.total ?? 0;
+  const queuedDomainPages = Math.max(1, Math.ceil(queuedDomainTotal / FAILED_PAGE_SIZE));
+
   useEffect(() => {
     if (open) {
       setFailedPage(0);
       setFailedDomainPage(0);
+      setQueuedDomainPage(0);
     }
   }, [open]);
 
@@ -370,7 +389,12 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   };
 
   async function refreshFailed() {
-    await Promise.all([failedQuery.refetch(), failedDomainsQuery.refetch(), snapshot.refetch()]);
+    await Promise.all([
+      failedQuery.refetch(),
+      failedDomainsQuery.refetch(),
+      queuedDomainsQuery.refetch(),
+      snapshot.refetch(),
+    ]);
   }
 
   async function handleDomainAction(domain: string, op: FrontierDomainOp) {
@@ -401,10 +425,31 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     }
     try {
       await blockDomains([domain], adminToken);
+      const denied = [...(settings.deny_domains ?? [])];
+      if (!denied.includes(domain)) denied.push(domain);
+      const saved = await saveFrontierSettings(
+        { ...settings, deny_domains: denied },
+        fetch,
+        adminToken,
+      );
+      setSettings(saved.settings);
       pushToast(`Blocked — ${domain} added to deny_domains.`, 'success');
       await refreshFailed();
     } catch {
       pushToast('Block failed.', 'error');
+    }
+  }
+
+  async function handleQueuedPriority(domain: string, delta: number) {
+    try {
+      const result = await bumpDomainPriority([domain], delta, adminToken);
+      pushToast(
+        `${delta > 0 ? 'Priority raised' : 'Priority lowered'} — ${domain}: ${result.affected} row(s).`,
+        'success',
+      );
+      await queuedDomainsQuery.refetch();
+    } catch {
+      pushToast('Priority change failed.', 'error');
     }
   }
 
@@ -779,6 +824,79 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       setFailedDomainPage((page) => Math.min(failedDomainPages - 1, page + 1))
                     }
                     disabled={failedDomainPage >= failedDomainPages - 1}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </>
+            )}
+
+            <h4 className="mt-ol-m mb-ol-s text-ol-m">Queued domains ({queuedDomainTotal})</h4>
+            {queuedDomainsQuery.isPending ? (
+              <p className="my-ol-s text-ol-s">Loading queued domains…</p>
+            ) : queuedDomains == null || queuedDomains.domains.length === 0 ? (
+              <p data-testid="frontier-queued-domains-empty" className="my-ol-s text-ol-s">
+                No queued domains
+              </p>
+            ) : (
+              <>
+                <ul
+                  data-testid="frontier-queued-domains"
+                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                >
+                  {queuedDomains.domains.map((entry) => (
+                    <li key={entry.domain} className="break-all">
+                      <Badge>{entry.queued}</Badge> {entry.domain}{' '}
+                      <Button
+                        variant="secondary"
+                        data-testid={`frontier-queued-prio-up-${entry.domain}`}
+                        onClick={() => void handleQueuedPriority(entry.domain, 1)}
+                      >
+                        +1 priority
+                      </Button>{' '}
+                      <Button
+                        variant="secondary"
+                        data-testid={`frontier-queued-prio-down-${entry.domain}`}
+                        onClick={() => void handleQueuedPriority(entry.domain, -1)}
+                      >
+                        −1 priority
+                      </Button>{' '}
+                      <Button
+                        variant="ghost"
+                        data-testid={`frontier-queued-skip-${entry.domain}`}
+                        onClick={() => void handleDomainAction(entry.domain, 'skip')}
+                      >
+                        Skip
+                      </Button>{' '}
+                      <Button
+                        variant="ghost"
+                        data-testid={`frontier-queued-block-${entry.domain}`}
+                        onClick={() => void handleBlockDomain(entry.domain)}
+                      >
+                        Block
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-center gap-ol-s my-ol-s">
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-queued-domains-prev"
+                    onClick={() => setQueuedDomainPage((page) => Math.max(0, page - 1))}
+                    disabled={queuedDomainPage <= 0}
+                  >
+                    Previous
+                  </Button>
+                  <span data-testid="frontier-queued-domains-page" className="text-ol-s">
+                    Page {queuedDomainPage + 1} of {queuedDomainPages}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    data-testid="frontier-queued-domains-next"
+                    onClick={() =>
+                      setQueuedDomainPage((page) => Math.min(queuedDomainPages - 1, page + 1))
+                    }
+                    disabled={queuedDomainPage >= queuedDomainPages - 1}
                   >
                     Next
                   </Button>

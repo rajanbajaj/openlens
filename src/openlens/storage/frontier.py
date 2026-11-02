@@ -432,6 +432,32 @@ class FrontierStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def queued_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``queued`` rows by host with per-host counts.
+
+        Powers the admin queued-domains view (priority/skip/block per
+        host). Same host bucketing as :meth:`failed_domains` minus the
+        reason column.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def queued_domain_count(self) -> int:
+        """Number of distinct hosts among ``queued`` rows."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def bump_queued_priority(self, domains: Any, delta: int = 1) -> int:
+        """Shift ``priority`` of ``queued`` rows from ``domains`` by ``delta``.
+
+        Exact+subdomain host match, one ``UPDATE`` per normalized domain;
+        active/done/failed/skipped rows are untouched. Returns rows moved.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def counts(self) -> dict[str, int]:
         """Row counts keyed by status plus ``total``."""
         raise NotImplementedError
@@ -714,6 +740,12 @@ _FAILED_DOMAIN_HOST_FROM_SQLITE = (
     " AS hq, url, last_error FROM (SELECT"
     " substr(url, instr(url, '://') + 3) AS h, url, last_error"
     " FROM frontier_queue WHERE status = 'failed'))"
+)
+_QUEUED_DOMAIN_HOST_FROM_SQLITE = (
+    "FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
+    " AS hq, url FROM (SELECT"
+    " substr(url, instr(url, '://') + 3) AS h, url"
+    " FROM frontier_queue WHERE status = 'queued'))"
 )
 
 
@@ -2170,6 +2202,72 @@ class SqliteFrontierStore(FrontierStore):
             ) from exc
         return total
 
+    def queued_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``queued`` rows by host (SQLite mirror of failed)."""
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT domain, COUNT(*) AS queued"  # noqa: S608
+                    f" FROM (SELECT {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain"
+                    f" {_QUEUED_DOMAIN_HOST_FROM_SQLITE})"
+                    " GROUP BY domain ORDER BY queued DESC, domain ASC"
+                    " LIMIT ? OFFSET ?",
+                    (capped, skipped),
+                ).fetchall()
+                return [(str(row["domain"]), int(row["queued"])) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to aggregate queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def queued_domain_count(self) -> int:
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM (SELECT DISTINCT"  # noqa: S608
+                    f" {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain"
+                    f" {_QUEUED_DOMAIN_HOST_FROM_SQLITE})"
+                ).fetchone()
+                return int(row["n"]) if row is not None else 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to count queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def bump_queued_priority(self, domains: Any, delta: int = 1) -> int:
+        """Shift ``queued`` rows' priority by ``delta`` (exact+subdomain)."""
+        targets = normalize_skip_domains(domains)
+        step = int(delta or 0)
+        if not targets or step == 0:
+            return 0
+        total = 0
+        try:
+            with self._lock, self._conn:
+                for domain in targets:
+                    patterns = _skip_domain_like_patterns(domain)
+                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+                    cursor = self._conn.execute(
+                        "UPDATE frontier_queue SET priority = priority + ?"  # noqa: S608
+                        f" WHERE status = 'queued' AND ({condition})",
+                        (step, *patterns),
+                    )
+                    total += cursor.rowcount
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to bump queued priority: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
+
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {"total": 0}
         try:
@@ -3575,6 +3673,84 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to purge failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return total
+
+    def queued_domains(
+        self, limit: int = 100, offset: int = 0
+    ) -> list[tuple[str, int]]:
+        """Aggregate ``queued`` rows by host (Postgres mirror of SQLite)."""
+        table = self._qualified("frontier_queue")
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        host_expr = FAILED_DOMAIN_HOST_EXPR_PG
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT domain, COUNT(*) AS queued"  # noqa: S608
+                        f" FROM (SELECT {host_expr} AS domain"
+                        f" FROM {table} WHERE status = 'queued') AS q"
+                        " GROUP BY domain ORDER BY queued DESC, domain ASC"
+                        " LIMIT %s OFFSET %s",
+                        (capped, skipped),
+                    )
+                    return [(str(row[0]), int(row[1])) for row in cur.fetchall()]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to aggregate queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def queued_domain_count(self) -> int:
+        table = self._qualified("frontier_queue")
+        host_expr = FAILED_DOMAIN_HOST_EXPR_PG
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM (SELECT DISTINCT"  # noqa: S608
+                        f" {host_expr} AS domain FROM {table}"
+                        " WHERE status = 'queued') AS d"
+                    )
+                    row = cur.fetchone()
+                    return int(row[0]) if row is not None else 0
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to count queued domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def bump_queued_priority(self, domains: Any, delta: int = 1) -> int:
+        """Shift ``queued`` rows' priority by ``delta`` (exact+subdomain)."""
+        targets = normalize_skip_domains(domains)
+        step = int(delta or 0)
+        if not targets or step == 0:
+            return 0
+        table = self._qualified("frontier_queue")
+        total = 0
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    for domain in targets:
+                        patterns = _skip_domain_like_patterns(domain)
+                        condition = " OR ".join(
+                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
+                        )
+                        cur.execute(
+                            f"UPDATE {table} SET priority = priority + %s"  # noqa: S608
+                            f" WHERE status = 'queued' AND ({condition})",
+                            (step, *patterns),
+                        )
+                        total += cur.rowcount or 0
+                conn.commit()
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to bump queued priority: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

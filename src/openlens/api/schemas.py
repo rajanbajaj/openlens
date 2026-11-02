@@ -382,6 +382,29 @@ class FrontierDomainsActionSchema(BaseModel):
     domains: list[str] = Field(default_factory=list)
 
 
+class FrontierQueuedDomainSchema(BaseModel):
+    """One queued host for the admin queued-domains view."""
+
+    domain: str
+    queued: int = Field(default=0, ge=0)
+
+
+class FrontierQueuedDomainListSchema(BaseModel):
+    """Paginated queued-domain rollup (HTTP 200 always; empty when unreadable)."""
+
+    domains: list[FrontierQueuedDomainSchema] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=0)
+    offset: int = Field(default=0, ge=0)
+
+
+class FrontierDomainPrioritySchema(BaseModel):
+    """Domain-scoped priority bump: normalized host list + delta in."""
+
+    domains: list[str] = Field(default_factory=list)
+    delta: int = Field(default=1, ge=-100, le=100)
+
+
 class FrontierDomainsResultSchema(BaseModel):
     """Result of a domain-scoped failed-queue action."""
 

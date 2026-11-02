@@ -21,6 +21,7 @@ import type {
   FrontierDomainsResult,
   FrontierFailedDomainList,
   FrontierFailedList,
+  FrontierQueuedDomainList,
   FrontierFailedUrl,
   FrontierSettings,
   FrontierSettingsResponse,
@@ -383,6 +384,23 @@ export function isFrontierDomainsResult(value: unknown): value is FrontierDomain
     Array.isArray(value.domains) &&
     value.domains.every((entry) => typeof entry === 'string') &&
     typeof value.affected === 'number'
+  );
+}
+
+function isFrontierQueuedDomain(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.domain === 'string' && typeof value.queued === 'number';
+}
+
+/** `GET /api/v1/frontier/queued/domains` response shape. */
+export function isFrontierQueuedDomainList(value: unknown): value is FrontierQueuedDomainList {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.domains) &&
+    value.domains.every(isFrontierQueuedDomain) &&
+    typeof value.total === 'number' &&
+    typeof value.limit === 'number' &&
+    typeof value.offset === 'number'
   );
 }
 

@@ -484,6 +484,15 @@ def test_coordination_defaults_preserve_single_worker_shape() -> None:
         def purge_failed_domains(self, domains) -> int:  # type: ignore[no-untyped-def]
             return 0
 
+        def queued_domains(self, limit: int = 100, offset: int = 0):  # type: ignore[no-untyped-def]
+            return []
+
+        def queued_domain_count(self) -> int:
+            return 0
+
+        def bump_queued_priority(self, domains, delta: int = 1) -> int:  # type: ignore[no-untyped-def]
+            return 0
+
         def counts(self):  # type: ignore[no-untyped-def]
             return {"total": 0}
 

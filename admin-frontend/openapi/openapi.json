@@ -618,6 +618,60 @@
         }
       }
     },
+    "/api/v1/frontier/queued/domains": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Queued Domains",
+        "description": "Queued-URL rollup by host with per-host counts (admin queue view).\n\nOpen read like ``/frontier/failed/domains`` (hosts + counts only,\nno secrets). Never 500s: store failures degrade to the empty list.",
+        "operationId": "frontier_queued_domains_api_v1_frontier_queued_domains_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierQueuedDomainListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/domains/requeue": {
       "post": {
         "tags": [
@@ -715,6 +769,48 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/FrontierDomainsActionSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierDomainsResultSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/domains/priority": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Domains Priority",
+        "description": "Shift a host's queued rows' priority by ``delta`` (admin-only).\n\nPositive deltas fast-lane the host (higher dequeues first,\n``ORDER BY priority DESC``); negative deltas sink it. Only\n``queued`` rows move; fail-closed on malformed host lists.",
+        "operationId": "frontier_domains_priority_api_v1_frontier_domains_priority_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierDomainPrioritySchema"
               }
             }
           },
@@ -2337,6 +2433,27 @@
         "title": "FrontierDiscoverySchema",
         "description": "A worker's last discovery-pass summary (feeds + refresh).\n\n``at`` is a unix-epoch timestamp for when the worker reported the\nsummary; ``worker_id`` names the reporting worker (empty on\nper-worker entries where the parent already names it)."
       },
+      "FrontierDomainPrioritySchema": {
+        "properties": {
+          "domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "delta": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "title": "Delta",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "title": "FrontierDomainPrioritySchema",
+        "description": "Domain-scoped priority bump: normalized host list + delta in."
+      },
       "FrontierDomainsActionSchema": {
         "properties": {
           "domains": {
@@ -2533,6 +2650,58 @@
         ],
         "title": "FrontierQueueEntrySchema",
         "description": "One queued URL in the frontier dashboard view."
+      },
+      "FrontierQueuedDomainListSchema": {
+        "properties": {
+          "domains": {
+            "items": {
+              "$ref": "#/components/schemas/FrontierQueuedDomainSchema"
+            },
+            "type": "array",
+            "title": "Domains"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "FrontierQueuedDomainListSchema",
+        "description": "Paginated queued-domain rollup (HTTP 200 always; empty when unreadable)."
+      },
+      "FrontierQueuedDomainSchema": {
+        "properties": {
+          "domain": {
+            "type": "string",
+            "title": "Domain"
+          },
+          "queued": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Queued",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "domain"
+        ],
+        "title": "FrontierQueuedDomainSchema",
+        "description": "One queued host for the admin queued-domains view."
       },
       "FrontierResumeSchema": {
         "properties": {

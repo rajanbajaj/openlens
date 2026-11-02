@@ -261,6 +261,11 @@ indexing:
   # Malformed policy blocks fail startup validation loudly (fail-closed).
   domain_policies:
     arxiv.org: {rate_limit_s: 3.0}
+    # 429-prone hosts (Nov 2026 crawl): back the fetcher off instead of
+    # burning retry budget against their rate limiters.
+    huggingface.co: {rate_limit_s: 5.0}
+    news24.com: {rate_limit_s: 5.0}
+    dawn.com: {rate_limit_s: 5.0}
   # Example entries (add under domain_policies to scope a crawl):
   #   example.com: {allow: true, rate_limit_s: 1.0, max_depth: 2}
   #   slow.example.org: {rate_limit_s: 5.0}

@@ -634,6 +634,15 @@ describe('FrontierDrawer failed domains', () => {
     limit: 20,
     offset: 0,
   };
+  const QUEUED = {
+    domains: [
+      { domain: 'example.com', queued: 7 },
+      { domain: 'other.example', queued: 2 },
+    ],
+    total: 2,
+    limit: 20,
+    offset: 0,
+  };
 
   function stubDomainBackend(capture: {
     posts: { url: string; body: unknown }[];
@@ -645,14 +654,24 @@ describe('FrontierDrawer failed domains', () => {
         const text = String(url);
         const method = init?.method ?? 'GET';
         let payload: unknown = STATUS;
-        if (text.includes('/api/v1/frontier/settings')) payload = { settings: SETTINGS };
+        if (text.includes('/api/v1/frontier/settings') && method === 'PUT') {
+          capture.puts.push({ url: text, body: init?.body });
+          payload = { settings: { ...SETTINGS, ...JSON.parse(String(init?.body ?? '{}')) } };
+        } else if (text.includes('/api/v1/frontier/settings')) payload = { settings: SETTINGS };
         else if (text.includes('/api/v1/frontier/workers'))
           payload = { workers: [], worker_count: 0 };
         else if (text.includes('/api/v1/frontier/failed/domains')) payload = DOMAINS;
         else if (text.includes('/api/v1/frontier/failed')) payload = { urls: [], total: 0 };
+        else if (text.includes('/api/v1/frontier/queued/domains')) payload = QUEUED;
         else if (text.includes('/api/v1/frontier/domains/requeue') && method === 'POST') {
           capture.posts.push({ url: text, body: init?.body });
           payload = { domains: ['example.com'], affected: 12 };
+        } else if (text.includes('/api/v1/frontier/domains/skip') && method === 'POST') {
+          capture.posts.push({ url: text, body: init?.body });
+          payload = { domains: ['example.com'], affected: 1 };
+        } else if (text.includes('/api/v1/frontier/domains/priority') && method === 'POST') {
+          capture.posts.push({ url: text, body: init?.body });
+          payload = { domains: ['example.com'], affected: 5 };
         } else if (text.includes('/api/v1/admin/config/indexing') && method === 'PUT') {
           capture.puts.push({ url: text, body: init?.body });
           payload = {
@@ -738,10 +757,60 @@ describe('FrontierDrawer failed domains', () => {
         'Blocked — example.com added to deny_domains.',
       );
     });
-    expect(capture.puts).toHaveLength(1);
+    expect(capture.puts).toHaveLength(2);
     expect(capture.puts[0].url).toContain('/api/v1/admin/config/indexing');
     expect(JSON.parse(capture.puts[0].body as string)).toMatchObject({
       body: { deny_domains: ['blocked.example', 'example.com'] },
+    });
+    expect(capture.puts[1].url).toContain('/api/v1/frontier/settings');
+    expect(JSON.parse(capture.puts[1].body as string)).toMatchObject({
+      deny_domains: expect.arrayContaining(['example.com']),
+    });
+    expect(screen.getByTestId('frontier-deny-list')).toHaveTextContent('example.com');
+  });
+
+  it('renders queued domains with priority, skip, and block buttons', async () => {
+    MockSocket.instances = [];
+    const empty: {
+      posts: { url: string; body: unknown }[];
+      puts: { url: string; body: unknown }[];
+    } = {
+      posts: [],
+      puts: [],
+    };
+    stubDomainBackend(empty);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-queued-domains')).toHaveTextContent('example.com');
+    });
+    expect(screen.getByTestId('frontier-queued-domains')).toHaveTextContent('7');
+    expect(screen.getByTestId('frontier-queued-prio-up-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-queued-prio-down-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-queued-skip-example.com')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-queued-block-example.com')).toBeInTheDocument();
+  });
+
+  it('bumps queued priority and toasts the affected count', async () => {
+    MockSocket.instances = [];
+    const capture = {
+      posts: [] as { url: string; body: unknown }[],
+      puts: [] as { url: string; body: unknown }[],
+    };
+    stubDomainBackend(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="secret" />);
+    fireEvent.click(await screen.findByTestId('frontier-queued-prio-up-example.com'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Priority raised — example.com: 5 row(s).',
+      );
+    });
+    expect(capture.posts).toHaveLength(1);
+    expect(capture.posts[0].url).toContain('/api/v1/frontier/domains/priority');
+    expect(JSON.parse(capture.posts[0].body as string)).toMatchObject({
+      domains: ['example.com'],
+      delta: 1,
     });
   });
 });

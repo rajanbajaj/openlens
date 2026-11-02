@@ -46,10 +46,13 @@ from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
 from openlens.api.schemas import (
+    FrontierDomainPrioritySchema,
     FrontierDomainsActionSchema,
     FrontierDomainsResultSchema,
     FrontierFailedDomainListSchema,
     FrontierFailedDomainSchema,
+    FrontierQueuedDomainListSchema,
+    FrontierQueuedDomainSchema,
 )
 from openlens.api.schemas import FrontierSettingsSchema, FrontierStatusSchema
 from openlens.api.schemas import FrontierWorkerHeartbeatSchema
@@ -1465,6 +1468,81 @@ def frontier_failed_domains(
         )
 
 
+@router.get("/frontier/queued/domains", response_model=FrontierQueuedDomainListSchema)
+def frontier_queued_domains(
+    request: Request, limit: int = 100, offset: int = 0
+) -> FrontierQueuedDomainListSchema:
+    """Queued-URL rollup by host with per-host counts (admin queue view).
+
+    Open read like ``/frontier/failed/domains`` (hosts + counts only,
+    no secrets). Never 500s: store failures degrade to the empty list.
+    """
+    capped = max(0, int(limit or 0))
+    skipped = max(0, int(offset or 0))
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return FrontierQueuedDomainListSchema(
+                domains=[], total=0, limit=capped, offset=skipped
+            )
+        try:
+            total = int(store.queued_domain_count() or 0)
+        except Exception:
+            total = 0
+        pairs = store.queued_domains(limit=capped, offset=skipped)
+        return FrontierQueuedDomainListSchema(
+            domains=[
+                FrontierQueuedDomainSchema(
+                    domain=domain,
+                    queued=max(0, int(count)),
+                )
+                for domain, count in pairs
+            ],
+            total=total,
+            limit=capped,
+            offset=skipped,
+        )
+    except Exception:
+        return FrontierQueuedDomainListSchema(
+            domains=[], total=0, limit=capped, offset=skipped
+        )
+
+
+def _merge_settings_domains(request: Request, key: str, targets: list[str]) -> None:
+    """Union ``targets`` into the frontier settings list ``key``.
+
+    Best effort: the stored row (what workers enforce) and the
+    in-process snapshot (what the drawer renders) both update, so a
+    skip from the domains view shows up in the settings skip list
+    without a separate save. Failures only log, never fail the action.
+    """
+    try:
+        from openlens.storage.frontier import normalize_skip_domains
+
+        clean = normalize_skip_domains(targets) or []
+        if not clean:
+            return
+        app_config = getattr(request.app.state, "config", None)
+        stored = _store_get_settings(app_config)
+        current = list(stored.get(key, []) or []) if isinstance(stored, dict) else []
+        merged = [*current]
+        for domain in clean:
+            if domain not in merged:
+                merged.append(domain)
+        _store_save_settings(app_config, {key: merged})
+        with suppress(Exception):
+            state = frontier_state.get_frontier_state()
+            settings = getattr(state, "settings", None)
+            if isinstance(settings, dict):
+                existing = list(settings.get(key, []) or [])
+                for domain in clean:
+                    if domain not in existing:
+                        existing.append(domain)
+                settings[key] = existing
+    except Exception as exc:
+        logger.warning("frontier settings merge failed: %s", exc)
+
+
 def _frontier_domain_targets(body: Any) -> list[str] | None:
     """Validated host list for a domain-scoped failed-queue action.
 
@@ -1512,6 +1590,7 @@ def _frontier_domains_action(
             affected = int(store.purge_failed_domains(targets) or 0)
         elif op == "skip":
             affected = int(store.skip_queued_domains(targets) or 0)
+            _merge_settings_domains(request, "skip_domains", targets)
         else:  # pragma: no cover - dispatch is closed above
             return JSONResponse(
                 status_code=422,
@@ -1559,6 +1638,52 @@ def frontier_domains_skip(
 ) -> FrontierDomainsResultSchema | JSONResponse:
     """Skip a host's queued rows (admin-only; same as bulk domain skip)."""
     return _frontier_domains_action(request, body, "skip")
+
+
+@router.post("/frontier/domains/priority", response_model=FrontierDomainsResultSchema)
+def frontier_domains_priority(
+    body: FrontierDomainPrioritySchema, request: Request
+) -> FrontierDomainsResultSchema | JSONResponse:
+    """Shift a host's queued rows' priority by ``delta`` (admin-only).
+
+    Positive deltas fast-lane the host (higher dequeues first,
+    ``ORDER BY priority DESC``); negative deltas sink it. Only
+    ``queued`` rows move; fail-closed on malformed host lists.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    targets = _frontier_domain_targets(body)
+    if targets is None:
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "invalid_request", "domains must be a non-empty host list"
+            ),
+        )
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable", "frontier store unavailable"
+                ),
+            )
+        affected = int(store.bump_queued_priority(targets, body.delta) or 0)
+    except ProviderError as exc:
+        logger.warning("frontier domains priority failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+    except Exception as exc:
+        logger.warning("frontier domains priority failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "frontier store unavailable"),
+        )
+    return FrontierDomainsResultSchema(domains=targets, affected=affected)
 
 
 #: Seconds between pushes on the live frontier websocket. Tests

@@ -23,6 +23,7 @@ import type {
   FeedbackRequestSchema,
   FeedbackResponseSchema,
   FeedbackSummarySchema,
+  FrontierDomainPrioritySchema,
   FrontierDomainsActionSchema,
   FrontierDomainsResultSchema,
   FrontierFailedApiV1FrontierFailedGetParams,
@@ -30,6 +31,8 @@ import type {
   FrontierFailedDomainsApiV1FrontierFailedDomainsGetParams,
   FrontierFailedListSchema,
   FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
+  FrontierQueuedDomainListSchema,
+  FrontierQueuedDomainsApiV1FrontierQueuedDomainsGetParams,
   FrontierResumeSchema,
   FrontierSettingsResponseSchema,
   FrontierSettingsSchema,
@@ -846,6 +849,75 @@ export const frontierFailedDomainsApiV1FrontierFailedDomainsGet = async (
   } as frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse;
 };
 
+export type frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse200 = {
+  data: FrontierQueuedDomainListSchema;
+  status: 200;
+};
+
+export type frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponseSuccess =
+  frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponseError =
+  frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse =
+  | frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponseSuccess
+  | frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponseError;
+
+export const getFrontierQueuedDomainsApiV1FrontierQueuedDomainsGetUrl = (
+  params?: FrontierQueuedDomainsApiV1FrontierQueuedDomainsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/queued/domains?${stringifiedParams}`
+    : `/api/v1/frontier/queued/domains`;
+};
+
+/**
+ * Queued-URL rollup by host with per-host counts (admin queue view).
+ *
+ * Open read like ``/frontier/failed/domains`` (hosts + counts only,
+ * no secrets). Never 500s: store failures degrade to the empty list.
+ * @summary Frontier Queued Domains
+ */
+export const frontierQueuedDomainsApiV1FrontierQueuedDomainsGet = async (
+  params?: FrontierQueuedDomainsApiV1FrontierQueuedDomainsGetParams,
+  options?: RequestInit,
+): Promise<frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse> => {
+  const res = await fetch(getFrontierQueuedDomainsApiV1FrontierQueuedDomainsGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierQueuedDomainsApiV1FrontierQueuedDomainsGetResponse;
+};
+
 export type frontierDomainsRequeueApiV1FrontierDomainsRequeuePostResponse200 = {
   data: FrontierDomainsResultSchema;
   status: 200;
@@ -1067,6 +1139,83 @@ export const frontierDomainsSkipApiV1FrontierDomainsSkipPost = async (
     status: res.status,
     headers: res.headers,
   } as frontierDomainsSkipApiV1FrontierDomainsSkipPostResponse;
+};
+
+export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse200 = {
+  data: FrontierDomainsResultSchema;
+  status: 200;
+};
+
+export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponseSuccess =
+  frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponseError =
+  frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse =
+  | frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponseSuccess
+  | frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponseError;
+
+export const getFrontierDomainsPriorityApiV1FrontierDomainsPriorityPostUrl = () => {
+  return `/api/v1/frontier/domains/priority`;
+};
+
+/**
+ * Shift a host's queued rows' priority by ``delta`` (admin-only).
+ *
+ * Positive deltas fast-lane the host (higher dequeues first,
+ * ``ORDER BY priority DESC``); negative deltas sink it. Only
+ * ``queued`` rows move; fail-closed on malformed host lists.
+ * @summary Frontier Domains Priority
+ */
+export const frontierDomainsPriorityApiV1FrontierDomainsPriorityPost = async (
+  frontierDomainPrioritySchema: FrontierDomainPrioritySchema,
+  options?: RequestInit,
+): Promise<frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierDomainsPriorityApiV1FrontierDomainsPriorityPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(frontierDomainPrioritySchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierDomainsPriorityApiV1FrontierDomainsPriorityPostResponse;
 };
 
 export type frontierClearApiV1FrontierClearPostResponse200 = {

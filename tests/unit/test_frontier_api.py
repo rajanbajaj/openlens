@@ -233,6 +233,7 @@ def test_domains_skip_moves_queued_rows(
     """Skip marks queued rows without touching failed history."""
     from openlens.api import routes as routes_mod
 
+    _file_store(monkeypatch, tmp_path)
     store = _failed_domain_store(tmp_path)
     try:
         monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
@@ -257,11 +258,125 @@ def test_domains_actions_reject_bad_bodies(client: TestClient) -> None:
         "/api/v1/frontier/domains/requeue",
         "/api/v1/frontier/domains/purge",
         "/api/v1/frontier/domains/skip",
+        "/api/v1/frontier/domains/priority",
     ):
         assert client.post(path, json={}).status_code == 422
         assert client.post(path, json={"domains": []}).status_code == 422
         assert client.post(path, json={"domains": "example.com"}).status_code == 422
         assert client.post(path, json={"domains": [":::"]}).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/frontier/domains/priority",
+            json={"domains": ["example.com"], "delta": 101},
+        ).status_code
+        == 422
+    )
+
+
+def _queued_domain_store(tmp_path) -> SqliteFrontierStore:
+    """Seeded store: two queued hosts, one failed row, one skipped row."""
+    from openlens.storage.frontier import SqliteFrontierStore as _Store
+
+    store = _Store(str(tmp_path / "queued.db"))
+    for url in (
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://other.example/c",
+        "https://example.com/failed",
+        "https://example.com/skipped",
+    ):
+        assert store.enqueue(url, 0) is True
+    store.mark_failed("https://example.com/failed", "fetch timeout")
+    assert store.mark_skipped("https://example.com/skipped") == 1
+    return store
+
+
+def test_queued_domains_groups_hosts_with_counts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The queued view rolls up only queued rows, most-queued first."""
+    from openlens.api import routes as routes_mod
+
+    store = _queued_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        body = client.get("/api/v1/frontier/queued/domains").json()
+        assert body["total"] == 2
+        assert [(d["domain"], d["queued"]) for d in body["domains"]] == [
+            ("example.com", 2),
+            ("other.example", 1),
+        ]
+        page = client.get("/api/v1/frontier/queued/domains?limit=1&offset=1").json()
+        assert [(d["domain"], d["queued"]) for d in page["domains"]] == [
+            ("other.example", 1)
+        ]
+    finally:
+        store.close()
+
+
+def test_domains_priority_bumps_only_queued(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Priority deltas move queued rows; failed/skipped rows keep priority."""
+    from openlens.api import routes as routes_mod
+
+    store = _queued_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post(
+            "/api/v1/frontier/domains/priority",
+            json={"domains": ["example.com"], "delta": 2},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"domains": ["example.com"], "affected": 2}
+        prio = {e.url: e.priority for e in store.pending(limit=100)}
+        assert prio["https://example.com/a"] == 2
+        assert prio["https://example.com/b"] == 2
+        assert prio["https://other.example/c"] == 0
+        resp = client.post(
+            "/api/v1/frontier/domains/priority",
+            json={"domains": ["example.com"], "delta": -5},
+        )
+        assert resp.json()["affected"] == 2
+        prio = {e.url: e.priority for e in store.pending(limit=100)}
+        assert prio["https://example.com/a"] == -3
+        resp = client.post(
+            "/api/v1/frontier/domains/priority",
+            json={"domains": ["missing.test"], "delta": 1},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["affected"] == 0
+    finally:
+        store.close()
+
+
+def test_domains_skip_merges_settings_skip_list(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Skipping from the domains view also lands in settings.skip_domains."""
+    from openlens.api import routes as routes_mod
+    from openlens.api import frontier_state
+
+    db_path = _file_store(monkeypatch, tmp_path)
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        resp = client.post(
+            "/api/v1/frontier/domains/skip", json={"domains": ["example.com"]}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["affected"] == 1
+        assert (
+            "example.com"
+            in frontier_state.get_frontier_state().settings["skip_domains"]
+        )
+        probe = SqliteFrontierStore(db_path)
+        try:
+            assert "example.com" in probe.get_settings().get("skip_domains", [])
+        finally:
+            probe.close()
+    finally:
+        store.close()
 
 
 def test_store_overlay_preserves_kafka_enabled() -> None:

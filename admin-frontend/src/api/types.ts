@@ -310,6 +310,20 @@ export interface FrontierDomainsResult {
   affected: number;
 }
 
+/** One queued host with its queued-URL count. */
+export interface FrontierQueuedDomain {
+  domain: string;
+  queued: number;
+}
+
+/** Paginated queued-domain rollup response. */
+export interface FrontierQueuedDomainList {
+  domains: FrontierQueuedDomain[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 /** One top prop value with its count. */
 export interface AnalyticsTopEntry {
   value: string;

@@ -18,6 +18,7 @@ import {
   isFrontierDomainsResult,
   isFrontierFailedDomainList,
   isFrontierFailedList,
+  isFrontierQueuedDomainList,
   isFrontierSettingsResponse,
   isFrontierStatus,
   isFrontierWorkersResponse,
@@ -31,9 +32,11 @@ import {
   adminFeedbackSummaryApiV1AdminFeedbackSummaryGet,
   frontierApproveCrawlRequestApiV1FrontierCrawlRequestsRequestIdApprovePost,
   frontierDeclineCrawlRequestApiV1FrontierCrawlRequestsRequestIdDeclinePost,
+  frontierDomainsPriorityApiV1FrontierDomainsPriorityPost,
   frontierDomainsPurgeApiV1FrontierDomainsPurgePost,
   frontierDomainsRequeueApiV1FrontierDomainsRequeuePost,
   frontierDomainsSkipApiV1FrontierDomainsSkipPost,
+  frontierQueuedDomainsApiV1FrontierQueuedDomainsGet,
   frontierFailedApiV1FrontierFailedGet,
   frontierFailedDomainsApiV1FrontierFailedDomainsGet,
   frontierListCrawlRequestsApiV1FrontierCrawlRequestsGet,
@@ -51,6 +54,7 @@ import type {
   FrontierDomainsResult,
   FrontierFailedDomainList,
   FrontierFailedList,
+  FrontierQueuedDomainList,
   FrontierSettings,
   FrontierSettingsResponse,
   FrontierStatus,
@@ -812,6 +816,25 @@ export async function fetchFailedDomains(
   return isFrontierFailedDomainList(res.data) ? res.data : null;
 }
 
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/queued/domains` (open read).
+ * Resolves to `null` on transport or shape failures so the queued
+ * view degrades to an empty section instead of crashing the drawer.
+ */
+export async function fetchQueuedDomains(
+  limit: number = 20,
+  offset: number = 0,
+): Promise<FrontierQueuedDomainList | null> {
+  let res;
+  try {
+    res = await frontierQueuedDomainsApiV1FrontierQueuedDomainsGet({ limit, offset });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFrontierQueuedDomainList(res.data) ? res.data : null;
+}
+
 /** Domain actions shared by the failed-domains buttons. */
 export type FrontierDomainOp = 'requeue' | 'purge' | 'skip';
 
@@ -848,9 +871,40 @@ export async function domainAction(
 }
 
 /**
+ * Shift a host's queued rows' priority by `delta` (positive fast-lanes,
+ * negative sinks). Throws {@link SearchApiError} on failure so the
+ * drawer can toast the backend message.
+ */
+export async function bumpDomainPriority(
+  domains: string[],
+  delta: number,
+  adminToken: string = '',
+): Promise<FrontierDomainsResult> {
+  let res;
+  try {
+    res = await frontierDomainsPriorityApiV1FrontierDomainsPriorityPost(
+      { domains, delta },
+      { headers: { ...frontierAdminHeaders(adminToken) } },
+    );
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  if (res.status === 200 && isFrontierDomainsResult(res.data)) return res.data;
+  if (isErrorEnvelope(res.data)) {
+    throw new SearchApiError(res.data.error.code, res.data.error.message);
+  }
+  throw new SearchApiError('invalid_response', 'Unexpected response shape.');
+}
+
+/**
  * Block hosts: merge them into the `indexing` doc's `deny_domains`
  * (deduped, lowercased) and save. Throws {@link SearchApiError} on
- * failure, including when the doc shape is unexpected.
+ * failure, including when the doc shape is unexpected. Callers mirror
+ * the host into the frontier settings deny list (which is what the
+ * drawer renders) with their own settings state.
  */
 export async function blockDomains(domains: string[], adminToken: string = ''): Promise<void> {
   const doc = await fetchAdminConfig('indexing');
