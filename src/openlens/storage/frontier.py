@@ -413,6 +413,23 @@ class FrontierStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def failed_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``failed`` rows for one host (exact+subdomain).
+
+        Powers the per-domain drill-down in the admin failed-domains
+        view. Most-retried first, like :meth:`failed`. Malformed
+        domains fail closed to the empty list.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def failed_domain_url_count(self, domain: str) -> int:
+        """Number of ``failed`` rows for one host (exact+subdomain)."""
+        raise NotImplementedError
+
+    @abstractmethod
     def requeue_failed_domains(self, domains: Any) -> int:
         """Revive ``failed`` rows from ``domains`` back to ``queued``.
 
@@ -2142,6 +2159,56 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def failed_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``failed`` rows for one host (SQLite exact+subdomain)."""
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return []
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT url, depth, status, parent_url, attempts,"  # noqa: S608
+                    " last_error, etag, last_modified, priority"
+                    " FROM frontier_queue WHERE status = 'failed'"
+                    f" AND ({condition})"
+                    " ORDER BY attempts DESC, rowid DESC LIMIT ? OFFSET ?",
+                    (*patterns, capped, skipped),
+                ).fetchall()
+                return [_entry_from_row(row) for row in rows]
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to list failed domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed_domain_url_count(self, domain: str) -> int:
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return 0
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM frontier_queue"  # noqa: S608
+                    f" WHERE status = 'failed' AND ({condition})",
+                    patterns,
+                ).fetchone()
+                return int(row["n"]) if row is not None else 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to count failed domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def requeue_failed_domains(self, domains: Any) -> int:
         """Revive ``failed`` rows from ``domains`` (exact+subdomain).
 
@@ -3614,6 +3681,74 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to count failed domains: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed_domain_urls(
+        self, domain: str, limit: int = 100, offset: int = 0
+    ) -> list[FrontierEntry]:
+        """List ``failed`` rows for one host (Postgres exact+subdomain)."""
+        table = self._qualified("frontier_queue")
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return []
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE %s ESCAPE '\\'"] * len(patterns))
+        capped = max(0, int(limit or 0))
+        skipped = max(0, int(offset or 0))
+        cols = (
+            "url",
+            "depth",
+            "status",
+            "parent_url",
+            "attempts",
+            "last_error",
+            "etag",
+            "last_modified",
+            "priority",
+        )
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT {', '.join(cols)} FROM {table}"  # noqa: S608
+                        " WHERE status = 'failed'"
+                        f" AND ({condition})"
+                        " ORDER BY attempts DESC, discovered_at DESC"
+                        " LIMIT %s OFFSET %s",
+                        (*patterns, capped, skipped),
+                    )
+                    return [
+                        _entry_from_row(dict(zip(cols, row))) for row in cur.fetchall()
+                    ]
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to list failed domain URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def failed_domain_url_count(self, domain: str) -> int:
+        table = self._qualified("frontier_queue")
+        host = normalize_skip_domain(domain)
+        if host is None:
+            return 0
+        patterns = _skip_domain_like_patterns(host)
+        condition = " OR ".join(["url LIKE %s ESCAPE '\\'"] * len(patterns))
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {table}"  # noqa: S608
+                        f" WHERE status = 'failed' AND ({condition})",
+                        patterns,
+                    )
+                    row = cur.fetchone()
+                    return int(row[0]) if row is not None else 0
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to count failed domain URLs: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

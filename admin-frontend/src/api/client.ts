@@ -36,6 +36,7 @@ import {
   frontierDomainsPurgeApiV1FrontierDomainsPurgePost,
   frontierDomainsRequeueApiV1FrontierDomainsRequeuePost,
   frontierDomainsSkipApiV1FrontierDomainsSkipPost,
+  frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGet,
   frontierQueuedDomainsApiV1FrontierQueuedDomainsGet,
   frontierFailedApiV1FrontierFailedGet,
   frontierFailedDomainsApiV1FrontierFailedDomainsGet,
@@ -833,6 +834,29 @@ export async function fetchQueuedDomains(
   }
   if (res.status !== 200) return null;
   return isFrontierQueuedDomainList(res.data) ? res.data : null;
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/failed/domains/{domain}/urls`
+ * (open read). Resolves to `null` on transport or shape failures so
+ * the drill-down degrades to an empty list instead of crashing.
+ */
+export async function fetchFailedDomainUrls(
+  domain: string,
+  limit: number = 20,
+  offset: number = 0,
+): Promise<FrontierFailedList | null> {
+  let res;
+  try {
+    res = await frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGet(domain, {
+      limit,
+      offset,
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200) return null;
+  return isFrontierFailedList(res.data) ? res.data : null;
 }
 
 /** Domain actions shared by the failed-domains buttons. */

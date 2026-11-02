@@ -7,6 +7,7 @@ import {
   decideCrawlRequest,
   domainAction,
   fetchFailedDomains,
+  fetchFailedDomainUrls,
   fetchFailedUrls,
   fetchQueuedDomains,
   frontierLiveUrl,
@@ -206,6 +207,31 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const failedDomainTotal = failedDomains?.total ?? 0;
   const failedDomainPages = Math.max(1, Math.ceil(failedDomainTotal / FAILED_PAGE_SIZE));
 
+  // Per-domain drill-down: expanding a row lists that host's failed
+  // URLs with per-URL reasons. One expanded domain at a time; the
+  // page resets whenever the selection (or the drawer) changes.
+  const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
+  const [domainUrlPage, setDomainUrlPage] = useState(0);
+  const domainUrlsQuery = useQuery({
+    queryKey: ['frontier', 'failed-domain-urls', expandedDomain, domainUrlPage],
+    queryFn: () =>
+      expandedDomain == null
+        ? Promise.resolve(null)
+        : fetchFailedDomainUrls(expandedDomain, FAILED_PAGE_SIZE, domainUrlPage * FAILED_PAGE_SIZE),
+    enabled: open && expandedDomain != null,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+  const domainUrls: FrontierFailedList | null | undefined = domainUrlsQuery.data;
+  const domainUrlTotal = domainUrls?.total ?? 0;
+  const domainUrlPages = Math.max(1, Math.ceil(domainUrlTotal / FAILED_PAGE_SIZE));
+
+  function toggleDomainUrls(domain: string) {
+    setExpandedDomain((current) => (current === domain ? null : domain));
+    setDomainUrlPage(0);
+  }
+
   // Queued URLs rolled up by host with per-host counts. Same paging
   // rule: the page resets whenever the drawer opens.
   const [queuedDomainPage, setQueuedDomainPage] = useState(0);
@@ -226,6 +252,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       setFailedPage(0);
       setFailedDomainPage(0);
       setQueuedDomainPage(0);
+      setExpandedDomain(null);
+      setDomainUrlPage(0);
     }
   }, [open]);
 
@@ -775,6 +803,13 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     <li key={entry.domain} className="break-all">
                       <Badge>{entry.failed}</Badge> {entry.domain} · {entry.top_reason}{' '}
                       <Button
+                        variant="ghost"
+                        data-testid={`frontier-domain-toggle-${entry.domain}`}
+                        onClick={() => toggleDomainUrls(entry.domain)}
+                      >
+                        {expandedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
+                      </Button>{' '}
+                      <Button
                         variant="secondary"
                         data-testid={`frontier-domain-requeue-${entry.domain}`}
                         onClick={() => void handleDomainAction(entry.domain, 'requeue')}
@@ -802,6 +837,59 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       >
                         Block
                       </Button>
+                      {expandedDomain === entry.domain ? (
+                        <div className="my-ol-s">
+                          {domainUrlsQuery.isPending ? (
+                            <p className="text-ol-s">Loading URLs…</p>
+                          ) : domainUrls == null || domainUrls.urls.length === 0 ? (
+                            <p
+                              data-testid={`frontier-domain-urls-empty-${entry.domain}`}
+                              className="text-ol-s"
+                            >
+                              No failed URLs for this domain
+                            </p>
+                          ) : (
+                            <>
+                              <ul
+                                data-testid={`frontier-domain-urls-${entry.domain}`}
+                                className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                              >
+                                {domainUrls.urls.map((failed) => (
+                                  <li key={failed.url} className="break-all">
+                                    <Badge>{failed.attempts}</Badge> {failed.url}{' '}
+                                    <span className="text-ol-s">· {failed.reason}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                              <div className="flex items-center gap-ol-s my-ol-s">
+                                <Button
+                                  variant="ghost"
+                                  data-testid={`frontier-domain-urls-prev-${entry.domain}`}
+                                  onClick={() => setDomainUrlPage((page) => Math.max(0, page - 1))}
+                                  disabled={domainUrlPage <= 0}
+                                >
+                                  Previous
+                                </Button>
+                                <span className="text-ol-s">
+                                  Page {domainUrlPage + 1} of {domainUrlPages}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  data-testid={`frontier-domain-urls-next-${entry.domain}`}
+                                  onClick={() =>
+                                    setDomainUrlPage((page) =>
+                                      Math.min(domainUrlPages - 1, page + 1),
+                                    )
+                                  }
+                                  disabled={domainUrlPage >= domainUrlPages - 1}
+                                >
+                                  Next
+                                </Button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

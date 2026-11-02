@@ -53,6 +53,7 @@ export * from './frontierFailedApiV1FrontierFailedGetParams.ts';
 export * from './frontierFailedDomainListSchema.ts';
 export * from './frontierFailedDomainsApiV1FrontierFailedDomainsGetParams.ts';
 export * from './frontierFailedDomainSchema.ts';
+export * from './frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetParams.ts';
 export * from './frontierFailedListSchema.ts';
 export * from './frontierFailedUrlSchema.ts';
 export * from './frontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams.ts';

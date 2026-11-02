@@ -1427,6 +1427,53 @@ def frontier_failed(
         return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
 
 
+@router.get(
+    "/frontier/failed/domains/{domain}/urls", response_model=FrontierFailedListSchema
+)
+def frontier_failed_domain_urls(
+    domain: str, request: Request, limit: int = 100, offset: int = 0
+) -> FrontierFailedListSchema:
+    """Failed URLs for one host with per-URL reasons (domain drill-down).
+
+    Open read like ``/frontier/failed``. Host matching is exact +
+    subdomain (same bucketing as the rollup). Malformed hosts and
+    store failures degrade to the empty list, never 500.
+    """
+    from openlens.storage.frontier import normalize_skip_domain
+
+    capped = max(0, min(int(limit or 0), 500))
+    skipped = max(0, int(offset or 0))
+    host = normalize_skip_domain(domain)
+    if host is None:
+        return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
+    try:
+        store = _frontier_read_store(request)
+        if store is None:
+            return FrontierFailedListSchema(
+                urls=[], total=0, limit=capped, offset=skipped
+            )
+        try:
+            total = int(store.failed_domain_url_count(host) or 0)
+        except Exception:
+            total = 0
+        rows = store.failed_domain_urls(host, limit=capped, offset=skipped)
+        return FrontierFailedListSchema(
+            urls=[
+                FrontierFailedUrlSchema(
+                    url=entry.url,
+                    reason=entry.last_error or "",
+                    attempts=max(0, int(entry.attempts or 0)),
+                )
+                for entry in rows
+            ],
+            total=total,
+            limit=capped,
+            offset=skipped,
+        )
+    except Exception:
+        return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
+
+
 @router.get("/frontier/failed/domains", response_model=FrontierFailedDomainListSchema)
 def frontier_failed_domains(
     request: Request, limit: int = 100, offset: int = 0

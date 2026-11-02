@@ -28,6 +28,7 @@ import type {
   FrontierDomainsResultSchema,
   FrontierFailedApiV1FrontierFailedGetParams,
   FrontierFailedDomainListSchema,
+  FrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetParams,
   FrontierFailedDomainsApiV1FrontierFailedDomainsGetParams,
   FrontierFailedListSchema,
   FrontierListCrawlRequestsApiV1FrontierCrawlRequestsGetParams,
@@ -778,6 +779,81 @@ export const frontierFailedApiV1FrontierFailedGet = async (
     status: res.status,
     headers: res.headers,
   } as frontierFailedApiV1FrontierFailedGetResponse;
+};
+
+export type frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse200 = {
+  data: FrontierFailedListSchema;
+  status: 200;
+};
+
+export type frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponseSuccess =
+  frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponseError =
+  frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse =
+  | frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponseSuccess
+  | frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponseError;
+
+export const getFrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetUrl = (
+  domain: string,
+  params?: FrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/failed/domains/${domain}/urls?${stringifiedParams}`
+    : `/api/v1/frontier/failed/domains/${domain}/urls`;
+};
+
+/**
+ * Failed URLs for one host with per-URL reasons (domain drill-down).
+ *
+ * Open read like ``/frontier/failed``. Host matching is exact +
+ * subdomain (same bucketing as the rollup). Malformed hosts and
+ * store failures degrade to the empty list, never 500.
+ * @summary Frontier Failed Domain Urls
+ */
+export const frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGet = async (
+  domain: string,
+  params?: FrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetParams,
+  options?: RequestInit,
+): Promise<frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse> => {
+  const res = await fetch(
+    getFrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetUrl(domain, params),
+    {
+      ...options,
+      method: 'GET',
+    },
+  );
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetResponse;
 };
 
 export type frontierFailedDomainsApiV1FrontierFailedDomainsGetResponse200 = {

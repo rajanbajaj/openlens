@@ -660,6 +660,16 @@ describe('FrontierDrawer failed domains', () => {
         } else if (text.includes('/api/v1/frontier/settings')) payload = { settings: SETTINGS };
         else if (text.includes('/api/v1/frontier/workers'))
           payload = { workers: [], worker_count: 0 };
+        else if (text.includes('/api/v1/frontier/failed/domains/example.com/urls'))
+          payload = {
+            urls: [
+              { url: 'https://example.com/a', reason: 'fetch timeout', attempts: 3 },
+              { url: 'https://example.com/b', reason: 'http 404', attempts: 2 },
+            ],
+            total: 2,
+            limit: 20,
+            offset: 0,
+          };
         else if (text.includes('/api/v1/frontier/failed/domains')) payload = DOMAINS;
         else if (text.includes('/api/v1/frontier/failed')) payload = { urls: [], total: 0 };
         else if (text.includes('/api/v1/frontier/queued/domains')) payload = QUEUED;
@@ -790,6 +800,33 @@ describe('FrontierDrawer failed domains', () => {
     expect(screen.getByTestId('frontier-queued-prio-down-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-queued-skip-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-queued-block-example.com')).toBeInTheDocument();
+  });
+
+  it('expands a failed domain to list its URLs with reasons', async () => {
+    MockSocket.instances = [];
+    const empty: {
+      posts: { url: string; body: unknown }[];
+      puts: { url: string; body: unknown }[];
+    } = {
+      posts: [],
+      puts: [],
+    };
+    stubDomainBackend(empty);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    fireEvent.click(await screen.findByTestId('frontier-domain-toggle-example.com'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-domain-urls-example.com')).toHaveTextContent(
+        'https://example.com/a',
+      );
+    });
+    expect(screen.getByTestId('frontier-domain-urls-example.com')).toHaveTextContent(
+      'fetch timeout',
+    );
+    fireEvent.click(screen.getByTestId('frontier-domain-toggle-example.com'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('frontier-domain-urls-example.com')).not.toBeInTheDocument();
+    });
   });
 
   it('bumps queued priority and toasts the affected count', async () => {

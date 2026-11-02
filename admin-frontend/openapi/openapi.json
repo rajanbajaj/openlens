@@ -564,6 +564,69 @@
         }
       }
     },
+    "/api/v1/frontier/failed/domains/{domain}/urls": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Failed Domain Urls",
+        "description": "Failed URLs for one host with per-URL reasons (domain drill-down).\n\nOpen read like ``/frontier/failed``. Host matching is exact +\nsubdomain (same bucketing as the rollup). Malformed hosts and\nstore failures degrade to the empty list, never 500.",
+        "operationId": "frontier_failed_domain_urls_api_v1_frontier_failed_domains__domain__urls_get",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Domain"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierFailedListSchema"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/frontier/failed/domains": {
       "get": {
         "tags": [

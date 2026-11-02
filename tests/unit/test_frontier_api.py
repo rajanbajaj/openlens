@@ -317,6 +317,32 @@ def test_queued_domains_groups_hosts_with_counts(
         store.close()
 
 
+def test_failed_domain_urls_lists_only_that_host(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The domain drill-down lists that host's failed URLs with reasons."""
+    from openlens.api import routes as routes_mod
+
+    store = _failed_domain_store(tmp_path)
+    try:
+        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        body = client.get("/api/v1/frontier/failed/domains/example.com/urls").json()
+        assert body["total"] == 2
+        assert [(u["url"], u["reason"]) for u in body["urls"]] == [
+            ("https://example.com/a", "fetch timeout"),
+            ("https://example.com/b", "http 404"),
+        ]
+        other = client.get("/api/v1/frontier/failed/domains/other.example/urls").json()
+        assert other["total"] == 1
+        assert other["urls"][0]["url"] == "https://other.example/c"
+        missing = client.get("/api/v1/frontier/failed/domains/missing.test/urls").json()
+        assert missing == {"urls": [], "total": 0, "limit": 100, "offset": 0}
+        malformed = client.get("/api/v1/frontier/failed/domains/:::/urls").json()
+        assert malformed["urls"] == [] and malformed["total"] == 0
+    finally:
+        store.close()
+
+
 def test_domains_priority_bumps_only_queued(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
