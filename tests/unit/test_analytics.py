@@ -341,3 +341,23 @@ def test_analytics_store_creates_parent_dirs(tmp_path) -> None:
         assert store.counts_by_name(since_days=30) == {}
     finally:
         store.close()
+
+
+def test_backend_image_installs_analytics_extra() -> None:
+    """The release image must ship the ClickHouse driver.
+
+    Compose runs this image as the API and the analytics-worker with
+    ``OPENLENS_ANALYTICS_BACKEND=clickhouse``; without the ``analytics``
+    extra both sides fail and the admin endpoint 503s with "analytics
+    store unavailable".
+    """
+    from pathlib import Path
+
+    dockerfile = (
+        Path(__file__).resolve().parent.parent.parent
+        / "deploy"
+        / "local"
+        / "Dockerfile.backend"
+    )
+    text = dockerfile.read_text()
+    assert "analytics" in text, "Dockerfile.backend must install .[kafka,analytics]"

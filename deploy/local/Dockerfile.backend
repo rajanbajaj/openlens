@@ -11,8 +11,12 @@ COPY src/ ./src/
 COPY configs/ ./configs/
 
 # `[kafka]` (pure-Python client) powers the API seed fan-out and the
-# distributed crawl loop; harmless when Kafka is disabled.
-RUN pip install --no-cache-dir .[kafka]
+# distributed crawl loop; harmless when Kafka is disabled. `[analytics]`
+# (ClickHouse HTTP driver) is required too: compose runs this image as
+# both the API (admin analytics counts) and the analytics-worker with
+# `OPENLENS_ANALYTICS_BACKEND=clickhouse`, and without the driver both
+# sides fail — the endpoint 503s with "analytics store unavailable".
+RUN pip install --no-cache-dir .[kafka,analytics]
 
 EXPOSE 8000
 
