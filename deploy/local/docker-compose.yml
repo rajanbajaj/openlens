@@ -306,6 +306,23 @@ services:
     networks:
       - openlens
 
+  # Container log viewer (Dozzle): every container's logs in one web
+  # UI. Read-only Docker socket mount, no login — same trusted-LAN
+  # rule as kafka-ui/pgadmin. No healthcheck on purpose: the image
+  # ships no shell probe binary, and a wrong probe only paints the
+  # container `unhealthy` without affecting the UI (see kafka-ui).
+  dozzle:
+    image: amir20/dozzle:latest
+    mem_limit: 128M
+    cpus: 0.25
+    logging: *default-logging
+    ports:
+      - "${DOZZLE_HOST:-127.0.0.1}:${DOZZLE_PORT:-8082}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - openlens
+
   kafka-3:
     image: apache/kafka:3.9.0
     hostname: kafka-3
