@@ -233,7 +233,7 @@ indexing:
   timeout_s: 5
   crawl_delay_s: 0.5
   max_pages: 100
-  max_bytes: 1000000
+  max_bytes: 5000000
   max_queued_urls: 10000
   max_tracked_domains: 1000
   allowed_content_types: ["text/html", "text/plain"]
@@ -266,6 +266,7 @@ indexing:
     huggingface.co: {rate_limit_s: 5.0}
     news24.com: {rate_limit_s: 5.0}
     dawn.com: {rate_limit_s: 5.0}
+    pkg.go.dev: {rate_limit_s: 5.0}
   # Example entries (add under domain_policies to scope a crawl):
   #   example.com: {allow: true, rate_limit_s: 1.0, max_depth: 2}
   #   slow.example.org: {rate_limit_s: 5.0}

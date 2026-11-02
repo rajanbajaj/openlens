@@ -387,6 +387,7 @@ class FrontierQueuedDomainSchema(BaseModel):
 
     domain: str
     queued: int = Field(default=0, ge=0)
+    top_priority: int = Field(default=0)
 
 
 class FrontierQueuedDomainListSchema(BaseModel):

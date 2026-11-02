@@ -294,21 +294,24 @@ def _queued_domain_store(tmp_path) -> SqliteFrontierStore:
 def test_queued_domains_groups_hosts_with_counts(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """The queued view rolls up only queued rows, most-queued first."""
+    """The queued view rolls up only queued rows, priority first."""
     from openlens.api import routes as routes_mod
 
     store = _queued_domain_store(tmp_path)
+    assert store.bump_queued_priority(["other.example"], 3) == 1
     try:
         monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
         body = client.get("/api/v1/frontier/queued/domains").json()
         assert body["total"] == 2
-        assert [(d["domain"], d["queued"]) for d in body["domains"]] == [
-            ("example.com", 2),
-            ("other.example", 1),
+        assert [
+            (d["domain"], d["queued"], d["top_priority"]) for d in body["domains"]
+        ] == [
+            ("other.example", 1, 3),
+            ("example.com", 2, 0),
         ]
         page = client.get("/api/v1/frontier/queued/domains?limit=1&offset=1").json()
         assert [(d["domain"], d["queued"]) for d in page["domains"]] == [
-            ("other.example", 1)
+            ("example.com", 2)
         ]
     finally:
         store.close()

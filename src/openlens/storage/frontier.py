@@ -434,12 +434,13 @@ class FrontierStore(ABC):
     @abstractmethod
     def queued_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
-        """Aggregate ``queued`` rows by host with per-host counts.
+    ) -> list[tuple[str, int, int]]:
+        """Aggregate ``queued`` rows by host with counts and top priority.
 
         Powers the admin queued-domains view (priority/skip/block per
-        host). Same host bucketing as :meth:`failed_domains` minus the
-        reason column.
+        host). Same host bucketing as :meth:`failed_domains` with the
+        max queued priority instead of the reason column; highest
+        priority first so fast-laned hosts surface at the top.
         """
         raise NotImplementedError
 
@@ -743,8 +744,8 @@ _FAILED_DOMAIN_HOST_FROM_SQLITE = (
 )
 _QUEUED_DOMAIN_HOST_FROM_SQLITE = (
     "FROM (SELECT substr(h, 1, instr(h || '?', '?') - 1)"
-    " AS hq, url FROM (SELECT"
-    " substr(url, instr(url, '://') + 3) AS h, url"
+    " AS hq, url, priority FROM (SELECT"
+    " substr(url, instr(url, '://') + 3) AS h, url, priority"
     " FROM frontier_queue WHERE status = 'queued'))"
 )
 
@@ -2204,21 +2205,27 @@ class SqliteFrontierStore(FrontierStore):
 
     def queued_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
+    ) -> list[tuple[str, int, int]]:
         """Aggregate ``queued`` rows by host (SQLite mirror of failed)."""
         capped = max(0, int(limit or 0))
         skipped = max(0, int(offset or 0))
         try:
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT domain, COUNT(*) AS queued"  # noqa: S608
-                    f" FROM (SELECT {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain"
+                    "SELECT domain, COUNT(*) AS queued,"  # noqa: S608
+                    " MAX(priority) AS top_priority"
+                    f" FROM (SELECT {FAILED_DOMAIN_HOST_EXPR_SQLITE} AS domain,"
+                    " priority"
                     f" {_QUEUED_DOMAIN_HOST_FROM_SQLITE})"
-                    " GROUP BY domain ORDER BY queued DESC, domain ASC"
+                    " GROUP BY domain"
+                    " ORDER BY top_priority DESC, queued DESC, domain ASC"
                     " LIMIT ? OFFSET ?",
                     (capped, skipped),
                 ).fetchall()
-                return [(str(row["domain"]), int(row["queued"])) for row in rows]
+                return [
+                    (str(row["domain"]), int(row["queued"]), int(row["top_priority"]))
+                    for row in rows
+                ]
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to aggregate queued domains: {exc}",
@@ -3680,7 +3687,7 @@ class PostgresFrontierStore(FrontierStore):
 
     def queued_domains(
         self, limit: int = 100, offset: int = 0
-    ) -> list[tuple[str, int]]:
+    ) -> list[tuple[str, int, int]]:
         """Aggregate ``queued`` rows by host (Postgres mirror of SQLite)."""
         table = self._qualified("frontier_queue")
         capped = max(0, int(limit or 0))
@@ -3690,14 +3697,19 @@ class PostgresFrontierStore(FrontierStore):
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT domain, COUNT(*) AS queued"  # noqa: S608
-                        f" FROM (SELECT {host_expr} AS domain"
+                        "SELECT domain, COUNT(*) AS queued,"  # noqa: S608
+                        " MAX(priority) AS top_priority"
+                        f" FROM (SELECT {host_expr} AS domain, priority"
                         f" FROM {table} WHERE status = 'queued') AS q"
-                        " GROUP BY domain ORDER BY queued DESC, domain ASC"
+                        " GROUP BY domain"
+                        " ORDER BY top_priority DESC, queued DESC, domain ASC"
                         " LIMIT %s OFFSET %s",
                         (capped, skipped),
                     )
-                    return [(str(row[0]), int(row[1])) for row in cur.fetchall()]
+                    return [
+                        (str(row[0]), int(row[1]), int(row[2]))
+                        for row in cur.fetchall()
+                    ]
         except Exception as exc:
             raise ProviderError(
                 f"failed to aggregate queued domains: {exc}",

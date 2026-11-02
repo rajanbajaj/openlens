@@ -12,4 +12,5 @@ export interface FrontierQueuedDomainSchema {
   domain: string;
   /** @minimum 0 */
   queued?: number;
+  top_priority?: number;
 }

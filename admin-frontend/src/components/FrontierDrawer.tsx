@@ -846,7 +846,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                 >
                   {queuedDomains.domains.map((entry) => (
                     <li key={entry.domain} className="break-all">
-                      <Badge>{entry.queued}</Badge> {entry.domain}{' '}
+                      <Badge>{entry.queued}</Badge> <Badge>p{entry.top_priority}</Badge>{' '}
+                      {entry.domain}{' '}
                       <Button
                         variant="secondary"
                         data-testid={`frontier-queued-prio-up-${entry.domain}`}

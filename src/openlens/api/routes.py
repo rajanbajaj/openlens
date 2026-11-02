@@ -1495,8 +1495,9 @@ def frontier_queued_domains(
                 FrontierQueuedDomainSchema(
                     domain=domain,
                     queued=max(0, int(count)),
+                    top_priority=int(top_priority),
                 )
-                for domain, count in pairs
+                for domain, count, top_priority in pairs
             ],
             total=total,
             limit=capped,

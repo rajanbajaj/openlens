@@ -2694,6 +2694,11 @@
             "minimum": 0.0,
             "title": "Queued",
             "default": 0
+          },
+          "top_priority": {
+            "type": "integer",
+            "title": "Top Priority",
+            "default": 0
           }
         },
         "type": "object",

@@ -310,10 +310,11 @@ export interface FrontierDomainsResult {
   affected: number;
 }
 
-/** One queued host with its queued-URL count. */
+/** One queued host with its queued-URL count and top queued priority. */
 export interface FrontierQueuedDomain {
   domain: string;
   queued: number;
+  top_priority: number;
 }
 
 /** Paginated queued-domain rollup response. */

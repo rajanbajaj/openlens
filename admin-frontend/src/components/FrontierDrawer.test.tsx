@@ -636,8 +636,8 @@ describe('FrontierDrawer failed domains', () => {
   };
   const QUEUED = {
     domains: [
-      { domain: 'example.com', queued: 7 },
-      { domain: 'other.example', queued: 2 },
+      { domain: 'example.com', queued: 7, top_priority: 2 },
+      { domain: 'other.example', queued: 2, top_priority: 0 },
     ],
     total: 2,
     limit: 20,
@@ -785,6 +785,7 @@ describe('FrontierDrawer failed domains', () => {
       expect(screen.getByTestId('frontier-queued-domains')).toHaveTextContent('example.com');
     });
     expect(screen.getByTestId('frontier-queued-domains')).toHaveTextContent('7');
+    expect(screen.getByTestId('frontier-queued-domains')).toHaveTextContent('p2');
     expect(screen.getByTestId('frontier-queued-prio-up-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-queued-prio-down-example.com')).toBeInTheDocument();
     expect(screen.getByTestId('frontier-queued-skip-example.com')).toBeInTheDocument();

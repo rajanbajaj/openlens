@@ -346,6 +346,7 @@ def test_default_yaml_indexing_section_still_configures() -> None:
         "huggingface.co": {"rate_limit_s": 5.0},
         "news24.com": {"rate_limit_s": 5.0},
         "dawn.com": {"rate_limit_s": 5.0},
+        "pkg.go.dev": {"rate_limit_s": 5.0},
     }
     assert crawler.default_max_depth is None
 
