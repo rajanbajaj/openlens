@@ -5,15 +5,19 @@ name: release
 # Dockerfiles and compose file are reused verbatim. Secrets live only in
 # the server-side secrets file (gitignored), never in this file.
 #
-# Full fleet: push a version tag (e.g. v0.4.61).
-# Selective (one part, rest of the fleet untouched): run this workflow
-# manually (Actions -> release -> Run workflow) and name the compose
-# services, e.g. "frontend admin-frontend" or "backend". Only the named
-# services are rebuilt and recreated; `docker compose up -d` never
-# restarts a service it was not asked about. Fleet size always comes
-# from CRAWLER_SCALE / ANALYTICS_WORKER_SCALE / CRAWLER_BACKOFF_SCALE
-# in the server release.env — never from CLI --scale flags, which do
-# not survive the next plain `up -d`.
+# Full fleet: push a version tag (e.g. v0.4.61). Only tag pushes deploy
+# the whole stack.
+#
+# One part at a time (the rest of the fleet keeps running untouched):
+# Actions -> release -> Run workflow, then name the compose services,
+# e.g. "frontend admin-frontend", "backend", "crawler",
+# "analytics-worker", or "clickhouse". Only the named services are
+# rebuilt and recreated. Runbook: docs/releases/selective-deploys.md.
+#
+# Fleet size always comes from CRAWLER_SCALE /
+# ANALYTICS_WORKER_SCALE / CRAWLER_BACKOFF_SCALE in the server
+# release.env — never from CLI --scale flags, which do not survive the
+# next plain `up -d` and silently shrink the fleet back to 1.
 
 on:
   push:
@@ -23,8 +27,9 @@ on:
       services:
         description: >-
           Space-separated compose services to rebuild and restart
-          (e.g. "frontend admin-frontend", "backend", "clickhouse").
-          Use "all" for the full stack.
+          (e.g. "frontend admin-frontend", "backend", "crawler",
+          "analytics-worker", "clickhouse"). Use "all" for the full
+          stack. Only listed services are touched.
         required: false
         default: "frontend admin-frontend"
       ref:
@@ -39,6 +44,9 @@ concurrency:
 jobs:
   deploy:
     # Self-hosted runner on the release server must carry this label.
+    # The runner executes the deploy itself, so one run at a time
+    # (concurrency above) is what keeps two `compose up` runs from
+    # racing and orphaning half-renamed containers.
     runs-on: [self-hosted, openlens-release]
     timeout-minutes: 45
     steps:
@@ -59,20 +67,48 @@ jobs:
         # /home/rajan/servers/release.env on the release server.
         run: cp /home/rajan/servers/release.env deploy/local/.env
 
+      - name: Resolve and validate services
+        id: targets
+        working-directory: deploy/local
+        run: |
+          ALLOW="backend frontend admin-frontend crawler crawler-backoff analytics-worker clickhouse postgres postgres-replica redis kafka kafka-ui pgadmin dozzle"
+          WANT="${{ inputs.services || '' }}"
+          if [ -z "$WANT" ] || [ "$WANT" = "all" ]; then
+            echo "full-stack deploy"
+            echo "list=" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          for svc in $WANT; do
+            case " $ALLOW " in
+              *" $svc "*) ;;
+              *) echo "unknown compose service: $svc (allowed: $ALLOW)"; exit 1 ;;
+            esac
+            # Never start a replica set outside compose: scale always
+            # comes from release.env, plain `up -d` preserves it.
+            if ! docker compose config --services 2>/dev/null | grep -qx "$svc"; then
+              echo "service not in compose file: $svc"; exit 1
+            fi
+          done
+          echo "selective deploy: $WANT"
+          echo "list=$WANT" >> "$GITHUB_OUTPUT"
+          echo "full=false" >> "$GITHUB_OUTPUT"
+
       - name: Build and start selected services
         working-directory: deploy/local
         run: |
-          SERVICES="${{ inputs.services || '' }}"
-          if [ -z "$SERVICES" ] || [ "$SERVICES" = "all" ]; then
-            echo "full-stack deploy"
+          if [ "${{ steps.targets.outputs.full }}" = "true" ]; then
             docker compose up --build -d
           else
             # shellcheck disable=SC2086
-            echo "selective deploy: $SERVICES"
-            docker compose up --build -d $SERVICES
+            docker compose up --build -d ${{ steps.targets.outputs.list }}
           fi
 
       - name: Wait for backend health
+        # Backend is every other part's dependency; confirm it even on
+        # selective runs so a broken control plane never hides behind
+        # a green service restart.
         run: |
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8000/healthz >/dev/null; then
@@ -84,6 +120,9 @@ jobs:
           curl -fsS http://localhost:8000/healthz
 
       - name: Health gates (search)
+        if: >-
+          ${{ steps.targets.outputs.full == 'true' ||
+              contains(steps.targets.outputs.list, 'backend') }}
         run: |
           curl -fsS -X POST http://localhost:8000/api/v1/search \
             -H 'Content-Type: application/json' \
@@ -91,11 +130,66 @@ jobs:
 
       - name: Health gates (frontends)
         if: >-
-          ${{ inputs.services == '' || inputs.services == 'all' ||
-              contains(inputs.services, 'frontend') }}
+          ${{ steps.targets.outputs.full == 'true' ||
+              contains(steps.targets.outputs.list, 'frontend') }}
         run: |
           curl -fsS -o /dev/null http://localhost:3000/
           curl -fsS -o /dev/null http://localhost:3001/
+
+      - name: Health gates (workers and data services)
+        # Poll `docker compose ps` until every container of the touched
+        # services is running (and healthy where a healthcheck exists).
+        # Crawlers, analytics workers, Postgres, Kafka, Redis, and
+        # ClickHouse all ship healthchecks; pgAdmin/Dozzle only need
+        # to be running.
+        if: >-
+          ${{ steps.targets.outputs.full == 'true' ||
+              contains(steps.targets.outputs.list, 'crawler') ||
+              contains(steps.targets.outputs.list, 'analytics') ||
+              contains(steps.targets.outputs.list, 'clickhouse') ||
+              contains(steps.targets.outputs.list, 'postgres') ||
+              contains(steps.targets.outputs.list, 'redis') ||
+              contains(steps.targets.outputs.list, 'kafka') }}
+        working-directory: deploy/local
+        run: |
+          if [ "${{ steps.targets.outputs.full }}" = "true" ]; then
+            CHECK=""
+          else
+            CHECK="${{ steps.targets.outputs.list }}"
+          fi
+          for i in $(seq 1 30); do
+            # shellcheck disable=SC2086
+            BAD=$(docker compose ps $CHECK --format '{{.Service}}|{{.State}}|{{.Health}}' \
+              | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}' \
+              | head -5)
+            if [ -z "$BAD" ]; then
+              echo "selected services running"
+              # shellcheck disable=SC2086
+              docker compose ps $CHECK --format '{{.Name}} {{.Status}}'
+              break
+            fi
+            echo "waiting on:"; echo "$BAD"
+            sleep 10
+          done
+          # shellcheck disable=SC2086
+          LEFTOVER=$(docker compose ps $CHECK --format '{{.Service}}|{{.State}}|{{.Health}}' \
+            | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}')
+          if [ -n "$LEFTOVER" ]; then
+            echo "unhealthy after 5m:"; echo "$LEFTOVER"; exit 1
+          fi
+
+      - name: Health gates (ClickHouse store)
+        if: >-
+          ${{ steps.targets.outputs.full == 'true' ||
+              contains(steps.targets.outputs.list, 'clickhouse') }}
+        working-directory: deploy/local
+        run: |
+          # shellcheck disable=SC1091
+          set -a; . ./.env; set +a
+          docker compose exec -T clickhouse clickhouse-client \
+            --user "${CLICKHOUSE_USER:-openlens}" \
+            --password "${CLICKHOUSE_PASSWORD:-openlens}" \
+            --query "SELECT 1"
 
       - name: Show stack status
         if: always()
