@@ -10,11 +10,19 @@ enrichment owned by independent plugins behind stable interfaces
 flowchart TB
     U[Browser :3000] --> B[Backend API :8000]
     A[Admin console :3001] --> B
-    B --> PG[(Postgres: documents + frontier)]
-    B --> K[Kafka: crawl.urls + analytics.events]
-    W[Crawler workers] <--> K
+    B --> PG[(Postgres primary :5432<br/>documents + frontier + settings)]
+    B --> PGR[(Postgres replica :5433<br/>search reads)]
+    B --> R[(Redis :6379<br/>result cache)]
+    B --> K[Kafka KRaft, single broker<br/>crawl.urls x24 + crawl.backoff + analytics.events]
+    B --> CH[(ClickHouse :8123<br/>openlens_analytics)]
+    W[Crawler fleet: 4 main + 3 backoff] <--> K
     W --> PG
-    AW[Analytics worker] --> CH[(ClickHouse)]
+    W -->|heartbeats| B
+    AW[Analytics workers x4] --> K
+    AW --> CH
+    P[pgAdmin :5050] -.-> PG
+    KU[kafka-ui :8080] -.-> K
+    D[Dozzle :8082<br/>container logs] -.-> W
 ```
 
 ## Features
@@ -150,7 +158,7 @@ set the ones for the backends you turn on.
 | `OPENLENS_SMOKE_URL` | (unset — test skipped) | Target for the opt-in live-backend frontend smoke test |
 | `OPENLENS_WORKER_ID` / `OPENLENS_CRAWL_ID` / `OPENLENS_HEARTBEAT_INTERVAL_S` / `OPENLENS_API_URL` | (auto `{hostname}-{pid}-{rand}`) / `default` / `40` / `http://localhost:8000` | Crawler worker identity, shared-queue crawl id, heartbeat period (s), and backend URL for heartbeats (`src/openlens/indexing/worker.py`; compose crawler uses `http://backend:8000`) |
 | `OPENLENS_FRONTIER_ADMIN_TOKEN` | (empty — local dev stays open) | Gate for mutating `/api/v1/frontier/*` and `/api/v1/admin/config/*` via the `X-Admin-Token` header; worker heartbeats use the same token (`src/openlens/indexing/worker.py`) |
-| `OPENLENS_KAFKA_ENABLED` / `OPENLENS_KAFKA_BOOTSTRAP_SERVERS` / `OPENLENS_KAFKA_TOPIC` / `OPENLENS_KAFKA_GROUP_ID` | `false` / `localhost:9092` / `crawl.urls` / `crawlers` | Kafka URL queue for distributed crawling (`kafka` in `configs/default.yaml`); compose enables it with `kafka-1..3:19092`. Needs the `kafka` extra (`uv sync --extra kafka`). PLAINTEXT: local dev only |
+| `OPENLENS_KAFKA_ENABLED` / `OPENLENS_KAFKA_BOOTSTRAP_SERVERS` / `OPENLENS_KAFKA_TOPIC` / `OPENLENS_KAFKA_GROUP_ID` | `false` / `localhost:9092` / `crawl.urls` / `crawlers` | Kafka URL queue for distributed crawling (`kafka` in `configs/default.yaml`); compose enables it with `kafka-1:19092` (single broker). Needs the `kafka` extra (`uv sync --extra kafka`). PLAINTEXT: local dev only |
 | `BACKEND_PORT` / `FRONTEND_PORT` / `ADMIN_FRONTEND_PORT` / `POSTGRES_PORT` / `PGADMIN_PORT` / `REDIS_PORT` | `8000` / `3000` / `3001` / `5432` / `5050` / `6379` | Published ports in `deploy/local/docker-compose.yml` |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `openlens` / `openlens` / `openlens` | Postgres superuser, password, and database (also wired into the backend as `OPENLENS_PG_*` in `deploy/local/docker-compose.yml`) |
 | `PGADMIN_DEFAULT_EMAIL` / `PGADMIN_DEFAULT_PASSWORD` | `admin@openlens.io` / `openlens` | pgAdmin browser login (`deploy/local/.env.example`) |

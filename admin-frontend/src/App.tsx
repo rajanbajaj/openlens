@@ -83,24 +83,26 @@ export default function App() {
 
   return (
     <main className="ol-admin">
-      <GlassPanel variant="hero">
+      <GlassPanel variant="hero" className="ol-admin-hero">
         <h1 className="ol-brand-heading">
           <Logo size="header" />
           <span className="ol-admin-tag">Admin</span>
         </h1>
-        <TokenBar adminToken={adminToken} onChange={setAdminToken} />
-        <button
-          type="button"
-          className="ol-button ol-button-secondary"
-          onClick={() => {
-            setTourRun((n) => n + 1);
-          }}
-        >
-          Take a tour
-        </button>
+        <div className="ol-admin-hero-controls">
+          <TokenBar adminToken={adminToken} onChange={setAdminToken} />
+          <button
+            type="button"
+            className="ol-button ol-button-secondary"
+            onClick={() => {
+              setTourRun((n) => n + 1);
+            }}
+          >
+            Take a tour
+          </button>
+        </div>
       </GlassPanel>
       <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-admin" />
-      <nav aria-label="Admin sections" className="flex flex-wrap gap-ol-s my-ol-m">
+      <nav aria-label="Admin sections" className="ol-admin-tabs">
         {TABS.map((entry) => (
           <button
             key={entry.id}
@@ -108,7 +110,7 @@ export default function App() {
             data-testid={`admin-tab-${entry.id}`}
             aria-pressed={tab === entry.id}
             onClick={() => setTab(entry.id)}
-            className="px-ol-s py-ol-m rounded-ol-m border border-ol-glass-border"
+            className="ol-admin-tab"
           >
             {entry.label}
           </button>

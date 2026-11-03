@@ -7,12 +7,27 @@ export interface TourProps {
   storageKey: string;
 }
 
-function resolveSteps(steps: TourStep[]): TourStep[] {
-  return steps.filter(
-    (step) =>
-      typeof document !== 'undefined' &&
-      document.querySelector(`[data-testid="${step.target}"]`) !== null,
+function targetExists(target: string): boolean {
+  return (
+    typeof document !== 'undefined' &&
+    document.querySelector(`[data-testid="${target}"]`) !== null
   );
+}
+
+/** First step at or after `from` whose target is currently mounted. */
+function nextAvailable(steps: TourStep[], from: number): number {
+  for (let i = Math.max(0, from); i < steps.length; i += 1) {
+    if (targetExists(steps[i].target)) return i;
+  }
+  return -1;
+}
+
+/** Last step at or before `from` whose target is currently mounted. */
+function prevAvailable(steps: TourStep[], from: number): number {
+  for (let i = Math.min(from, steps.length - 1); i >= 0; i -= 1) {
+    if (targetExists(steps[i].target)) return i;
+  }
+  return -1;
 }
 
 function prefersReducedMotion(): boolean {
@@ -24,22 +39,19 @@ function prefersReducedMotion(): boolean {
 }
 
 export default function Tour({ steps, runId, storageKey }: TourProps) {
-  const [activeSteps, setActiveSteps] = useState<TourStep[]>([]);
-  const [index, setIndex] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
+  const [index, setIndex] = useState(0);
   const [position, setPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [rev, setRev] = useState(0);
   const nextRef = useRef<HTMLButtonElement>(null);
-  const stateRef = useRef({ activeSteps, index });
-  stateRef.current = { activeSteps, index };
+  const stateRef = useRef({ open, index });
+  stateRef.current = { open, index };
 
   const exit = useCallback(
     (persist = true) => {
-      const { activeSteps: current, index: currentIndex } = stateRef.current;
-      const current_step = currentIndex !== null ? current[currentIndex] : undefined;
-      if (current_step) {
-        document
-          .querySelector(`[data-testid="${current_step.target}"]`)
-          ?.classList.remove('ol-tour-target');
-      }
+      document
+        .querySelectorAll('.ol-tour-target')
+        .forEach((node) => node.classList.remove('ol-tour-target'));
       if (persist) {
         try {
           window.localStorage.setItem(storageKey, 'done');
@@ -47,17 +59,31 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
           /* storage unavailable: tour still exits */
         }
       }
-      setIndex(null);
-      setActiveSteps([]);
+      setOpen(false);
     },
     [storageKey],
   );
 
   const start = useCallback(() => {
-    const resolved = resolveSteps(steps);
-    if (resolved.length === 0) return;
-    setActiveSteps(resolved);
-    setIndex(0);
+    const first = nextAvailable(steps, 0);
+    if (first === -1) return;
+    setIndex(first);
+    setOpen(true);
+  }, [steps]);
+
+  const goNext = useCallback(() => {
+    const { open: isOpen, index: current } = stateRef.current;
+    if (!isOpen) return;
+    const next = nextAvailable(steps, current + 1);
+    if (next === -1) exit(true);
+    else setIndex(next);
+  }, [steps, exit]);
+
+  const goBack = useCallback(() => {
+    const { open: isOpen, index: current } = stateRef.current;
+    if (!isOpen) return;
+    const prev = prevAvailable(steps, current - 1);
+    if (prev !== -1) setIndex(prev);
   }, [steps]);
 
   // Explicit replays via runId.
@@ -71,25 +97,69 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
     if (typeof window === 'undefined') return;
     if (!window.location.search.includes('tour=1')) return;
     start();
-  }, []);
+  }, [start]);
+
+  // Follow the user across views: tab switches mount/unmount targets
+  // while the tour is open, so re-resolve on every DOM change.
+  useEffect(() => {
+    if (!open || typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => {
+      const { open: isOpen, index: current } = stateRef.current;
+      if (!isOpen) return;
+      const step = steps[current];
+      if (!step || !targetExists(step.target)) {
+        const forward = nextAvailable(steps, current + 1);
+        if (forward !== -1) {
+          setIndex(forward);
+          return;
+        }
+        const backward = prevAvailable(steps, current - 1);
+        if (backward !== -1) {
+          setIndex(backward);
+          return;
+        }
+        exit(true);
+      } else {
+        // Target moved: re-run placement below.
+        setRev((r) => r + 1);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [open, steps, exit]);
 
   // Escape exits from anywhere while the tour is open.
   useEffect(() => {
-    if (index === null) return;
+    if (!open) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') exit(true);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [index, exit]);
+  }, [open, exit]);
 
   // Highlight + scroll + tooltip placement + focus on step change.
+  // A step whose target unmounted (tab switch) hands off to the next
+  // mounted step instead of freezing on a stale highlight.
   useEffect(() => {
-    if (index === null) return;
-    const step = activeSteps[index];
-    if (!step) return;
+    if (!open) return;
+    const step = steps[index];
+    if (!step || !targetExists(step.target)) {
+      const forward = nextAvailable(steps, index + 1);
+      if (forward !== -1) {
+        setIndex(forward);
+        return;
+      }
+      const backward = prevAvailable(steps, index - 1);
+      if (backward !== -1) {
+        setIndex(backward);
+        return;
+      }
+      exit(true);
+      return;
+    }
     const el = document.querySelector(`[data-testid="${step.target}"]`);
-    // Drop a stale highlight if the target vanished mid-tour.
+    // Drop a stale highlight if the target moved mid-tour.
     document.querySelectorAll('.ol-tour-target').forEach((node) => {
       if (node !== el) node.classList.remove('ol-tour-target');
     });
@@ -114,12 +184,13 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
     return () => {
       el.classList.remove('ol-tour-target');
     };
-  }, [index, activeSteps]);
+  }, [open, index, steps, rev, exit]);
 
-  if (index === null || activeSteps.length === 0) return null;
-  const step = activeSteps[index];
-  if (!step) return null;
-  const isLast = index === activeSteps.length - 1;
+  if (!open) return null;
+  const step = steps[index];
+  if (!step || !targetExists(step.target)) return null;
+  const isLast = nextAvailable(steps, index + 1) === -1;
+  const backDisabled = prevAvailable(steps, index - 1) === -1;
 
   return (
     <>
@@ -134,14 +205,14 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
         <p className="ol-tour-title">{step.title}</p>
         <p className="ol-tour-body">{step.body}</p>
         <p className="ol-tour-progress">
-          Step {index + 1} of {activeSteps.length}
+          Step {index + 1} of {steps.length}
         </p>
         <div className="ol-tour-controls">
           <button
             type="button"
             className="ol-button ol-button-secondary"
-            disabled={index === 0}
-            onClick={() => setIndex((i) => (i === null || i === 0 ? i : i - 1))}
+            disabled={backDisabled}
+            onClick={goBack}
           >
             Back
           </button>
@@ -149,10 +220,7 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
             type="button"
             ref={nextRef}
             className="ol-button ol-button-primary"
-            onClick={() => {
-              if (isLast) exit(true);
-              else setIndex((i) => (i === null ? i : i + 1));
-            }}
+            onClick={goNext}
           >
             {isLast ? 'Done' : 'Next'}
           </button>

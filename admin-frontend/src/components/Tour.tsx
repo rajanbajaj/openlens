@@ -10,8 +10,24 @@ export interface TourProps {
 const TARGET_CLASS = 'ol-tour-target';
 const GAP = 12;
 
-function resolveSteps(steps: TourStep[]): TourStep[] {
-  return steps.filter((step) => document.querySelector(`[data-testid="${step.target}"]`));
+function targetExists(target: string): boolean {
+  return document.querySelector(`[data-testid="${target}"]`) !== null;
+}
+
+/** First step at or after `from` whose target is currently mounted. */
+function nextAvailable(steps: TourStep[], from: number): number {
+  for (let i = Math.max(0, from); i < steps.length; i += 1) {
+    if (targetExists(steps[i].target)) return i;
+  }
+  return -1;
+}
+
+/** Last step at or before `from` whose target is currently mounted. */
+function prevAvailable(steps: TourStep[], from: number): number {
+  for (let i = Math.min(from, steps.length - 1); i >= 0; i -= 1) {
+    if (targetExists(steps[i].target)) return i;
+  }
+  return -1;
 }
 
 function reducedMotion(): boolean {
@@ -20,7 +36,7 @@ function reducedMotion(): boolean {
 
 /** Controlled guided tour: highlights one data-testid target at a time. */
 export function Tour({ steps, runId, storageKey }: TourProps) {
-  const [active, setActive] = useState<TourStep[] | null>(null);
+  const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
   const [anchor, setAnchor] = useState<{
     top: number;
@@ -29,6 +45,8 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     above: boolean;
   } | null>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
+  const stateRef = useRef({ open, index });
+  stateRef.current = { open, index };
 
   const stop = useCallback(
     (markDone: boolean) => {
@@ -42,17 +60,31 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
           /* private-mode storage: tour simply ends */
         }
       }
-      setActive(null);
-      setIndex(0);
+      setOpen(false);
     },
     [storageKey],
   );
 
   const start = useCallback(() => {
-    const resolved = resolveSteps(steps);
-    if (resolved.length === 0) return;
-    setActive(resolved);
-    setIndex(0);
+    const first = nextAvailable(steps, 0);
+    if (first === -1) return;
+    setIndex(first);
+    setOpen(true);
+  }, [steps]);
+
+  const goNext = useCallback(() => {
+    const { open: isOpen, index: current } = stateRef.current;
+    if (!isOpen) return;
+    const next = nextAvailable(steps, current + 1);
+    if (next === -1) stop(true);
+    else setIndex(next);
+  }, [steps, stop]);
+
+  const goBack = useCallback(() => {
+    const { open: isOpen, index: current } = stateRef.current;
+    if (!isOpen) return;
+    const prev = prevAvailable(steps, current - 1);
+    if (prev !== -1) setIndex(prev);
   }, [steps]);
 
   // Button-triggered runs.
@@ -68,11 +100,51 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     }
   }, [start]);
 
-  // Highlight + position on step change.
+  // Follow the user across tabs: tab switches mount/unmount targets
+  // while the tour is open, so re-resolve on every DOM change.
   useEffect(() => {
-    if (!active) return;
-    const step = active[index];
-    if (!step) return;
+    if (!open || typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => {
+      const { open: isOpen, index: current } = stateRef.current;
+      if (!isOpen) return;
+      const step = steps[current];
+      if (!step || !targetExists(step.target)) {
+        const forward = nextAvailable(steps, current + 1);
+        if (forward !== -1) {
+          setIndex(forward);
+          return;
+        }
+        const backward = prevAvailable(steps, current - 1);
+        if (backward !== -1) {
+          setIndex(backward);
+          return;
+        }
+        stop(true);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [open, steps, stop]);
+
+  // Highlight + position on step change. A step whose target unmounted
+  // (tab switch) hands off to the next mounted step instead of freezing.
+  useEffect(() => {
+    if (!open) return;
+    const step = steps[index];
+    if (!step || !targetExists(step.target)) {
+      const forward = nextAvailable(steps, index + 1);
+      if (forward !== -1) {
+        setIndex(forward);
+        return;
+      }
+      const backward = prevAvailable(steps, index - 1);
+      if (backward !== -1) {
+        setIndex(backward);
+        return;
+      }
+      stop(true);
+      return;
+    }
     const el = document.querySelector(`[data-testid="${step.target}"]`);
     document.querySelectorAll(`.${TARGET_CLASS}`).forEach((node) => {
       node.classList.remove(TARGET_CLASS);
@@ -92,7 +164,7 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
       });
     }
     nextRef.current?.focus();
-  }, [active, index]);
+  }, [open, index, steps, stop]);
 
   // Cleanup highlight on unmount.
   useEffect(
@@ -106,7 +178,7 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
 
   // Escape exits.
   useEffect(() => {
-    if (!active) return;
+    if (!open) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') stop(true);
     };
@@ -114,12 +186,13 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     return () => {
       document.removeEventListener('keydown', onKey);
     };
-  }, [active, stop]);
+  }, [open, stop]);
 
-  if (!active || active.length === 0) return null;
-  const step = active[index];
-  if (!step) return null;
-  const last = index === active.length - 1;
+  if (!open) return null;
+  const step = steps[index];
+  if (!step || !targetExists(step.target)) return null;
+  const last = nextAvailable(steps, index + 1) === -1;
+  const backDisabled = prevAvailable(steps, index - 1) === -1;
   const style = anchor ? { top: anchor.top, left: anchor.left } : { top: 16, left: 16 };
 
   return (
@@ -128,22 +201,21 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
       <div
         role="dialog"
         aria-label={step.title}
+        data-testid="tour-tooltip"
         className={`ol-tour-tooltip${anchor?.above ? ' ol-tour-tooltip-above' : ''}`}
         style={{ position: 'fixed', ...style }}
       >
         <p className="ol-tour-title">{step.title}</p>
         <p className="ol-tour-body">{step.body}</p>
         <p className="ol-tour-progress">
-          Step {index + 1} of {active.length}
+          Step {index + 1} of {steps.length}
         </p>
         <div className="ol-tour-controls">
           <button
             type="button"
             className="ol-button ol-button-secondary"
-            disabled={index === 0}
-            onClick={() => {
-              setIndex((i) => Math.max(0, i - 1));
-            }}
+            disabled={backDisabled}
+            onClick={goBack}
           >
             Back
           </button>
@@ -151,13 +223,7 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
             type="button"
             ref={nextRef}
             className="ol-button ol-button-primary"
-            onClick={() => {
-              if (last) {
-                stop(true);
-              } else {
-                setIndex((i) => i + 1);
-              }
-            }}
+            onClick={goNext}
           >
             {last ? 'Done' : 'Next'}
           </button>

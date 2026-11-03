@@ -504,8 +504,10 @@ services:
   # ClickHouse without a real password is open to the whole network.
   clickhouse:
     image: clickhouse/clickhouse-server:24.12-alpine
-    mem_limit: 2G
-    cpus: 1.0
+    # Analytics store for the events sink; sized for batch flushes +
+    # dashboard queries over the retention window.
+    mem_limit: 4G
+    cpus: 2.0
     logging: *default-logging
     restart: unless-stopped
     # ClickHouse raises its open-file limit at startup; the container needs

@@ -122,18 +122,19 @@
 </section>
 
 <section class="slide">
-  <div class="kicker">01 · Problem</div>
-  <h2>Web search is a <em>black box.</em></h2>
+  <div class="kicker">01 · What it is not</div>
+  <h2>Let's clear the <em>deck first.</em></h2>
   <ul class="points">
-    <li>One company's crawler, ranking, and index<small>Researchers and communities can't inspect or reproduce it</small></li>
-    <li>Every query API charges per call<small>Search is rented, never owned</small></li>
-    <li>No control over what gets indexed — or why<small>Opaque ranking decides what you see</small></li>
+    <li>Not another AI chatbot wrapper<small>No rented answers, no per-query API bills — the index is crawled by us</small></li>
+    <li>Not a metasearch skin<small>It doesn't repackage Google or Bing — it crawls the web itself</small></li>
+    <li>Not slideware<small>Everything tonight is live: a real fleet, real failures, real triage</small></li>
+    <li>Not a black box<small>Ranking, filters, and blocks are code you can read, on a machine you own</small></li>
   </ul>
 </section>
 
 <section class="slide">
-  <div class="kicker">02 · Solution</div>
-  <h2>Crawl → index → search.<br><em>Your hardware. Your rules.</em></h2>
+  <div class="kicker">02 · What it is</div>
+  <h2>Your own <em>search engine.</em></h2>
   <ul class="points">
     <li>Point it at the web — a fleet of crawlers does the rest</li>
     <li>Search over your own index, with your own ranking rules</li>
@@ -144,27 +145,22 @@
 <section class="slide">
   <div class="kicker">03 · Live demo</div>
   <h2>Watch it <em>search.</em></h2>
-  <div class="cue"><strong>⏺ SWITCH TO SCREEN RECORDING.</strong> Run one real query. Show results + snippets + AI summary with citations. Say: "Every result was crawled and indexed by the fleet you're about to see."</div>
+  <div class="cue"><strong>⏺ SWITCH TO SCREEN RECORDING.</strong> Search "python programming". Flip Default → News and watch the ranking change character. Say: "Every result was crawled and indexed by the fleet you'll meet at the end."</div>
 </section>
 
 <section class="slide">
-  <div class="kicker">04 · Live demo</div>
-  <h2>Meet the <em>fleet.</em></h2>
-  <div class="cue"><strong>⏺ SHOW CRAWL DIAGNOSTICS DRAWER.</strong> Workers alive, pages/min, Kafka lag draining. Say: "A fleet of crawlers pulling URLs off Kafka with per-domain politeness — draining tens of thousands of queued URLs in real time."</div>
-</section>
-
-<section class="slide">
-  <div class="kicker">05 · Self-healing</div>
-  <h2>One click handles <em>14,000 dead URLs.</em></h2>
+  <div class="kicker">04 · Why it matters</div>
+  <h2>Ranking that <em>protects.</em></h2>
   <ul class="points">
-    <li>429 rate limit → wait and retry<small>Volume-scaled backoff, per domain</small></li>
-    <li>Timeouts → the polite backoff pool<small>Slow workers, separate Kafka topic, main drain never stalls</small></li>
-    <li>robots.txt / 404 / dead servers → skip<small>Auto-triage sorts every failure class</small></li>
+    <li>Child-safe by construction<small>Adult and unsafe content blocked in the tool layer, not the prompt — it can't be jailbroken, and a filter failure blocks the request instead of leaking</small></li>
+    <li>Stalking-free by design<small>Privacy filters stop personal-data aggregation queries cold — no tracking profiles, anonymous feedback, secrets redacted</small></li>
+    <li>Neutral, not engaging<small>No engagement optimization; popularity never decides contested topics — perspectives surface the sides others hide</small></li>
   </ul>
+  <div class="cue"><strong>⏺ STAY ON SCREEN.</strong> Child-safe mode, search "dating advice": 993 results collapse to one Warhammer 40K book. Say: "When in doubt, it shows nothing rather than risk something."</div>
 </section>
 
 <section class="slide">
-  <div class="kicker">06 · Operator control</div>
+  <div class="kicker">05 · Operator control</div>
   <h2>Search you can <em>steer.</em></h2>
   <ul class="points">
     <li>Drill into any domain — every failing URL, and why</li>
@@ -174,35 +170,7 @@
 </section>
 
 <section class="slide">
-  <div class="kicker">07 · Why it matters</div>
-  <h2>Ranking that <em>protects.</em></h2>
-  <ul class="points">
-    <li>Child-safe by construction<small>Adult and unsafe content blocked in the tool layer, not the prompt — it can't be jailbroken, and a filter failure blocks the request instead of leaking</small></li>
-    <li>Stalking-free by design<small>Privacy filters stop personal-data aggregation queries cold — no tracking profiles, anonymous feedback, secrets redacted</small></li>
-    <li>Neutral, not engaging<small>No engagement optimization; popularity never decides contested topics — perspectives surface the sides others hide</small></li>
-  </ul>
-  <p class="lede">And the guarantee is self-hosting: safety isn't a vendor's policy promise, it's code you can audit running on hardware you own. Anyone can promise safety. We ship it.</p>
-</section>
-
-<section class="slide">
-  <div class="kicker">08 · Architecture</div>
-  <h2>Boring technology, <em>on purpose.</em></h2>
-  <div class="flow">
-    <div class="node"><strong>Crawlers</strong><span>Fleet + backoff pool · politeness gates</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>Kafka</strong><span>crawl.urls · crawl.backoff · analytics.events</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>Postgres</strong><span>Frontier queue · lock-free eviction</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>Backend</strong><span>Search pipeline · 10 stages</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>You</strong><span>Search + admin UI</span></div>
-  </div>
-  <p class="lede">Analytics side-path: crawl events → ClickHouse dashboards. Single broker, single box — survives real load.</p>
-</section>
-
-<section class="slide">
-  <div class="kicker">09 · Proof</div>
+  <div class="kicker">06 · Proof</div>
   <h2>Not slides. <em>Scars.</em></h2>
   <div class="stats">
     <div class="stat"><b>87K</b><span>searchable documents</span></div>
@@ -213,7 +181,7 @@
 </section>
 
 <section class="slide">
-  <div class="kicker">10 · The plan, honestly</div>
+  <div class="kicker">07 · The plan, honestly</div>
   <h2>What we <em>shipped</em> vs what's <em>research.</em></h2>
   <div class="cols">
     <div class="col shipped">
@@ -238,7 +206,7 @@
 </section>
 
 <section class="slide">
-  <div class="kicker">11 · What's next</div>
+  <div class="kicker">08 · What's next</div>
   <h2>The trajectory, <em>not just the snapshot.</em></h2>
   <ul class="points">
     <li>Stay fresh — recrawl loops, not recrawls<small>Sitemaps + RSS drive continuous refresh; a search engine that rots is an archive</small></li>
@@ -251,15 +219,48 @@
 </section>
 
 <section class="slide">
-  <div class="kicker">11 · Close</div>
-  <h1>Sovereign search<br><em>for everyone.</em></h1>
-  <p class="lede">The future isn't one index owned by one company — it's thousands of community indexes. OpenLens is the engine for that.<br><br>Code is open · demo is live · <strong>[github link]</strong> — go run your own web tonight. Thank you.</p>
+  <div class="kicker">09 · Under the hood</div>
+  <h2>Meet the <em>fleet.</em></h2>
+  <div class="cue"><strong>⏺ SHOW CRAWL DIAGNOSTICS DRAWER.</strong> Workers alive, pages/min, Kafka lag draining. Say: "This is what served everything you just saw — crawlers pulling URLs off Kafka with per-domain politeness."</div>
 </section>
 
-<div class="foot"><span id="count">1 / 12</span><span id="time">0:00 – 0:15</span></div>
+<section class="slide">
+  <div class="kicker">10 · Self-healing</div>
+  <h2>One click handles <em>14,000 dead URLs.</em></h2>
+  <ul class="points">
+    <li>429 rate limit → wait and retry<small>Volume-scaled backoff, per domain</small></li>
+    <li>Timeouts → the polite backoff pool<small>Slow workers, separate Kafka topic, main drain never stalls</small></li>
+    <li>robots.txt / 404 / dead servers → skip<small>Auto-triage sorts every failure class</small></li>
+  </ul>
+</section>
+
+<section class="slide">
+  <div class="kicker">11 · Architecture</div>
+  <h2>Boring technology, <em>on purpose.</em></h2>
+  <div class="flow">
+    <div class="node"><strong>Crawlers</strong><span>Fleet + backoff pool · politeness gates</span></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Kafka</strong><span>crawl.urls · crawl.backoff · analytics.events</span></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Postgres</strong><span>Frontier queue · lock-free eviction</span></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>Backend</strong><span>Search pipeline · 10 stages</span></div>
+    <div class="arrow">→</div>
+    <div class="node"><strong>You</strong><span>Search + admin UI</span></div>
+  </div>
+  <p class="lede">Analytics side-path: crawl events → ClickHouse dashboards. Single broker, single box — survives real load.</p>
+</section>
+
+<section class="slide">
+  <div class="kicker">12 · Close</div>
+  <h1>Sovereign search<br><em>for everyone.</em></h1>
+  <p class="lede">The future isn't one index owned by one company — it's thousands of community indexes. OpenLens is the engine for that.<br><br>Code is open · demo is live · <strong><a href="https://github.com/rajanbajaj/openlens" style="color:inherit">github.com/rajanbajaj/openlens</a></strong> — go run your own web tonight. Thank you.</p>
+</section>
+
+<div class="foot"><span id="count">1 / 13</span><span id="time">0:00 – 0:14</span></div>
 <script>
-  const times = ["0:00 – 0:15","0:15 – 0:30","0:30 – 0:45","0:45 – 1:00","1:00 – 1:15","1:15 – 1:30",
-                 "1:30 – 1:45","1:45 – 2:00","2:00 – 2:15","2:15 – 2:30","2:30 – 2:45","2:45 – 3:00"];
+  const times = ["0:00 – 0:14","0:14 – 0:28","0:28 – 0:42","0:42 – 0:56","0:56 – 1:10","1:10 – 1:24",
+                 "1:24 – 1:38","1:38 – 1:52","1:52 – 2:06","2:06 – 2:20","2:20 – 2:34","2:34 – 2:48","2:48 – 3:00"];
   const slides = Array.from(document.querySelectorAll(".slide"));
   let i = parseInt(location.hash.replace("#", ""), 10) || 0;
   function show(n) {

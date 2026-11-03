@@ -678,771 +678,794 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
           <p>Loading frontier…</p>
         ) : (
           <>
-            <p data-testid="frontier-state" className="my-ol-s">
-              {status?.paused ? <Badge>Paused</Badge> : <Badge>Running</Badge>}
-            </p>
+            <section className="ol-dash-group" aria-label="Fleet status">
+              <h3 className="ol-dash-title">Fleet status</h3>
+              <p data-testid="frontier-state" className="my-ol-s">
+                {status?.paused ? <Badge>Paused</Badge> : <Badge>Running</Badge>}
+              </p>
 
-            <div className="flex flex-wrap gap-ol-s my-ol-s">
-              <Button variant="secondary" onClick={() => void handlePause()}>
-                Pause
-              </Button>{' '}
-              <Button variant="secondary" onClick={() => void handleResume()}>
-                Resume
-              </Button>{' '}
-              <Button variant="ghost" onClick={() => void refresh()}>
-                Refresh
-              </Button>{' '}
-              <Button variant="secondary" onClick={() => void handleClear()}>
-                Pause &amp; clear
-              </Button>{' '}
-              <span data-testid="frontier-live">
-                <Badge>{live ? 'Live' : 'Snapshot'}</Badge>
-              </span>
-            </div>
+              <div className="flex flex-wrap gap-ol-s my-ol-s">
+                <Button variant="secondary" onClick={() => void handlePause()}>
+                  Pause
+                </Button>{' '}
+                <Button variant="secondary" onClick={() => void handleResume()}>
+                  Resume
+                </Button>{' '}
+                <Button variant="ghost" onClick={() => void refresh()}>
+                  Refresh
+                </Button>{' '}
+                <Button variant="secondary" onClick={() => void handleClear()}>
+                  Pause &amp; clear
+                </Button>{' '}
+                <span data-testid="frontier-live">
+                  <Badge>{live ? 'Live' : 'Snapshot'}</Badge>
+                </span>
+              </div>
 
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Checkpoint</h4>
-            <p data-testid="frontier-checkpoint" className="my-ol-s">
-              {checkpoint
-                ? `${checkpoint.phase} · ${checkpoint.pages_indexed}/${checkpoint.pages_attempted} pages`
-                : 'No checkpoint yet'}
-            </p>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Checkpoint</h4>
+              <p data-testid="frontier-checkpoint" className="my-ol-s">
+                {checkpoint
+                  ? `${checkpoint.phase} · ${checkpoint.pages_indexed}/${checkpoint.pages_attempted} pages`
+                  : 'No checkpoint yet'}
+              </p>
 
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl diagnostics</h4>
-            <p data-testid="frontier-kafka-lag" className="my-ol-s text-ol-s">
-              {kafkaEnabled
-                ? kafkaLag === null
-                  ? 'Kafka lag: unknown — probe failed'
-                  : `Kafka lag: ${kafkaLag} urls`
-                : 'Kafka lag: disabled — store-backed queue'}
-            </p>
-            <p data-testid="frontier-discovery" className="my-ol-s text-ol-s">
-              {discovery
-                ? `Discovery: ${discovery.feeds_checked} feeds · ${discovery.new_urls} new · ${discovery.refreshed} refreshed`
-                : 'Discovery: no pass reported yet'}
-            </p>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl diagnostics</h4>
+              <p data-testid="frontier-kafka-lag" className="my-ol-s text-ol-s">
+                {kafkaEnabled
+                  ? kafkaLag === null
+                    ? 'Kafka lag: unknown — probe failed'
+                    : `Kafka lag: ${kafkaLag} urls`
+                  : 'Kafka lag: disabled — store-backed queue'}
+              </p>
+              <p data-testid="frontier-discovery" className="my-ol-s text-ol-s">
+                {discovery
+                  ? `Discovery: ${discovery.feeds_checked} feeds · ${discovery.new_urls} new · ${discovery.refreshed} refreshed`
+                  : 'Discovery: no pass reported yet'}
+              </p>
 
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Workers ({workers.length})</h4>
-            {workers.length === 0 ? (
-              <p className="my-ol-s text-ol-s">No workers heartbeating</p>
-            ) : (
-              <>
-                {workers.some((worker) => worker.stats) && (
-                  <p data-testid="frontier-throughput" className="my-ol-s text-ol-s">
-                    Throughput: {formatRate(sumRates(workers, 'pages_per_min'))} pages ·{' '}
-                    {formatRate(sumRates(workers, 'tokens_per_min'))} tokens ·{' '}
-                    {workers.reduce((sum, worker) => sum + (worker.stats?.pages ?? 0), 0)} pages ·{' '}
-                    {workers.reduce((sum, worker) => sum + (worker.stats?.tokens ?? 0), 0)} tokens
-                    total
-                  </p>
-                )}
-                <ul
-                  data-testid="frontier-workers"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {workers.map((worker) => (
-                    <li key={worker.worker_id} className="break-all">
-                      <Badge>{worker.status}</Badge> {worker.worker_id} · {worker.claimed} claimed ·
-                      crawl {worker.crawl_id}
-                      {worker.stats ? (
-                        <>
-                          {' '}
-                          · {formatRate(worker.pages_per_min)} pages,{' '}
-                          {formatRate(worker.tokens_per_min)} tokens · {worker.stats.pages} pages ·{' '}
-                          {worker.stats.tokens} tokens total
-                        </>
-                      ) : null}
-                      {worker.discovery ? (
-                        <>
-                          {' '}
-                          · discovery: {worker.discovery.feeds_checked} feeds,{' '}
-                          {worker.discovery.new_urls} new, {worker.discovery.refreshed} refreshed
-                        </>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">
-              Queue ({status?.queue_depth ?? 0}
-              {queue.filter((entry) => entry.status === 'skipped').length > 0 && (
-                <> · {queue.filter((entry) => entry.status === 'skipped').length} skipped</>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Workers ({workers.length})</h4>
+              {workers.length === 0 ? (
+                <p className="my-ol-s text-ol-s">No workers heartbeating</p>
+              ) : (
+                <>
+                  {workers.some((worker) => worker.stats) && (
+                    <p data-testid="frontier-throughput" className="my-ol-s text-ol-s">
+                      Throughput: {formatRate(sumRates(workers, 'pages_per_min'))} pages ·{' '}
+                      {formatRate(sumRates(workers, 'tokens_per_min'))} tokens ·{' '}
+                      {workers.reduce((sum, worker) => sum + (worker.stats?.pages ?? 0), 0)} pages ·{' '}
+                      {workers.reduce((sum, worker) => sum + (worker.stats?.tokens ?? 0), 0)} tokens
+                      total
+                    </p>
+                  )}
+                  <ul
+                    data-testid="frontier-workers"
+                    className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                  >
+                    {workers.map((worker) => (
+                      <li key={worker.worker_id} className="break-all">
+                        <Badge>{worker.status}</Badge> {worker.worker_id} · {worker.claimed} claimed
+                        · crawl {worker.crawl_id}
+                        {worker.stats ? (
+                          <>
+                            {' '}
+                            · {formatRate(worker.pages_per_min)} pages,{' '}
+                            {formatRate(worker.tokens_per_min)} tokens · {worker.stats.pages} pages
+                            · {worker.stats.tokens} tokens total
+                          </>
+                        ) : null}
+                        {worker.discovery ? (
+                          <>
+                            {' '}
+                            · discovery: {worker.discovery.feeds_checked} feeds,{' '}
+                            {worker.discovery.new_urls} new, {worker.discovery.refreshed} refreshed
+                          </>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
-              )
-            </h4>
-            {queue.length === 0 ? (
-              <p className="my-ol-s text-ol-s">Queue is empty</p>
-            ) : (
-              <ol
-                data-testid="frontier-queue"
-                aria-label="Frontier queue"
-                className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
-              >
-                {queue.map((entry) => (
-                  <li key={entry.url} className="break-all">
-                    <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth} · priority{' '}
-                    {entry.priority ?? 0}
-                  </li>
-                ))}
-              </ol>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">New URLs ({newUrls.length})</h4>
-            {newUrls.length === 0 ? (
-              <p className="my-ol-s text-ol-s">No new URLs</p>
-            ) : (
-              <ul
-                data-testid="frontier-new-urls"
-                className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-              >
-                {newUrls.map((entry) => (
-                  <li key={entry.url} className="break-all">
-                    <Badge>{entry.status}</Badge> {entry.url}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed URLs ({failedTotal})</h4>
-            {failedQuery.isPending ? (
-              <p className="my-ol-s text-ol-s">Loading failed URLs…</p>
-            ) : failed == null || failed.urls.length === 0 ? (
-              <p data-testid="frontier-failed-empty" className="my-ol-s text-ol-s">
-                No failed URLs
-              </p>
-            ) : (
-              <>
-                <ul
-                  data-testid="frontier-failed"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+            </section>
+            <details className="ol-disclosure">
+              <summary className="ol-disclosure-title">
+                Queue ({status?.queue_depth ?? 0}
+                {queue.filter((entry) => entry.status === 'skipped').length > 0 && (
+                  <> · {queue.filter((entry) => entry.status === 'skipped').length} skipped</>
+                )}
+                ) · raw rows
+              </summary>
+              {queue.length === 0 ? (
+                <p className="my-ol-s text-ol-s">Queue is empty</p>
+              ) : (
+                <ol
+                  data-testid="frontier-queue"
+                  aria-label="Frontier queue"
+                  className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
                 >
-                  {failed.urls.map((entry) => (
+                  {queue.map((entry) => (
                     <li key={entry.url} className="break-all">
-                      <Badge>{entry.attempts ?? 0} tries</Badge> {entry.url}
-                      {entry.reason ? <span className="text-ol-s"> · {entry.reason}</span> : null}
+                      <Badge>{entry.status}</Badge> {entry.url} · depth {entry.depth} · priority{' '}
+                      {entry.priority ?? 0}
                     </li>
                   ))}
-                </ul>
-                <div className="flex items-center gap-ol-s my-ol-s">
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-failed-prev"
-                    onClick={() => setFailedPage((page) => Math.max(0, page - 1))}
-                    disabled={failedPage <= 0}
-                  >
-                    Previous
-                  </Button>
-                  <span data-testid="frontier-failed-page" className="text-ol-s">
-                    Page {failedPage + 1} of {failedPages}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-failed-next"
-                    onClick={() => setFailedPage((page) => Math.min(failedPages - 1, page + 1))}
-                    disabled={failedPage >= failedPages - 1}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed domains ({failedDomainTotal})</h4>
-            {failedDomainTotal > 0 ? (
-              <Button
-                variant="secondary"
-                data-testid="frontier-auto-triage"
-                onClick={() => void handleAutoTriage()}
-              >
-                Auto-triage
-              </Button>
-            ) : null}
-            {failedDomainsQuery.isPending ? (
-              <p className="my-ol-s text-ol-s">Loading failed domains…</p>
-            ) : failedDomains == null || failedDomains.domains.length === 0 ? (
-              <p data-testid="frontier-failed-domains-empty" className="my-ol-s text-ol-s">
-                No failed domains
-              </p>
-            ) : (
-              <>
+                </ol>
+              )}
+            </details>
+            <details className="ol-disclosure">
+              <summary className="ol-disclosure-title">New URLs ({newUrls.length})</summary>
+              {newUrls.length === 0 ? (
+                <p className="my-ol-s text-ol-s">No new URLs</p>
+              ) : (
                 <ul
-                  data-testid="frontier-failed-domains"
+                  data-testid="frontier-new-urls"
                   className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
                 >
-                  {failedDomains.domains.map((entry) => (
-                    <li key={entry.domain} className="break-all">
-                      <Badge>{entry.failed}</Badge> {entry.domain} · {entry.top_reason}{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-domain-toggle-${entry.domain}`}
-                        onClick={() => toggleDomainUrls(entry.domain)}
-                      >
-                        {expandedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
-                      </Button>{' '}
-                      <Button
-                        variant="secondary"
-                        data-testid={`frontier-domain-requeue-${entry.domain}`}
-                        onClick={() => void handleDomainAction(entry.domain, 'requeue')}
-                      >
-                        Requeue
-                      </Button>{' '}
-                      <Button
-                        variant="secondary"
-                        data-testid={`frontier-domain-flush-${entry.domain}`}
-                        onClick={() => void handleDomainAction(entry.domain, 'purge')}
-                      >
-                        Flush
-                      </Button>{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-domain-skip-${entry.domain}`}
-                        onClick={() => void handleDomainAction(entry.domain, 'skip')}
-                      >
-                        Skip
-                      </Button>{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-domain-block-${entry.domain}`}
-                        onClick={() => void handleBlockDomain(entry.domain)}
-                      >
-                        Block
-                      </Button>
-                      {expandedDomain === entry.domain ? (
-                        <div className="my-ol-s">
-                          {domainUrlsQuery.isPending ? (
-                            <p className="text-ol-s">Loading URLs…</p>
-                          ) : domainUrls == null || domainUrls.urls.length === 0 ? (
-                            <p
-                              data-testid={`frontier-domain-urls-empty-${entry.domain}`}
-                              className="text-ol-s"
-                            >
-                              No failed URLs for this domain
-                            </p>
-                          ) : (
-                            <>
-                              <ul
-                                data-testid={`frontier-domain-urls-${entry.domain}`}
-                                className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                              >
-                                {domainUrls.urls.map((failed) => (
-                                  <li key={failed.url} className="break-all">
-                                    <Badge>{failed.attempts}</Badge> {failed.url}{' '}
-                                    <span className="text-ol-s">· {failed.reason}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                              <div className="flex items-center gap-ol-s my-ol-s">
-                                <Button
-                                  variant="ghost"
-                                  data-testid={`frontier-domain-urls-prev-${entry.domain}`}
-                                  onClick={() => setDomainUrlPage((page) => Math.max(0, page - 1))}
-                                  disabled={domainUrlPage <= 0}
-                                >
-                                  Previous
-                                </Button>
-                                <span className="text-ol-s">
-                                  Page {domainUrlPage + 1} of {domainUrlPages}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  data-testid={`frontier-domain-urls-next-${entry.domain}`}
-                                  onClick={() =>
-                                    setDomainUrlPage((page) =>
-                                      Math.min(domainUrlPages - 1, page + 1),
-                                    )
-                                  }
-                                  disabled={domainUrlPage >= domainUrlPages - 1}
-                                >
-                                  Next
-                                </Button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ) : null}
+                  {newUrls.map((entry) => (
+                    <li key={entry.url} className="break-all">
+                      <Badge>{entry.status}</Badge> {entry.url}
                     </li>
                   ))}
                 </ul>
-                <div className="flex items-center gap-ol-s my-ol-s">
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-failed-domains-prev"
-                    onClick={() => setFailedDomainPage((page) => Math.max(0, page - 1))}
-                    disabled={failedDomainPage <= 0}
+              )}
+            </details>
+            <section className="ol-dash-group" aria-label="Needs attention">
+              <h3 className="ol-dash-title">Needs attention</h3>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed URLs ({failedTotal})</h4>
+              {failedQuery.isPending ? (
+                <p className="my-ol-s text-ol-s">Loading failed URLs…</p>
+              ) : failed == null || failed.urls.length === 0 ? (
+                <p data-testid="frontier-failed-empty" className="my-ol-s text-ol-s">
+                  No failed URLs
+                </p>
+              ) : (
+                <>
+                  <ul
+                    data-testid="frontier-failed"
+                    className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
                   >
-                    Previous
-                  </Button>
-                  <span data-testid="frontier-failed-domains-page" className="text-ol-s">
-                    Page {failedDomainPage + 1} of {failedDomainPages}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-failed-domains-next"
-                    onClick={() =>
-                      setFailedDomainPage((page) => Math.min(failedDomainPages - 1, page + 1))
-                    }
-                    disabled={failedDomainPage >= failedDomainPages - 1}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Queued domains ({queuedDomainTotal})</h4>
-            {queuedDomainsQuery.isPending ? (
-              <p className="my-ol-s text-ol-s">Loading queued domains…</p>
-            ) : queuedDomains == null || queuedDomains.domains.length === 0 ? (
-              <p data-testid="frontier-queued-domains-empty" className="my-ol-s text-ol-s">
-                No queued domains
-              </p>
-            ) : (
-              <>
-                <ul
-                  data-testid="frontier-queued-domains"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {queuedDomains.domains.map((entry) => (
-                    <li key={entry.domain} className="break-all">
-                      <Badge>{entry.queued}</Badge> <Badge>p{entry.top_priority}</Badge>{' '}
-                      {entry.domain}{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-queued-toggle-${entry.domain}`}
-                        onClick={() => toggleQueuedDomainUrls(entry.domain)}
-                      >
-                        {expandedQueuedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
-                      </Button>{' '}
-                      <Button
-                        variant="secondary"
-                        data-testid={`frontier-queued-prio-up-${entry.domain}`}
-                        onClick={() => void handleQueuedPriority(entry.domain, 1)}
-                      >
-                        +1 priority
-                      </Button>{' '}
-                      <Button
-                        variant="secondary"
-                        data-testid={`frontier-queued-prio-down-${entry.domain}`}
-                        onClick={() => void handleQueuedPriority(entry.domain, -1)}
-                      >
-                        −1 priority
-                      </Button>{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-queued-skip-${entry.domain}`}
-                        onClick={() => void handleDomainAction(entry.domain, 'skip')}
-                      >
-                        Skip
-                      </Button>{' '}
-                      <Button
-                        variant="ghost"
-                        data-testid={`frontier-queued-block-${entry.domain}`}
-                        onClick={() => void handleBlockDomain(entry.domain)}
-                      >
-                        Block
-                      </Button>
-                      {expandedQueuedDomain === entry.domain ? (
-                        <div
-                          data-testid={`frontier-queued-urls-${entry.domain}`}
-                          className="ml-ol-m mt-ol-xs border-l border-ol-border pl-ol-s"
-                        >
-                          {queuedDomainUrlsQuery.isLoading ? (
-                            <p className="text-ol-s">Loading URLs…</p>
-                          ) : queuedDomainUrls == null ? (
-                            <p className="text-ol-s">Could not load URLs.</p>
-                          ) : queuedDomainUrls.urls.length === 0 ? (
-                            <p className="text-ol-s">No queued URLs for this domain.</p>
-                          ) : (
-                            <>
-                              <ul className="flex min-h-0 flex-col gap-ol-xs my-ol-xs max-h-64 overflow-y-auto">
-                                {queuedDomainUrls.urls.map((item) => (
-                                  <li key={item.url} className="break-all">
-                                    {(item.attempts ?? 0) > 0 ? (
-                                      <Badge>{item.attempts}</Badge>
-                                    ) : null}{' '}
-                                    {item.url}
-                                    {item.reason != null && item.reason !== '' ? (
-                                      <span className="text-ol-s"> · {item.reason}</span>
-                                    ) : null}
-                                  </li>
-                                ))}
-                              </ul>
-                              <div className="flex items-center gap-ol-s my-ol-xs">
-                                <Button
-                                  variant="ghost"
-                                  data-testid={`frontier-queued-urls-prev-${entry.domain}`}
-                                  onClick={() =>
-                                    setQueuedDomainUrlPage((page) => Math.max(0, page - 1))
-                                  }
-                                  disabled={queuedDomainUrlPage <= 0}
-                                >
-                                  Previous
-                                </Button>
-                                <span
-                                  data-testid={`frontier-queued-urls-page-${entry.domain}`}
-                                  className="text-ol-s"
-                                >
-                                  Page {queuedDomainUrlPage + 1} of {queuedDomainUrlPages}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  data-testid={`frontier-queued-urls-next-${entry.domain}`}
-                                  onClick={() =>
-                                    setQueuedDomainUrlPage((page) =>
-                                      Math.min(queuedDomainUrlPages - 1, page + 1),
-                                    )
-                                  }
-                                  disabled={queuedDomainUrlPage >= queuedDomainUrlPages - 1}
-                                >
-                                  Next
-                                </Button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-                <div className="flex items-center gap-ol-s my-ol-s">
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-queued-domains-prev"
-                    onClick={() => setQueuedDomainPage((page) => Math.max(0, page - 1))}
-                    disabled={queuedDomainPage <= 0}
-                  >
-                    Previous
-                  </Button>
-                  <span data-testid="frontier-queued-domains-page" className="text-ol-s">
-                    Page {queuedDomainPage + 1} of {queuedDomainPages}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    data-testid="frontier-queued-domains-next"
-                    onClick={() =>
-                      setQueuedDomainPage((page) => Math.min(queuedDomainPages - 1, page + 1))
-                    }
-                    disabled={queuedDomainPage >= queuedDomainPages - 1}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </>
-            )}
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl requests ({crawlRequests.length})</h4>
-            {crawlRequests.length === 0 ? (
-              <p className="my-ol-s text-ol-s">No URLs awaiting review</p>
-            ) : (
-              <ul
-                data-testid="frontier-crawl-requests"
-                aria-label="Crawl requests awaiting review"
-                className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
-              >
-                {crawlRequests.map((entry) => (
-                  <li key={entry.id ?? entry.url} className="break-all">
-                    <span className="text-ol-s">{entry.url}</span>{' '}
-                    <Button
-                      variant="secondary"
-                      data-testid={`crawl-request-approve-${entry.id}`}
-                      onClick={() =>
-                        entry.id !== null && void handleDecideCrawlRequest(entry.id, 'approve')
-                      }
-                      disabled={entry.id === null}
-                    >
-                      Approve
-                    </Button>{' '}
+                    {failed.urls.map((entry) => (
+                      <li key={entry.url} className="break-all">
+                        <Badge>{entry.attempts ?? 0} tries</Badge> {entry.url}
+                        {entry.reason ? <span className="text-ol-s"> · {entry.reason}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center gap-ol-s my-ol-s">
                     <Button
                       variant="ghost"
-                      data-testid={`crawl-request-decline-${entry.id}`}
-                      onClick={() =>
-                        entry.id !== null && void handleDecideCrawlRequest(entry.id, 'decline')
-                      }
-                      disabled={entry.id === null}
+                      data-testid="frontier-failed-prev"
+                      onClick={() => setFailedPage((page) => Math.max(0, page - 1))}
+                      disabled={failedPage <= 0}
                     >
-                      Decline
+                      Previous
                     </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
+                    <span data-testid="frontier-failed-page" className="text-ol-s">
+                      Page {failedPage + 1} of {failedPages}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-failed-next"
+                      onClick={() => setFailedPage((page) => Math.min(failedPages - 1, page + 1))}
+                      disabled={failedPage >= failedPages - 1}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </>
+              )}
 
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Enqueue seeds</h4>
-            <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-              Seed URLs (one per line)
-              <textarea
-                data-testid="frontier-seeds"
-                value={seeds}
-                onChange={(event) => setSeeds(event.target.value)}
-                rows={3}
-                className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-              />
-            </label>
-            <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-              Priority for these seeds (higher dequeues first; blank keeps stored)
-              <input
-                data-testid="frontier-priority"
-                type="number"
-                step={1}
-                value={priority}
-                onChange={(event) => setPriority(event.target.value)}
-                placeholder="0"
-                className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-              />
-            </label>
-
-            <h4 className="mt-ol-m mb-ol-s text-ol-m">Settings</h4>
-            <Card data-testid="frontier-settings">
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Max pages
-                <input
-                  data-testid="frontier-setting-max-pages"
-                  type="number"
-                  min={1}
-                  value={settings.max_pages}
-                  onChange={(event) =>
-                    setSettings({ ...settings, max_pages: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Max queued URLs
-                <input
-                  data-testid="frontier-setting-max-queued"
-                  type="number"
-                  min={1}
-                  value={settings.max_queued_urls}
-                  onChange={(event) =>
-                    setSettings({ ...settings, max_queued_urls: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Crawl delay (s)
-                <input
-                  data-testid="frontier-setting-delay"
-                  type="number"
-                  min={0}
-                  step={0.1}
-                  value={settings.crawl_delay_s}
-                  onChange={(event) =>
-                    setSettings({ ...settings, crawl_delay_s: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Default max depth
-                <input
-                  data-testid="frontier-setting-depth"
-                  type="number"
-                  min={0}
-                  value={settings.default_max_depth}
-                  onChange={(event) =>
-                    setSettings({ ...settings, default_max_depth: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Refresh pages older than (days; 0 disables)
-                <input
-                  data-testid="frontier-setting-refresh-after"
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={settings.refresh_after_days}
-                  onChange={(event) =>
-                    setSettings({ ...settings, refresh_after_days: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Discovery pass interval (s; 0 disables)
-                <input
-                  data-testid="frontier-setting-discovery-interval"
-                  type="number"
-                  min={0}
-                  step={60}
-                  value={settings.discovery_interval_s}
-                  onChange={(event) =>
-                    setSettings({ ...settings, discovery_interval_s: Number(event.target.value) })
-                  }
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
-                <input
-                  data-testid="frontier-setting-robots"
-                  type="checkbox"
-                  checked={settings.respect_robots}
-                  onChange={(event) =>
-                    setSettings({ ...settings, respect_robots: event.target.checked })
-                  }
-                />{' '}
-                Respect robots.txt
-              </label>
-              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Crawler User-Agent
-                <input
-                  data-testid="frontier-setting-user-agent"
-                  type="text"
-                  maxLength={256}
-                  value={settings.user_agent}
-                  onChange={(event) => setSettings({ ...settings, user_agent: event.target.value })}
-                  className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                />
-              </label>
-              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Skip domains (queued URLs from these are never fetched)
-                <div className="flex gap-ol-xs">
-                  <input
-                    data-testid="frontier-skip-input"
-                    type="text"
-                    aria-label="Domain to skip"
-                    value={skipInput}
-                    onChange={(event) => setSkipInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') handleAddSkipDomain();
-                    }}
-                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                  />
-                  <Button variant="secondary" onClick={handleAddSkipDomain}>
-                    Add
-                  </Button>
-                </div>
-                {(settings.skip_domains ?? []).length > 0 && (
-                  <ul data-testid="frontier-skip-list" className="flex flex-wrap gap-ol-xs">
-                    {(settings.skip_domains ?? []).map((domain) => (
-                      <li key={domain}>
-                        <Badge>{domain}</Badge>{' '}
-                        <Button
-                          variant="ghost"
-                          data-testid={`frontier-skip-remove-${domain}`}
-                          onClick={() => handleRemoveSkipDomain(domain)}
-                        >
-                          ×
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Allow domains (when set, only these are ever fetched)
-                <div className="flex gap-ol-xs">
-                  <input
-                    data-testid="frontier-allow-input"
-                    type="text"
-                    aria-label="Domain to allow"
-                    value={allowInput}
-                    onChange={(event) => setAllowInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') handleAddAllowDomain();
-                    }}
-                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                  />
-                  <Button variant="secondary" onClick={handleAddAllowDomain}>
-                    Add
-                  </Button>
-                </div>
-                {(settings.allow_domains ?? []).length > 0 && (
-                  <ul data-testid="frontier-allow-list" className="flex flex-wrap gap-ol-xs">
-                    {(settings.allow_domains ?? []).map((domain) => (
-                      <li key={domain}>
-                        <Badge>{domain}</Badge>{' '}
-                        <Button
-                          variant="ghost"
-                          data-testid={`frontier-allow-remove-${domain}`}
-                          onClick={() => handleRemoveAllowDomain(domain)}
-                        >
-                          ×
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Block domains (queued URLs from these are never fetched)
-                <div className="flex gap-ol-xs">
-                  <input
-                    data-testid="frontier-deny-input"
-                    type="text"
-                    aria-label="Domain to block"
-                    value={denyInput}
-                    onChange={(event) => setDenyInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') handleAddDenyDomain();
-                    }}
-                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                  />
-                  <Button variant="secondary" onClick={handleAddDenyDomain}>
-                    Add
-                  </Button>
-                </div>
-                {(settings.deny_domains ?? []).length > 0 && (
-                  <ul data-testid="frontier-deny-list" className="flex flex-wrap gap-ol-xs">
-                    {(settings.deny_domains ?? []).map((domain) => (
-                      <li key={domain}>
-                        <Badge>{domain}</Badge>{' '}
-                        <Button
-                          variant="ghost"
-                          data-testid={`frontier-deny-remove-${domain}`}
-                          onClick={() => handleRemoveDenyDomain(domain)}
-                        >
-                          ×
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-                Discovery feeds / sitemaps (new URLs are queued from these)
-                <div className="flex gap-ol-xs">
-                  <input
-                    data-testid="frontier-feed-input"
-                    type="text"
-                    aria-label="Feed or sitemap URL"
-                    value={feedInput}
-                    onChange={(event) => setFeedInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') handleAddFeed();
-                    }}
-                    className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-                  />
-                  <Button variant="secondary" onClick={handleAddFeed}>
-                    Add
-                  </Button>
-                </div>
-                {(settings.discovery_feeds ?? []).length > 0 && (
-                  <ul data-testid="frontier-feed-list" className="flex flex-col gap-ol-xs">
-                    {(settings.discovery_feeds ?? []).map((feed) => (
-                      <li key={feed} className="flex items-center gap-ol-xs">
-                        <Badge>{feed}</Badge>{' '}
-                        <Button
-                          variant="ghost"
-                          data-testid={`frontier-feed-remove-${feed}`}
-                          onClick={() => handleRemoveFeed(feed)}
-                        >
-                          ×
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="mt-ol-s">
-                <Button variant="secondary" onClick={() => void handleSaveSettings()}>
-                  Save settings
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Failed domains ({failedDomainTotal})</h4>
+              {failedDomainTotal > 0 ? (
+                <Button
+                  variant="secondary"
+                  data-testid="frontier-auto-triage"
+                  onClick={() => void handleAutoTriage()}
+                >
+                  Auto-triage
                 </Button>
-              </div>
-            </Card>
+              ) : null}
+              {failedDomainsQuery.isPending ? (
+                <p className="my-ol-s text-ol-s">Loading failed domains…</p>
+              ) : failedDomains == null || failedDomains.domains.length === 0 ? (
+                <p data-testid="frontier-failed-domains-empty" className="my-ol-s text-ol-s">
+                  No failed domains
+                </p>
+              ) : (
+                <>
+                  <ul
+                    data-testid="frontier-failed-domains"
+                    className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                  >
+                    {failedDomains.domains.map((entry) => (
+                      <li key={entry.domain} className="break-all ol-domain-row">
+                        <Badge>{entry.failed}</Badge>{' '}
+                        <span className="ol-domain-name">{entry.domain}</span>{' '}
+                        <span className="text-ol-s">{entry.top_reason}</span>
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-domain-toggle-${entry.domain}`}
+                          onClick={() => toggleDomainUrls(entry.domain)}
+                        >
+                          {expandedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
+                        </Button>{' '}
+                        <Button
+                          variant="secondary"
+                          data-testid={`frontier-domain-requeue-${entry.domain}`}
+                          onClick={() => void handleDomainAction(entry.domain, 'requeue')}
+                        >
+                          Requeue
+                        </Button>{' '}
+                        <Button
+                          variant="secondary"
+                          data-testid={`frontier-domain-flush-${entry.domain}`}
+                          onClick={() => void handleDomainAction(entry.domain, 'purge')}
+                        >
+                          Flush
+                        </Button>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-domain-skip-${entry.domain}`}
+                          onClick={() => void handleDomainAction(entry.domain, 'skip')}
+                        >
+                          Skip
+                        </Button>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-domain-block-${entry.domain}`}
+                          onClick={() => void handleBlockDomain(entry.domain)}
+                        >
+                          Block
+                        </Button>
+                        {expandedDomain === entry.domain ? (
+                          <div className="my-ol-s">
+                            {domainUrlsQuery.isPending ? (
+                              <p className="text-ol-s">Loading URLs…</p>
+                            ) : domainUrls == null || domainUrls.urls.length === 0 ? (
+                              <p
+                                data-testid={`frontier-domain-urls-empty-${entry.domain}`}
+                                className="text-ol-s"
+                              >
+                                No failed URLs for this domain
+                              </p>
+                            ) : (
+                              <>
+                                <ul
+                                  data-testid={`frontier-domain-urls-${entry.domain}`}
+                                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                                >
+                                  {domainUrls.urls.map((failed) => (
+                                    <li key={failed.url} className="break-all">
+                                      <Badge>{failed.attempts}</Badge> {failed.url}{' '}
+                                      <span className="text-ol-s">· {failed.reason}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                                <div className="flex items-center gap-ol-s my-ol-s">
+                                  <Button
+                                    variant="ghost"
+                                    data-testid={`frontier-domain-urls-prev-${entry.domain}`}
+                                    onClick={() =>
+                                      setDomainUrlPage((page) => Math.max(0, page - 1))
+                                    }
+                                    disabled={domainUrlPage <= 0}
+                                  >
+                                    Previous
+                                  </Button>
+                                  <span className="text-ol-s">
+                                    Page {domainUrlPage + 1} of {domainUrlPages}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    data-testid={`frontier-domain-urls-next-${entry.domain}`}
+                                    onClick={() =>
+                                      setDomainUrlPage((page) =>
+                                        Math.min(domainUrlPages - 1, page + 1),
+                                      )
+                                    }
+                                    disabled={domainUrlPage >= domainUrlPages - 1}
+                                  >
+                                    Next
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center gap-ol-s my-ol-s">
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-failed-domains-prev"
+                      onClick={() => setFailedDomainPage((page) => Math.max(0, page - 1))}
+                      disabled={failedDomainPage <= 0}
+                    >
+                      Previous
+                    </Button>
+                    <span data-testid="frontier-failed-domains-page" className="text-ol-s">
+                      Page {failedDomainPage + 1} of {failedDomainPages}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-failed-domains-next"
+                      onClick={() =>
+                        setFailedDomainPage((page) => Math.min(failedDomainPages - 1, page + 1))
+                      }
+                      disabled={failedDomainPage >= failedDomainPages - 1}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </>
+              )}
+            </section>
+            <section className="ol-dash-group" aria-label="Queued by domain">
+              <h3 className="ol-dash-title">Queued by domain</h3>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Queued domains ({queuedDomainTotal})</h4>
+              {queuedDomainsQuery.isPending ? (
+                <p className="my-ol-s text-ol-s">Loading queued domains…</p>
+              ) : queuedDomains == null || queuedDomains.domains.length === 0 ? (
+                <p data-testid="frontier-queued-domains-empty" className="my-ol-s text-ol-s">
+                  No queued domains
+                </p>
+              ) : (
+                <>
+                  <ul
+                    data-testid="frontier-queued-domains"
+                    className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
+                  >
+                    {queuedDomains.domains.map((entry) => (
+                      <li key={entry.domain} className="break-all ol-domain-row">
+                        <Badge>{entry.queued}</Badge> <Badge>p{entry.top_priority}</Badge>{' '}
+                        <span className="ol-domain-name">{entry.domain}</span>
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-queued-toggle-${entry.domain}`}
+                          onClick={() => toggleQueuedDomainUrls(entry.domain)}
+                        >
+                          {expandedQueuedDomain === entry.domain ? 'Hide URLs' : 'Show URLs'}
+                        </Button>{' '}
+                        <Button
+                          variant="secondary"
+                          data-testid={`frontier-queued-prio-up-${entry.domain}`}
+                          onClick={() => void handleQueuedPriority(entry.domain, 1)}
+                        >
+                          +1 priority
+                        </Button>{' '}
+                        <Button
+                          variant="secondary"
+                          data-testid={`frontier-queued-prio-down-${entry.domain}`}
+                          onClick={() => void handleQueuedPriority(entry.domain, -1)}
+                        >
+                          −1 priority
+                        </Button>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-queued-skip-${entry.domain}`}
+                          onClick={() => void handleDomainAction(entry.domain, 'skip')}
+                        >
+                          Skip
+                        </Button>{' '}
+                        <Button
+                          variant="ghost"
+                          data-testid={`frontier-queued-block-${entry.domain}`}
+                          onClick={() => void handleBlockDomain(entry.domain)}
+                        >
+                          Block
+                        </Button>
+                        {expandedQueuedDomain === entry.domain ? (
+                          <div
+                            data-testid={`frontier-queued-urls-${entry.domain}`}
+                            className="ml-ol-m mt-ol-xs border-l border-ol-border pl-ol-s"
+                          >
+                            {queuedDomainUrlsQuery.isLoading ? (
+                              <p className="text-ol-s">Loading URLs…</p>
+                            ) : queuedDomainUrls == null ? (
+                              <p className="text-ol-s">Could not load URLs.</p>
+                            ) : queuedDomainUrls.urls.length === 0 ? (
+                              <p className="text-ol-s">No queued URLs for this domain.</p>
+                            ) : (
+                              <>
+                                <ul className="flex min-h-0 flex-col gap-ol-xs my-ol-xs max-h-64 overflow-y-auto">
+                                  {queuedDomainUrls.urls.map((item) => (
+                                    <li key={item.url} className="break-all">
+                                      {(item.attempts ?? 0) > 0 ? (
+                                        <Badge>{item.attempts}</Badge>
+                                      ) : null}{' '}
+                                      {item.url}
+                                      {item.reason != null && item.reason !== '' ? (
+                                        <span className="text-ol-s"> · {item.reason}</span>
+                                      ) : null}
+                                    </li>
+                                  ))}
+                                </ul>
+                                <div className="flex items-center gap-ol-s my-ol-xs">
+                                  <Button
+                                    variant="ghost"
+                                    data-testid={`frontier-queued-urls-prev-${entry.domain}`}
+                                    onClick={() =>
+                                      setQueuedDomainUrlPage((page) => Math.max(0, page - 1))
+                                    }
+                                    disabled={queuedDomainUrlPage <= 0}
+                                  >
+                                    Previous
+                                  </Button>
+                                  <span
+                                    data-testid={`frontier-queued-urls-page-${entry.domain}`}
+                                    className="text-ol-s"
+                                  >
+                                    Page {queuedDomainUrlPage + 1} of {queuedDomainUrlPages}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    data-testid={`frontier-queued-urls-next-${entry.domain}`}
+                                    onClick={() =>
+                                      setQueuedDomainUrlPage((page) =>
+                                        Math.min(queuedDomainUrlPages - 1, page + 1),
+                                      )
+                                    }
+                                    disabled={queuedDomainUrlPage >= queuedDomainUrlPages - 1}
+                                  >
+                                    Next
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center gap-ol-s my-ol-s">
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-queued-domains-prev"
+                      onClick={() => setQueuedDomainPage((page) => Math.max(0, page - 1))}
+                      disabled={queuedDomainPage <= 0}
+                    >
+                      Previous
+                    </Button>
+                    <span data-testid="frontier-queued-domains-page" className="text-ol-s">
+                      Page {queuedDomainPage + 1} of {queuedDomainPages}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-queued-domains-next"
+                      onClick={() =>
+                        setQueuedDomainPage((page) => Math.min(queuedDomainPages - 1, page + 1))
+                      }
+                      disabled={queuedDomainPage >= queuedDomainPages - 1}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </>
+              )}
+            </section>
+            <section className="ol-dash-group" aria-label="Intake and settings">
+              <h3 className="ol-dash-title">Intake &amp; settings</h3>
+              <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawl requests ({crawlRequests.length})</h4>
+              {crawlRequests.length === 0 ? (
+                <p className="my-ol-s text-ol-s">No URLs awaiting review</p>
+              ) : (
+                <ul
+                  data-testid="frontier-crawl-requests"
+                  aria-label="Crawl requests awaiting review"
+                  className="flex min-h-0 flex-col gap-ol-xs my-ol-s pl-ol-m max-h-64 overflow-y-auto"
+                >
+                  {crawlRequests.map((entry) => (
+                    <li key={entry.id ?? entry.url} className="break-all">
+                      <span className="text-ol-s">{entry.url}</span>{' '}
+                      <Button
+                        variant="secondary"
+                        data-testid={`crawl-request-approve-${entry.id}`}
+                        onClick={() =>
+                          entry.id !== null && void handleDecideCrawlRequest(entry.id, 'approve')
+                        }
+                        disabled={entry.id === null}
+                      >
+                        Approve
+                      </Button>{' '}
+                      <Button
+                        variant="ghost"
+                        data-testid={`crawl-request-decline-${entry.id}`}
+                        onClick={() =>
+                          entry.id !== null && void handleDecideCrawlRequest(entry.id, 'decline')
+                        }
+                        disabled={entry.id === null}
+                      >
+                        Decline
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <details className="ol-disclosure">
+                <summary className="ol-disclosure-title">Enqueue seeds</summary>
+                <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                  Seed URLs (one per line)
+                  <textarea
+                    data-testid="frontier-seeds"
+                    value={seeds}
+                    onChange={(event) => setSeeds(event.target.value)}
+                    rows={3}
+                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                </label>
+                <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                  Priority for these seeds (higher dequeues first; blank keeps stored)
+                  <input
+                    data-testid="frontier-priority"
+                    type="number"
+                    step={1}
+                    value={priority}
+                    onChange={(event) => setPriority(event.target.value)}
+                    placeholder="0"
+                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                </label>
+              </details>
+              <details className="ol-disclosure">
+                <summary className="ol-disclosure-title">Settings</summary>
+                <Card data-testid="frontier-settings">
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Max pages
+                    <input
+                      data-testid="frontier-setting-max-pages"
+                      type="number"
+                      min={1}
+                      value={settings.max_pages}
+                      onChange={(event) =>
+                        setSettings({ ...settings, max_pages: Number(event.target.value) })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Max queued URLs
+                    <input
+                      data-testid="frontier-setting-max-queued"
+                      type="number"
+                      min={1}
+                      value={settings.max_queued_urls}
+                      onChange={(event) =>
+                        setSettings({ ...settings, max_queued_urls: Number(event.target.value) })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Crawl delay (s)
+                    <input
+                      data-testid="frontier-setting-delay"
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={settings.crawl_delay_s}
+                      onChange={(event) =>
+                        setSettings({ ...settings, crawl_delay_s: Number(event.target.value) })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Default max depth
+                    <input
+                      data-testid="frontier-setting-depth"
+                      type="number"
+                      min={0}
+                      value={settings.default_max_depth}
+                      onChange={(event) =>
+                        setSettings({ ...settings, default_max_depth: Number(event.target.value) })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Refresh pages older than (days; 0 disables)
+                    <input
+                      data-testid="frontier-setting-refresh-after"
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={settings.refresh_after_days}
+                      onChange={(event) =>
+                        setSettings({ ...settings, refresh_after_days: Number(event.target.value) })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Discovery pass interval (s; 0 disables)
+                    <input
+                      data-testid="frontier-setting-discovery-interval"
+                      type="number"
+                      min={0}
+                      step={60}
+                      value={settings.discovery_interval_s}
+                      onChange={(event) =>
+                        setSettings({
+                          ...settings,
+                          discovery_interval_s: Number(event.target.value),
+                        })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
+                    <input
+                      data-testid="frontier-setting-robots"
+                      type="checkbox"
+                      checked={settings.respect_robots}
+                      onChange={(event) =>
+                        setSettings({ ...settings, respect_robots: event.target.checked })
+                      }
+                    />{' '}
+                    Respect robots.txt
+                  </label>
+                  <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Crawler User-Agent
+                    <input
+                      data-testid="frontier-setting-user-agent"
+                      type="text"
+                      maxLength={256}
+                      value={settings.user_agent}
+                      onChange={(event) =>
+                        setSettings({ ...settings, user_agent: event.target.value })
+                      }
+                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    />
+                  </label>
+                  <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Skip domains (queued URLs from these are never fetched)
+                    <div className="flex gap-ol-xs">
+                      <input
+                        data-testid="frontier-skip-input"
+                        type="text"
+                        aria-label="Domain to skip"
+                        value={skipInput}
+                        onChange={(event) => setSkipInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAddSkipDomain();
+                        }}
+                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      />
+                      <Button variant="secondary" onClick={handleAddSkipDomain}>
+                        Add
+                      </Button>
+                    </div>
+                    {(settings.skip_domains ?? []).length > 0 && (
+                      <ul data-testid="frontier-skip-list" className="flex flex-wrap gap-ol-xs">
+                        {(settings.skip_domains ?? []).map((domain) => (
+                          <li key={domain}>
+                            <Badge>{domain}</Badge>{' '}
+                            <Button
+                              variant="ghost"
+                              data-testid={`frontier-skip-remove-${domain}`}
+                              onClick={() => handleRemoveSkipDomain(domain)}
+                            >
+                              ×
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Allow domains (when set, only these are ever fetched)
+                    <div className="flex gap-ol-xs">
+                      <input
+                        data-testid="frontier-allow-input"
+                        type="text"
+                        aria-label="Domain to allow"
+                        value={allowInput}
+                        onChange={(event) => setAllowInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAddAllowDomain();
+                        }}
+                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      />
+                      <Button variant="secondary" onClick={handleAddAllowDomain}>
+                        Add
+                      </Button>
+                    </div>
+                    {(settings.allow_domains ?? []).length > 0 && (
+                      <ul data-testid="frontier-allow-list" className="flex flex-wrap gap-ol-xs">
+                        {(settings.allow_domains ?? []).map((domain) => (
+                          <li key={domain}>
+                            <Badge>{domain}</Badge>{' '}
+                            <Button
+                              variant="ghost"
+                              data-testid={`frontier-allow-remove-${domain}`}
+                              onClick={() => handleRemoveAllowDomain(domain)}
+                            >
+                              ×
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Block domains (queued URLs from these are never fetched)
+                    <div className="flex gap-ol-xs">
+                      <input
+                        data-testid="frontier-deny-input"
+                        type="text"
+                        aria-label="Domain to block"
+                        value={denyInput}
+                        onChange={(event) => setDenyInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAddDenyDomain();
+                        }}
+                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      />
+                      <Button variant="secondary" onClick={handleAddDenyDomain}>
+                        Add
+                      </Button>
+                    </div>
+                    {(settings.deny_domains ?? []).length > 0 && (
+                      <ul data-testid="frontier-deny-list" className="flex flex-wrap gap-ol-xs">
+                        {(settings.deny_domains ?? []).map((domain) => (
+                          <li key={domain}>
+                            <Badge>{domain}</Badge>{' '}
+                            <Button
+                              variant="ghost"
+                              data-testid={`frontier-deny-remove-${domain}`}
+                              onClick={() => handleRemoveDenyDomain(domain)}
+                            >
+                              ×
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                    Discovery feeds / sitemaps (new URLs are queued from these)
+                    <div className="flex gap-ol-xs">
+                      <input
+                        data-testid="frontier-feed-input"
+                        type="text"
+                        aria-label="Feed or sitemap URL"
+                        value={feedInput}
+                        onChange={(event) => setFeedInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') handleAddFeed();
+                        }}
+                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      />
+                      <Button variant="secondary" onClick={handleAddFeed}>
+                        Add
+                      </Button>
+                    </div>
+                    {(settings.discovery_feeds ?? []).length > 0 && (
+                      <ul data-testid="frontier-feed-list" className="flex flex-col gap-ol-xs">
+                        {(settings.discovery_feeds ?? []).map((feed) => (
+                          <li key={feed} className="flex items-center gap-ol-xs">
+                            <Badge>{feed}</Badge>{' '}
+                            <Button
+                              variant="ghost"
+                              data-testid={`frontier-feed-remove-${feed}`}
+                              onClick={() => handleRemoveFeed(feed)}
+                            >
+                              ×
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="mt-ol-s">
+                    <Button variant="secondary" onClick={() => void handleSaveSettings()}>
+                      Save settings
+                    </Button>
+                  </div>
+                </Card>
+              </details>
+            </section>
           </>
         )}
       </Drawer>

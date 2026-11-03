@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Tour from './Tour.tsx';
 import type { TourStep } from '../tourSteps.ts';
@@ -37,17 +37,17 @@ describe('Tour', () => {
     rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
     expect(screen.getByTestId('tour-tooltip')).toHaveAttribute('role', 'dialog');
     expect(screen.getByText('Alpha title')).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
     expect(host.querySelector('[data-testid="alpha"]')).toHaveClass('ol-tour-target');
   });
 
   it('skips missing targets and navigates with Next and Back', () => {
     mountTargets();
     render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
-    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     expect(screen.getByText('Beta title')).toBeInTheDocument();
-    expect(screen.getByText('Step 2 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.getByText('Alpha title')).toBeInTheDocument();
@@ -83,5 +83,49 @@ describe('Tour', () => {
   it('does not start when no targets exist', () => {
     render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
     expect(screen.queryByTestId('tour-tooltip')).toBeNull();
+  });
+
+  it('starts at the first available target when earlier steps are missing', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<div data-testid="beta">beta</div>';
+    document.body.appendChild(host);
+    render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.getByText('Beta title')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
+  });
+
+  it('ends the tour with Done on the last available target', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<div data-testid="beta">beta</div>';
+    document.body.appendChild(host);
+    render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByTestId('tour-tooltip')).toBeNull();
+    expect(window.localStorage.getItem('ol-tour-test')).toBe('done');
+  });
+
+  it('follows the user when the current target unmounts mid-tour', async () => {
+    const host = mountTargets();
+    render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.getByText('Alpha title')).toBeInTheDocument();
+    // Simulate switching to a view where the current target is gone.
+    host.querySelector('[data-testid="alpha"]')?.remove();
+    await waitFor(() => {
+      expect(screen.getByText('Beta title')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('tour-tooltip')).toBeInTheDocument();
+  });
+
+  it('exits when every remaining target unmounts mid-tour', async () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<div data-testid="beta">beta</div>';
+    document.body.appendChild(host);
+    render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.getByText('Beta title')).toBeInTheDocument();
+    host.querySelector('[data-testid="beta"]')?.remove();
+    await waitFor(() => {
+      expect(screen.queryByTestId('tour-tooltip')).toBeNull();
+    });
   });
 });
