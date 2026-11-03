@@ -11,21 +11,28 @@ const TARGET_CLASS = 'ol-tour-target';
 const GAP = 12;
 
 function targetExists(target: string): boolean {
-  return document.querySelector(`[data-testid="${target}"]`) !== null;
+  return target !== '' && document.querySelector(`[data-testid="${target}"]`) !== null;
 }
 
-/** First step at or after `from` whose target is currently mounted. */
+function stepAvailable(steps: TourStep[], i: number): boolean {
+  const step = steps[i];
+  if (!step) return false;
+  if (step.target === '') return !step.untilTarget || !targetExists(step.untilTarget);
+  return targetExists(step.target);
+}
+
+/** First step at or after `from` that can show right now. */
 function nextAvailable(steps: TourStep[], from: number): number {
   for (let i = Math.max(0, from); i < steps.length; i += 1) {
-    if (targetExists(steps[i].target)) return i;
+    if (stepAvailable(steps, i)) return i;
   }
   return -1;
 }
 
-/** Last step at or before `from` whose target is currently mounted. */
+/** Last step at or before `from` that can show right now. */
 function prevAvailable(steps: TourStep[], from: number): number {
   for (let i = Math.min(from, steps.length - 1); i >= 0; i -= 1) {
-    if (targetExists(steps[i].target)) return i;
+    if (stepAvailable(steps, i)) return i;
   }
   return -1;
 }
@@ -108,7 +115,19 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
       const { open: isOpen, index: current } = stateRef.current;
       if (!isOpen) return;
       const step = steps[current];
-      if (!step || !targetExists(step.target)) {
+      if (!step) {
+        stop(true);
+        return;
+      }
+      if (step.target === '') {
+        if (step.untilTarget && targetExists(step.untilTarget)) {
+          const gated = nextAvailable(steps, current + 1);
+          if (gated !== -1) setIndex(gated);
+          else stop(true);
+        }
+        return;
+      }
+      if (!targetExists(step.target)) {
         const forward = nextAvailable(steps, current + 1);
         if (forward !== -1) {
           setIndex(forward);
@@ -128,10 +147,32 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
 
   // Highlight + position on step change. A step whose target unmounted
   // (tab switch) hands off to the next mounted step instead of freezing.
+  // Gate steps (empty target) show centered until their awaited view mounts.
   useEffect(() => {
     if (!open) return;
     const step = steps[index];
-    if (!step || !targetExists(step.target)) {
+    if (!step) {
+      stop(true);
+      return;
+    }
+    if (step.target === '') {
+      document.querySelectorAll(`.${TARGET_CLASS}`).forEach((node) => {
+        node.classList.remove(TARGET_CLASS);
+      });
+      if (step.untilTarget && targetExists(step.untilTarget)) {
+        const forward = nextAvailable(steps, index + 1);
+        if (forward !== -1) {
+          setIndex(forward);
+          return;
+        }
+        stop(true);
+        return;
+      }
+      setAnchor({ top: Math.max(16, window.innerHeight * 0.25), left: 8, width: 0, above: false });
+      nextRef.current?.focus();
+      return;
+    }
+    if (!targetExists(step.target)) {
       const forward = nextAvailable(steps, index + 1);
       if (forward !== -1) {
         setIndex(forward);
@@ -190,7 +231,7 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
 
   if (!open) return null;
   const step = steps[index];
-  if (!step || !targetExists(step.target)) return null;
+  if (!step || (step.target !== '' && !targetExists(step.target))) return null;
   const last = nextAvailable(steps, index + 1) === -1;
   const backDisabled = prevAvailable(steps, index - 1) === -1;
   const style = anchor ? { top: anchor.top, left: anchor.left } : { top: 16, left: 16 };

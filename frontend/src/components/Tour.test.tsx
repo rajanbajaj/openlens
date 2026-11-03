@@ -128,4 +128,31 @@ describe('Tour', () => {
       expect(screen.queryByTestId('tour-tooltip')).toBeNull();
     });
   });
+
+  it('pauses on a gate step until the awaited view mounts', async () => {
+    const gateSteps: TourStep[] = [
+      { target: 'alpha', title: 'Alpha title', body: 'Alpha body' },
+      {
+        target: '',
+        untilTarget: 'beta',
+        title: 'Wait for beta',
+        body: 'Gate body',
+      },
+      { target: 'beta', title: 'Beta title', body: 'Beta body' },
+    ];
+    const host = document.createElement('div');
+    host.innerHTML = '<div data-testid="alpha">alpha</div>';
+    document.body.appendChild(host);
+    render(<Tour steps={gateSteps} runId={1} storageKey="ol-tour-test" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Wait for beta')).toBeInTheDocument();
+    // Mounting the awaited view advances the tour on its own.
+    const beta = document.createElement('div');
+    beta.setAttribute('data-testid', 'beta');
+    beta.textContent = 'beta';
+    document.body.append(beta);
+    await waitFor(() => {
+      expect(screen.getByText('Beta title')).toBeInTheDocument();
+    });
+  });
 });

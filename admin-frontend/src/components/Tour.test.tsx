@@ -132,4 +132,29 @@ describe('Tour guided onboarding', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
   });
+
+  it('pauses on a gate step until the awaited view mounts', async () => {
+    const gateSteps: TourStep[] = [
+      { target: 'tour-a', title: 'First stop', body: 'First body.' },
+      {
+        target: '',
+        untilTarget: 'tour-b',
+        title: 'Waiting stop',
+        body: 'Gate body.',
+      },
+      { target: 'tour-b', title: 'Second stop', body: 'Second body.' },
+    ];
+    renderTargets();
+    document.querySelector('[data-testid="tour-b"]')?.remove();
+    const { rerender } = render(<Tour steps={gateSteps} runId={0} storageKey="ol-tour-test" />);
+    rerender(<Tour steps={gateSteps} runId={1} storageKey="ol-tour-test" />);
+    fireEvent.click(screen.getByText('Next'));
+    expect(screen.getByRole('dialog', { name: 'Waiting stop' })).toBeInTheDocument();
+    const host = document.createElement('div');
+    host.innerHTML = '<section data-testid="tour-b">bbb</section>';
+    document.body.append(host);
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Second stop' })).toBeInTheDocument();
+    });
+  });
 });

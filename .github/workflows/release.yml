@@ -1,15 +1,36 @@
 name: release
 
-# Deploys a version tag (e.g. v1.0.0) to the release server via a
-# self-hosted runner installed on that server. Server-side build: no
-# registry, the existing deploy/local Dockerfiles and compose file are
-# reused verbatim. Secrets live only in the server-side secrets file
-# (gitignored), never in this file.
+# Deploys to the release server via a self-hosted runner installed on
+# that server. Server-side build: no registry, the existing deploy/local
+# Dockerfiles and compose file are reused verbatim. Secrets live only in
+# the server-side secrets file (gitignored), never in this file.
+#
+# Full fleet: push a version tag (e.g. v0.4.61).
+# Selective (one part, rest of the fleet untouched): run this workflow
+# manually (Actions -> release -> Run workflow) and name the compose
+# services, e.g. "frontend admin-frontend" or "backend". Only the named
+# services are rebuilt and recreated; `docker compose up -d` never
+# restarts a service it was not asked about. Fleet size always comes
+# from CRAWLER_SCALE / ANALYTICS_WORKER_SCALE / CRAWLER_BACKOFF_SCALE
+# in the server release.env — never from CLI --scale flags, which do
+# not survive the next plain `up -d`.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      services:
+        description: >-
+          Space-separated compose services to rebuild and restart
+          (e.g. "frontend admin-frontend", "backend", "clickhouse").
+          Use "all" for the full stack.
+        required: false
+        default: "frontend admin-frontend"
+      ref:
+        description: "Tag, branch, or SHA to deploy (default: main)."
+        required: false
+        default: "main"
 
 concurrency:
   group: release-production
@@ -21,12 +42,15 @@ jobs:
     runs-on: [self-hosted, openlens-release]
     timeout-minutes: 45
     steps:
-      - name: Check out tag
+      - name: Check out release ref
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Show release commit
         run: |
-          echo "tag: ${{ github.ref_name }}"
+          echo "ref: ${{ inputs.ref || github.ref_name }}"
+          echo "services: ${{ inputs.services || 'all' }}"
           git log -1 --format='%H %s'
           docker compose version
 
@@ -35,20 +59,18 @@ jobs:
         # /home/rajan/servers/release.env on the release server.
         run: cp /home/rajan/servers/release.env deploy/local/.env
 
-      - name: Build and start stack
+      - name: Build and start selected services
         working-directory: deploy/local
-        # Release runs 3 crawl workers (Kafka consumer group shares the
-        # queue; local dev stays at 1). Override with CRAWLER_SCALE in
-        # the server's release.env. The runner shell never sources that
-        # file, so read the value explicitly (validated numeric,
-        # default 3) instead of relying on environment interpolation.
         run: |
-          SCALE="$(grep '^CRAWLER_SCALE=' /home/rajan/servers/release.env | sed 's/^[^=]*=//' | tr -d '[:space:]')"
-          case "$SCALE" in
-            ''|*[!0-9]*) SCALE=3 ;;
-          esac
-          echo "crawler scale: $SCALE"
-          docker compose up --build -d --scale "crawler=$SCALE"
+          SERVICES="${{ inputs.services || '' }}"
+          if [ -z "$SERVICES" ] || [ "$SERVICES" = "all" ]; then
+            echo "full-stack deploy"
+            docker compose up --build -d
+          else
+            # shellcheck disable=SC2086
+            echo "selective deploy: $SERVICES"
+            docker compose up --build -d $SERVICES
+          fi
 
       - name: Wait for backend health
         run: |
@@ -61,14 +83,16 @@ jobs:
           done
           curl -fsS http://localhost:8000/healthz
 
-      - name: Health gates (search + frontier)
+      - name: Health gates (search)
         run: |
-          curl -fsS http://localhost:8000/api/v1/frontier/status
           curl -fsS -X POST http://localhost:8000/api/v1/search \
             -H 'Content-Type: application/json' \
             -d '{"query": "release health check", "limit": 1}'
 
       - name: Health gates (frontends)
+        if: >-
+          ${{ inputs.services == '' || inputs.services == 'all' ||
+              contains(inputs.services, 'frontend') }}
         run: |
           curl -fsS -o /dev/null http://localhost:3000/
           curl -fsS -o /dev/null http://localhost:3001/

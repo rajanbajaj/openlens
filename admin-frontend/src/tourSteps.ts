@@ -2,6 +2,11 @@ export interface TourStep {
   target: string;
   title: string;
   body: string;
+  /**
+   * Gate step (target ''): shown centered with no highlight until
+   * `untilTarget` mounts, then the tour advances on its own.
+   */
+  untilTarget?: string;
 }
 
 export const TOUR_STEPS: TourStep[] = [
