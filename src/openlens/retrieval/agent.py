@@ -150,7 +150,7 @@ def build_parse_prompt(query: str) -> str:
         'exactly these keys: "query" (string, the rewritten query), '
         '"filters" (object, search filters), "mode" (string, one of '
         '"default", "news", "shopping", "travel", "events", "tech", "software", '
-        '"child-safe").\n'
+        '"health", "child-safe").\n'
         "User query:\n"
         f"{query}"
     )
@@ -399,7 +399,7 @@ def _capabilities_answer() -> str:
     """Canned tool card: what the assistant itself can do (no search)."""
     return (
         "I can search this platform's index (including news, shopping, "
-        "travel, events, tech, software, and child-safe modes); pull "
+        "travel, events, tech, software, health, and child-safe modes); pull "
         "the full text of the top "
         "results and summarize them with cited sources; and list which "
         "domains are indexed here. I answer only from indexed sources — "
@@ -1279,7 +1279,7 @@ def build_chat_rewrite_prompt(message: str, history: Any) -> str:
         'exactly these keys: "query" (string, the standalone rewritten '
         'query), "filters" (object, search filters), "mode" (string, one of '
         '"default", "news", "shopping", "travel", "events", "tech", "software", '
-        '"child-safe"), '
+        '"health", "child-safe"), '
         '"tool" (string, one of "search", "domains", "capabilities", '
         '"compare", "prices", "trust", "safety", "calculate"). Set "tool" '
         'to "domains" ONLY when the user asks which websites, domains, or '

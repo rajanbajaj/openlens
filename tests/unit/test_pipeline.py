@@ -220,7 +220,7 @@ def test_pipeline_rejects_missing_dependency_and_cycle():
 # --- Ranking profiles ------------------------------------------------------
 
 
-def test_ranking_yaml_loads_six_profiles():
+def test_ranking_yaml_loads_all_profiles():
     profiles = load_profiles("configs/ranking.yaml")  # repo-relative
     assert set(profiles) == {
         "default",
@@ -231,6 +231,7 @@ def test_ranking_yaml_loads_six_profiles():
         "events",
         "tech",
         "software",
+        "health",
     }
     assert set(list_profiles()) == set(profiles)
     with pytest.raises(ConfigError):

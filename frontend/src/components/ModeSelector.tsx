@@ -11,6 +11,7 @@ export const SEARCH_MODES: SearchMode[] = [
   'events',
   'tech',
   'software',
+  'health',
   'agent',
 ];
 

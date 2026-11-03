@@ -24,6 +24,7 @@ describe('ModeSelector', () => {
       'events',
       'tech',
       'software',
+      'health',
       'agent',
     ]);
   });

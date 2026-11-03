@@ -175,7 +175,15 @@ def test_agent_missing_backend_serves_standard_results() -> None:
 def test_agent_non_agent_modes_never_call_model() -> None:
     engine, _, model = _engine(['{"query": "x", "filters": {}, "mode": "news"}'])
     assert model is not None
-    for mode in ("default", "news", "shopping", "travel", "events", "child-safe"):
+    for mode in (
+        "default",
+        "news",
+        "shopping",
+        "travel",
+        "events",
+        "health",
+        "child-safe",
+    ):
         engine.search(SearchRequest(query="dogs", mode=mode))
     assert model.calls == []
 
@@ -186,6 +194,14 @@ def test_agent_plan_events_mode_passes_through() -> None:
     )
     assert query == "concerts near me"
     assert mode == "events"
+
+
+def test_agent_plan_health_mode_passes_through() -> None:
+    query, _, mode = _coerce_plan(
+        {"query": "flu symptoms", "filters": {}, "mode": "health"}, "raw q"
+    )
+    assert query == "flu symptoms"
+    assert mode == "health"
 
 
 def test_agent_prompt_injection_cannot_alter_tool_shape() -> None:

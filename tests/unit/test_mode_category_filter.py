@@ -154,6 +154,34 @@ def test_events_empty_filter_falls_back_with_flag() -> None:
     assert out.metadata["mode-category-filter-removed"] == 1
 
 
+def test_health_mode_keeps_only_health() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [_hit("h", "health"), _hit("s", "shopping"), _hit("o", "other")],
+            "health",
+        )
+    )
+    assert [r.id for r in out.results] == ["h"]
+    assert out.metadata["mode-category-filter-removed"] == 2
+    assert "mode-category-filter" in out.applied_filters
+    assert "mode-category-filter-fallback" not in out.metadata
+
+
+def test_health_mode_matches_keywords() -> None:
+    plugin = ModeCategoryFilter()
+    out = plugin.run(
+        _context(
+            [
+                _hit("h", "other", title="Flu symptoms and treatment options"),
+                _hit("code", "other", title="Python github repo"),
+            ],
+            "health",
+        )
+    )
+    assert [r.id for r in out.results] == ["h"]
+
+
 def test_tech_mode_keeps_only_tech() -> None:
     plugin = ModeCategoryFilter()
     out = plugin.run(

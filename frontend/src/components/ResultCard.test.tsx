@@ -322,6 +322,29 @@ describe('ResultCard verticals', () => {
     expect(screen.queryByTestId('result-vertical-events')).not.toBeInTheDocument();
   });
 
+  it('foregrounds location and date for health mode', () => {
+    const healthResult: SearchResult = {
+      ...TRAVEL_RESULT,
+      id: 'h1',
+      title: 'Flu symptoms and treatment options',
+      snippet: 'What to do when flu season hits',
+      provider: 'health_index',
+      metadata: { location: 'Boston', published: '2026-10-01', facilities: [] },
+    };
+    render(<ResultCard result={healthResult} mode="health" />);
+    const vertical = screen.getByTestId('result-vertical-health');
+    expect(vertical).toHaveTextContent('Boston');
+    expect(vertical).toHaveTextContent('2026-10-01');
+    // Default readers keep their hooks and placement.
+    expect(screen.getByTestId('result-attributes')).toBeInTheDocument();
+    expect(screen.getByTestId('result-snippet')).toBeInTheDocument();
+  });
+
+  it('renders no vertical line when health fields are absent', () => {
+    render(<ResultCard result={{ ...TRAVEL_RESULT, metadata: {} }} mode="health" />);
+    expect(screen.queryByTestId('result-vertical-health')).not.toBeInTheDocument();
+  });
+
   it('renders no vertical line when shopping has no price', () => {
     const noPrice: SearchResult = {
       ...RICH_RESULT,
@@ -339,6 +362,7 @@ describe('ResultCard verticals', () => {
       expect(screen.queryByTestId('result-vertical-shopping')).not.toBeInTheDocument();
       expect(screen.queryByTestId('result-vertical-travel')).not.toBeInTheDocument();
       expect(screen.queryByTestId('result-vertical-events')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('result-vertical-health')).not.toBeInTheDocument();
       expect(screen.getByTestId('result-attributes')).toHaveTextContent('199.99 USD');
     },
   );

@@ -170,3 +170,24 @@ profiles:
     authority_weight: 0.5
     performance_weight: 0.25
     sponsored_weight: 1.0
+  health:
+    description: "Boosts hits mentioning health-oriented keywords."
+    relevance_weight: 1.0
+    warning_penalty: 0.5
+    trust_boost: 0.25
+    recency_boost: 0.0
+    keyword_boost: 0.5
+    keywords: ["symptom", "treatment", "diagnosis", "vaccine", "doctor"]
+    trust_weight: 0.25
+    freshness_weight: 0.0
+    preference_weight: 1.0
+    diversity_weight: 0.25
+    perspective_weight: 0.0
+    commerce_weight: 0.0
+    safety_weight: 0.5
+    privacy_weight: 0.25
+    fairness_weight: 0.25
+    news_trust_weight: 0.0
+    authority_weight: 0.5
+    performance_weight: 0.25
+    sponsored_weight: 1.0

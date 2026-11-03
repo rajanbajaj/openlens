@@ -114,6 +114,35 @@ def test_engine_events_mode_total_matches_results() -> None:
     assert all(r.metadata.get("site_category") == "events" for r in response.results)
 
 
+def test_provider_health_mode_prefilter_is_exact() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    provider._repository.add_documents(
+        [
+            _doc("h1", "health", "flu symptoms guide"),
+            _doc("o1", "other", "flu symptoms guide"),
+        ]
+    )
+    request = SearchRequest(query="flu", mode="health", limit=10, offset=0)
+    hits, total = provider.search_with_total(request)
+    assert total == 1
+    assert [h.id for h in hits] == ["h1"]
+    assert hits[0].metadata.get("site_category") == "health"
+
+
+def test_engine_health_mode_total_matches_results() -> None:
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False})
+    docs = [_doc(f"h{i}", "health", "flu symptoms guide") for i in range(3)]
+    docs += [_doc(f"o{i}", "other", "flu symptoms guide") for i in range(5)]
+    provider._repository.add_documents(docs)
+    engine = SearchEngine(providers=[provider], plugins=[])
+    response = engine.search(SearchRequest(query="flu", mode="health", limit=10))
+    assert response.total == 3
+    assert len(response.results) == 3
+    assert all(r.metadata.get("site_category") == "health" for r in response.results)
+
+
 def test_engine_tech_and_software_modes_total_matches_results() -> None:
     provider = CustomIndexProvider(db_path=":memory:")
     provider.configure({"db_path": ":memory:", "seed": False})

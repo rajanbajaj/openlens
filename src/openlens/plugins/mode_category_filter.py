@@ -34,6 +34,7 @@ MODE_CATEGORY: dict[str, str] = {
     "events": "events",
     "tech": "tech",
     "software": "software",
+    "health": "health",
 }
 
 #: Text fallback for ``travel`` (mirrors the travel ranking keywords).
@@ -66,6 +67,17 @@ SOFTWARE_KEYWORDS: tuple[str, ...] = (
     "framework",
 )
 
+#: Text fallback for ``health`` (mirrors the health ranking keywords).
+#: Untagged clinic blogs and rows indexed before the health category
+#: existed still match downstream on these words.
+HEALTH_KEYWORDS: tuple[str, ...] = (
+    "symptom",
+    "treatment",
+    "diagnosis",
+    "vaccine",
+    "doctor",
+)
+
 #: Modes with a keyword fallback for untagged pages, keyed to the keyword
 #: set used for that fallback.
 _FALLBACK_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -73,6 +85,7 @@ _FALLBACK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "events": EVENTS_KEYWORDS,
     "tech": TECH_KEYWORDS,
     "software": SOFTWARE_KEYWORDS,
+    "health": HEALTH_KEYWORDS,
 }
 
 

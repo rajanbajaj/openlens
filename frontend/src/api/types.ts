@@ -16,6 +16,7 @@ export type SearchMode =
   | 'events'
   | 'tech'
   | 'software'
+  | 'health'
   | 'agent';
 
 /** Per-query provider preferences for federated selection (T13). */

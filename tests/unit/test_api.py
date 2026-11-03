@@ -140,6 +140,13 @@ def test_search_accepts_events_mode() -> None:
     assert resp.json()["mode"] == "events"
 
 
+def test_search_accepts_health_mode() -> None:
+    client = make_client()
+    resp = client.post("/api/v1/search", json={"query": "flu", "mode": "health"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["mode"] == "health"
+
+
 def test_engine_receives_core_request() -> None:
     engine = FakeEngine()
     client = TestClient(create_app(engine=engine))
