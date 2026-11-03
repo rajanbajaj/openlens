@@ -38,6 +38,8 @@ import { QuickFilters } from './components/QuickFilters.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import SearchForm from './components/SearchForm.tsx';
+import Tour from './components/Tour.tsx';
+import { TOUR_STEPS } from './tourSteps.ts';
 import { ErrorState, LoadingState } from './components/States.tsx';
 
 const DiagnosticsRail = lazy(() =>
@@ -87,6 +89,7 @@ export default function App() {
   const [announcement, setAnnouncement] = useState('');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<'search' | 'chat'>('search');
+  const [tourRun, setTourRun] = useState(0);
   const [savedIds, setSavedIds] = useState<string[]>(() =>
     loadSavedResults().map((entry) => entry.id),
   );
@@ -310,6 +313,9 @@ export default function App() {
                   autoFocus
                 />
                 <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+                <Button variant="ghost" onClick={() => setTourRun((n) => n + 1)}>
+                  Take a tour
+                </Button>
               </>
             )}
           </GlassPanel>
@@ -330,6 +336,9 @@ export default function App() {
               />
               <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
               {viewNav()}
+              <Button variant="ghost" onClick={() => setTourRun((n) => n + 1)}>
+                Take a tour
+              </Button>
             </div>
           </GlassPanel>
           <main>
@@ -442,6 +451,7 @@ export default function App() {
           </main>
         </>
       )}
+      <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-search" />
     </div>
   );
 }

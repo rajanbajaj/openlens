@@ -5,7 +5,9 @@ import { ConfigEditor } from './components/ConfigEditor.tsx';
 import { FrontierDrawer } from './components/FrontierDrawer.tsx';
 import { Logo } from './components/Logo.tsx';
 import { TokenBar, loadStoredToken } from './components/TokenBar.tsx';
+import { Tour } from './components/Tour.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
+import { TOUR_STEPS } from './tourSteps.ts';
 
 type AdminTab = 'frontier' | 'analytics' | AdminConfigName;
 
@@ -77,6 +79,7 @@ const TAB_DESCRIPTIONS: Record<AdminConfigName, string> = {
 export default function App() {
   const [adminToken, setAdminToken] = useState(() => loadStoredToken());
   const [tab, setTab] = useState<AdminTab>('frontier');
+  const [tourRun, setTourRun] = useState(0);
 
   return (
     <main className="ol-admin">
@@ -86,7 +89,17 @@ export default function App() {
           <span className="ol-admin-tag">Admin</span>
         </h1>
         <TokenBar adminToken={adminToken} onChange={setAdminToken} />
+        <button
+          type="button"
+          className="ol-button ol-button-secondary"
+          onClick={() => {
+            setTourRun((n) => n + 1);
+          }}
+        >
+          Take a tour
+        </button>
       </GlassPanel>
+      <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-admin" />
       <nav aria-label="Admin sections" className="flex flex-wrap gap-ol-s my-ol-m">
         {TABS.map((entry) => (
           <button

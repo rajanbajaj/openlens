@@ -892,3 +892,71 @@ body {
     animation: none;
   }
 }
+
+/* ---- Guided onboarding tour ----
+ * Flat veil + tooltip reusing only existing --ol-* accent tokens.
+ * No animation anywhere (reduced-motion safe by construction).
+ */
+
+.ol-tour-veil {
+  position: fixed;
+  inset: 0;
+  background: rgb(32 33 36 / 0.45);
+  pointer-events: none;
+  z-index: 60;
+}
+
+.ol-tour-target {
+  position: relative;
+  z-index: 61;
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+  border-radius: var(--ol-radius-s);
+}
+
+.ol-tour-tooltip {
+  position: fixed;
+  z-index: 62;
+  width: 20rem;
+  max-width: calc(100vw - 1rem);
+  background: var(--ol-paper);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-m);
+  padding: var(--ol-space-m);
+  pointer-events: auto;
+}
+
+.ol-tour-title {
+  margin: 0 0 var(--ol-space-xs);
+  font-size: var(--ol-font-size-m);
+  font-weight: 700;
+  color: var(--ol-ink);
+}
+
+.ol-tour-body {
+  margin: 0 0 var(--ol-space-s);
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-tour-progress {
+  margin: 0 0 var(--ol-space-s);
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-tour-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--ol-space-s);
+}
+
+.ol-tour-trigger {
+  margin-top: var(--ol-space-s);
+}
+
+.ol-header-inner .ol-tour-trigger {
+  margin-top: 0;
+  margin-left: auto;
+  flex: 0 0 auto;
+}

@@ -787,3 +787,74 @@ body::before {
     animation: none;
   }
 }
+
+/* ---- Guided onboarding tour ----
+ * Dim veil (click-through) plus a fixed tooltip near the highlighted
+ * target. Reuses only existing --ol-* tokens; no animation.
+ */
+
+.ol-tour-target {
+  position: relative;
+  z-index: 30;
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+  border-radius: var(--ol-radius-m);
+}
+
+.ol-tour-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: rgb(16 24 40 / 0.45);
+}
+
+.ol-tour-tooltip {
+  z-index: 40;
+  pointer-events: auto;
+  max-width: 20rem;
+  background: var(--ol-paper);
+  color: var(--ol-ink);
+  border: 1px solid var(--ol-accent);
+  border-radius: var(--ol-radius-m);
+  box-shadow: var(--ol-shadow);
+  padding: var(--ol-space-m);
+}
+
+.ol-tour-tooltip-above {
+  transform: translateY(-100%);
+}
+
+.ol-tour-title {
+  margin: 0 0 var(--ol-space-xs);
+  font-size: var(--ol-font-size-m);
+  font-weight: 700;
+}
+
+.ol-tour-body {
+  margin: 0 0 var(--ol-space-s);
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-tour-progress {
+  margin: 0 0 var(--ol-space-s);
+  font-size: var(--ol-font-size-s);
+  color: var(--ol-ink-soft);
+}
+
+.ol-tour-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ol-space-s);
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ol-tour-tooltip,
+  .ol-tour-tooltip-above,
+  .ol-tour-target {
+    animation: none;
+    transition: none;
+  }
+}
