@@ -40,6 +40,16 @@ export interface SearchFormProps {
 /** Queries shorter than this never fetch: silence over tiny indexes. */
 const SUGGEST_MIN_LENGTH = 2;
 
+/**
+ * Demo kill switch: as-you-type suggestions are off by default (too
+ * buggy for the demo) — the form submits the typed query directly.
+ * Re-enable with `VITE_ENABLE_SUGGEST=true`; the
+ * debounce/abort/stale-guard machinery below stays intact. The test
+ * harness enables it (see `src/test-setup.ts`) so the suggestion
+ * machinery keeps its coverage while the demo stays quiet.
+ */
+const SUGGEST_ENABLED = import.meta.env.VITE_ENABLE_SUGGEST === 'true';
+
 const SUGGEST_LIST_ID = 'openlens-suggest-listbox';
 
 /**
@@ -106,12 +116,13 @@ export default function SearchForm({
   );
 
   // Debounced, cancellable suggestion fetch owned by the form.
+  // Skipped entirely while SUGGEST_ENABLED is false (demo kill switch).
   useEffect(() => {
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    if (value.trim().length < SUGGEST_MIN_LENGTH) {
+    if (!SUGGEST_ENABLED || value.trim().length < SUGGEST_MIN_LENGTH) {
       abortRef.current?.abort();
       abortRef.current = null;
       setSuggestions([]);
