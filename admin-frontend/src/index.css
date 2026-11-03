@@ -947,6 +947,16 @@ body::before {
   font-size: 0.95rem;
 }
 
+/* Long domain/feed lists: bounded scroll box instead of a chip wall. */
+.ol-domain-box-list {
+  max-height: 11rem;
+  overflow-y: auto;
+  border: 1px solid var(--ol-line);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: rgb(255 255 255 / 0.4);
+}
+
 /* Domain rows: identity on the first line, actions wrap below. */
 .ol-domain-row {
   display: flex;

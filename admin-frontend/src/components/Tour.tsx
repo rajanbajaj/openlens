@@ -191,6 +191,11 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
       node.classList.remove(TARGET_CLASS);
     });
     if (el) {
+      const disclosure = el.closest('details');
+      if (disclosure instanceof HTMLDetailsElement && !disclosure.open) {
+        // The tour opens accordions on demand instead of skipping them.
+        disclosure.open = true;
+      }
       el.classList.add(TARGET_CLASS);
       if (typeof el.scrollIntoView === 'function') {
         el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });

@@ -788,6 +788,30 @@ def test_clear_sweeps_reaped_orphans(
     assert _row_statuses(db_path) == {}
 
 
+def test_enqueue_seeds_accepts_without_touching_phase(client: TestClient) -> None:
+    paused = client.post("/api/v1/frontier/pause")
+    assert paused.status_code == 200
+    assert paused.json()["paused"] is True
+    resp = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a", "  "], "priority": 3},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"enqueued": 1}
+    # Still paused: seeds never resume, never replace the queue.
+    status = client.get("/api/v1/frontier/status").json()
+    assert status["paused"] is True
+    assert status["checkpoint"]["phase"] == "paused"
+
+
+def test_enqueue_seeds_validates_priority(client: TestClient) -> None:
+    resp = client.post("/api/v1/frontier/seeds", json={"seeds": [], "priority": "high"})
+    assert resp.status_code == 422
+    empty = client.post("/api/v1/frontier/seeds", json={"seeds": []})
+    assert empty.status_code == 200
+    assert empty.json() == {"enqueued": 0}
+
+
 def test_resume_with_seeds_replaces_queue(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/frontier/resume", json={"seeds": ["https://example.com/a", "  "]}

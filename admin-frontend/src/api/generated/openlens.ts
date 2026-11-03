@@ -27,6 +27,7 @@ import type {
   FrontierDomainPrioritySchema,
   FrontierDomainsActionSchema,
   FrontierDomainsResultSchema,
+  FrontierEnqueueSeedsResponse,
   FrontierFailedApiV1FrontierFailedGetParams,
   FrontierFailedDomainListSchema,
   FrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetParams,
@@ -37,6 +38,7 @@ import type {
   FrontierQueuedDomainUrlsApiV1FrontierQueuedDomainsDomainUrlsGetParams,
   FrontierQueuedDomainsApiV1FrontierQueuedDomainsGetParams,
   FrontierResumeSchema,
+  FrontierSeedsSchema,
   FrontierSettingsResponseSchema,
   FrontierSettingsSchema,
   FrontierStatusSchema,
@@ -1625,6 +1627,85 @@ export const frontierResumeApiV1FrontierResumePost = async (
     status: res.status,
     headers: res.headers,
   } as frontierResumeApiV1FrontierResumePostResponse;
+};
+
+export type frontierEnqueueSeedsApiV1FrontierSeedsPostResponse200 = {
+  data: FrontierEnqueueSeedsResponse;
+  status: 200;
+};
+
+export type frontierEnqueueSeedsApiV1FrontierSeedsPostResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierEnqueueSeedsApiV1FrontierSeedsPostResponseSuccess =
+  frontierEnqueueSeedsApiV1FrontierSeedsPostResponse200 & {
+    headers: Headers;
+  };
+export type frontierEnqueueSeedsApiV1FrontierSeedsPostResponseError =
+  frontierEnqueueSeedsApiV1FrontierSeedsPostResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierEnqueueSeedsApiV1FrontierSeedsPostResponse =
+  | frontierEnqueueSeedsApiV1FrontierSeedsPostResponseSuccess
+  | frontierEnqueueSeedsApiV1FrontierSeedsPostResponseError;
+
+export const getFrontierEnqueueSeedsApiV1FrontierSeedsPostUrl = () => {
+  return `/api/v1/frontier/seeds`;
+};
+
+/**
+ * Enqueue seed URLs without touching crawl phase.
+ *
+ * Admin-only: seed URLs choose what gets crawled, so untrusted
+ * callers must not set them. Unlike resume, this never replaces the
+ * in-memory queue and never pauses or resumes — running crawlers
+ * pick the seeds up through the normal durable queue (Kafka, store
+ * fallback). Explicit seeds refetch even when already finished once.
+ * @summary Frontier Enqueue Seeds
+ */
+export const frontierEnqueueSeedsApiV1FrontierSeedsPost = async (
+  frontierSeedsSchema: FrontierSeedsSchema,
+  options?: RequestInit,
+): Promise<frontierEnqueueSeedsApiV1FrontierSeedsPostResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit['headers']>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getFrontierEnqueueSeedsApiV1FrontierSeedsPostUrl(), {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(frontierSeedsSchema),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierEnqueueSeedsApiV1FrontierSeedsPostResponse['data'] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierEnqueueSeedsApiV1FrontierSeedsPostResponse;
 };
 
 export type createCrawlRequestApiV1CrawlRequestsPostResponse201 = {

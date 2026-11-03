@@ -38,6 +38,7 @@ def _mutation_calls(client: TestClient) -> list[tuple[str, str, dict]]:
     return [
         ("POST", "/api/v1/frontier/pause", {}),
         ("POST", "/api/v1/frontier/resume", {"seeds": ["https://example.com/a"]}),
+        ("POST", "/api/v1/frontier/seeds", {"seeds": ["https://example.com/a"]}),
         ("POST", "/api/v1/frontier/clear", {}),
         ("PUT", "/api/v1/frontier/settings", {"max_pages": 5}),
         ("PUT", "/api/v1/admin/config/query", {"body": {"providers": {}}}),

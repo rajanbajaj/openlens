@@ -377,7 +377,15 @@ def test_ordered_postgres_schema_migrates_before_indexing() -> None:
         s for s in rest[:first_index] if "CREATE TABLE" not in s.upper()
     ]
     assert pre_index_non_tables
-    assert all("ADD COLUMN" in s.upper() for s in pre_index_non_tables)
+    # Column adds come first; the domain backfill UPDATE is the one
+    # deliberate exception — it must run before CREATE INDEX so the
+    # index builds over backfilled data instead of being maintained
+    # through a 400k-row mass update.
+    assert all(
+        "ADD COLUMN" in s.upper()
+        or (s.lstrip().upper().startswith("UPDATE") and "SET DOMAIN" in s.upper())
+        for s in pre_index_non_tables
+    )
     assert all(
         s.lstrip().upper().startswith("CREATE INDEX") for s in rest[first_index:]
     )

@@ -8,6 +8,7 @@ import {
   frontierAdminHeaders,
   frontierLiveUrl,
   pauseFrontier,
+  enqueueSeeds,
   resumeFrontier,
   saveAdminConfig,
   saveFrontierSettings,
@@ -123,6 +124,26 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
       seeds: ['https://example.com'],
       priority: 6,
+    });
+  });
+
+  it('enqueueSeeds posts to the seeds endpoint with token and priority', async () => {
+    const { fetchImpl, calls } = captureFetch({ enqueued: 3 });
+    const accepted = await enqueueSeeds(['https://example.com'], fetchImpl, 'secret', 6);
+    expect(calls[0][0]).toContain('/api/v1/frontier/seeds');
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      seeds: ['https://example.com'],
+      priority: 6,
+    });
+    expect(headerOf(calls[0])['X-Admin-Token']).toBe('secret');
+    expect(accepted.enqueued).toBe(3);
+  });
+
+  it('enqueueSeeds omits priority when blank', async () => {
+    const { fetchImpl, calls } = captureFetch({ enqueued: 1 });
+    await enqueueSeeds(['https://example.com/x'], fetchImpl, 'secret');
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      seeds: ['https://example.com/x'],
     });
   });
 

@@ -216,6 +216,59 @@ describe('FrontierDrawer live stats and submission feedback', () => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Resumed with 1 seed(s).');
     });
   });
+
+  it('submits seeds without resuming the crawl', async () => {
+    MockSocket.instances = [];
+    let seedsCalls = 0;
+    let resumeCalls = 0;
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/seeds')) {
+        seedsCalls += 1;
+        return { enqueued: 2 };
+      }
+      if (url.includes('/api/v1/frontier/resume')) resumeCalls += 1;
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-seeds'), {
+      target: { value: 'https://example.com/a\nhttps://example.com/b\n' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Enqueued 2 seed(s) — crawlers pick them up without interruption.',
+      );
+    });
+    expect(seedsCalls).toBe(1);
+    expect(resumeCalls).toBe(0);
+  });
+
+  it('refuses to submit with no seeds', async () => {
+    MockSocket.instances = [];
+    let seedsCalls = 0;
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/seeds')) seedsCalls += 1;
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Add at least one seed URL first.');
+    });
+    expect(seedsCalls).toBe(0);
+  });
 });
 
 describe('FrontierDrawer settings form', () => {

@@ -19,6 +19,7 @@ import type {
   FeedbackSummary,
   FrontierDiscovery,
   FrontierDomainsResult,
+  FrontierEnqueueSeedsResponse,
   FrontierFailedDomainList,
   FrontierFailedList,
   FrontierQueuedDomainList,
@@ -277,6 +278,14 @@ export function isFrontierSettingsResponse(value: unknown): value is FrontierSet
     typeof settings.refresh_after_days === 'number' &&
     typeof settings.discovery_interval_s === 'number'
   );
+}
+
+/** POST /api/v1/frontier/seeds response shape. */
+export function isFrontierEnqueueSeedsResponse(
+  value: unknown,
+): value is FrontierEnqueueSeedsResponse {
+  if (!isRecord(value)) return false;
+  return typeof value.enqueued === 'number';
 }
 
 /** Live workers, or `[]` when absent or malformed. */

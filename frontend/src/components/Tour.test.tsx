@@ -129,6 +129,18 @@ describe('Tour', () => {
     });
   });
 
+  it('opens a closed accordion to reach its target', async () => {
+    const host = document.createElement('div');
+    host.innerHTML =
+      '<details><summary>Section</summary><div data-testid="alpha">alpha</div></details>';
+    document.body.appendChild(host);
+    render(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    await waitFor(() => {
+      expect(screen.getByText('Alpha title')).toBeInTheDocument();
+    });
+    expect(host.querySelector('details')?.open).toBe(true);
+  });
+
   it('pauses on a gate step until the awaited view mounts', async () => {
     const gateSteps: TourStep[] = [
       { target: 'alpha', title: 'Alpha title', body: 'Alpha body' },

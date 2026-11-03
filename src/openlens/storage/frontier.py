@@ -903,6 +903,56 @@ def _skip_domain_like_patterns(domain: str) -> tuple[str, ...]:
     )
 
 
+#: Rows rewritten per statement by domain flushes. Small transactions
+#: keep a flush from holding row locks (and blocking crawler writes)
+#: for the whole table at once.
+_FLUSH_CHUNK_SIZE = 1000
+
+#: Advisory-lock namespace for domain flushes; one lock per normalized
+#: domain, always taken in sorted-target order so concurrent flushes
+#: cannot deadlock each other.
+_FLUSH_LOCK_PREFIX = "openlens:flush:"
+
+
+def _domain_of_url(url: Any) -> str | None:
+    """Lowercased host of ``url`` with any port stripped.
+
+    Scheme-agnostic (``ftp://host/x`` yields ``host``), matching the
+    host semantics of :func:`skip_url_matches`; ``None`` when the URL
+    has no usable host. Stored in ``frontier_queue.domain`` at insert
+    time so flushes match by equality instead of full-table ``LIKE``.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url.strip()).hostname or "").lower()
+    except ValueError:
+        return None
+    return host or None
+
+
+def _domain_match_condition(placeholder: str) -> str:
+    """``WHERE`` fragment matching stored ``domain`` exactly or by subdomain.
+
+    ``placeholder`` is the backend's bound-parameter marker (``%s`` for
+    Postgres, ``?`` for SQLite); the leading ``%.`` keeps subdomains
+    covered without a leading wildcard over the whole URL. Static SQL —
+    only the table name is interpolated by callers.
+    """
+    return f"(domain = {placeholder} OR domain LIKE '%.' || {placeholder} ESCAPE '\\')"
+
+
+#: Host extraction for the one-time Postgres ``domain`` backfill.
+#: Mirrors :func:`_domain_of_url` in SQL: scheme-agnostic, port
+#: stripped, ``NULL`` when the URL carries no host.
+_PG_DOMAIN_BACKFILL_EXPR = (
+    "NULLIF(split_part(lower(split_part(split_part(url, '://', 2), '/', 1)), "
+    "':', 1), '')"
+)
+
+
 #: Coordination columns added to ``frontier_queue`` (also applied to
 #: pre-existing databases via :func:`sqlite_frontier_coordination_migrations`).
 _SQLITE_COORD_COLUMNS = (
@@ -954,6 +1004,12 @@ def sqlite_frontier_coordination_migrations() -> list[str]:
         # coordination columns exist.
         "CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"
         " ON frontier_queue(status, discovered_at)",
+        # Domain flushes (skip_queued_domains ... match the stored
+        # `domain` column by equality instead of full-table LIKE).
+        # Same legacy-file reasoning: backfilled in
+        # _ensure_sqlite_coordination before this runs.
+        "CREATE INDEX IF NOT EXISTS idx_frontier_status_domain"
+        " ON frontier_queue(status, domain)",
     ]
     return stmts
 
@@ -973,6 +1029,21 @@ def _ensure_sqlite_coordination(conn: sqlite3.Connection) -> None:
     for name, decl in _SQLITE_COORD_COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE frontier_queue ADD COLUMN {name} {decl}")  # noqa: S608
+    if "domain" not in existing:
+        conn.execute("ALTER TABLE frontier_queue ADD COLUMN domain TEXT")
+    if (
+        conn.execute(
+            "SELECT 1 FROM frontier_queue WHERE domain IS NULL LIMIT 1"
+        ).fetchone()
+        is not None
+    ):
+        for row in conn.execute(
+            "SELECT rowid, url FROM frontier_queue WHERE domain IS NULL"
+        ).fetchall():
+            conn.execute(
+                "UPDATE frontier_queue SET domain = ? WHERE rowid = ?",
+                (_domain_of_url(row["url"]), row["rowid"]),
+            )
     for stmt in sqlite_frontier_coordination_migrations()[len(_SQLITE_COORD_COLUMNS) :]:
         conn.execute(stmt)
 
@@ -995,7 +1066,8 @@ CREATE TABLE IF NOT EXISTS frontier_queue (
     owner TEXT,
     leased_at TEXT,
     heartbeat_at TEXT,
-    lease_ttl_s INTEGER NOT NULL DEFAULT 120
+    lease_ttl_s INTEGER NOT NULL DEFAULT 120,
+    domain TEXT
 );
 CREATE TABLE IF NOT EXISTS crawl_workers (
     worker_id TEXT PRIMARY KEY,
@@ -1062,7 +1134,8 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         " owner TEXT NULL,"
         " leased_at TIMESTAMPTZ NULL,"
         " heartbeat_at TIMESTAMPTZ NULL,"
-        f" lease_ttl_s INTEGER NOT NULL DEFAULT {DEFAULT_LEASE_TTL_S}"
+        f" lease_ttl_s INTEGER NOT NULL DEFAULT {DEFAULT_LEASE_TTL_S},"
+        " domain TEXT NULL"
         ")",
         f"CREATE TABLE IF NOT EXISTS {q}.crawl_workers ("
         "worker_id TEXT PRIMARY KEY,"
@@ -1108,6 +1181,8 @@ def postgres_frontier_ddl(schema: str = "public") -> list[str]:
         " (status, priority DESC, depth ASC, discovered_at ASC)",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"
         f" ON {q}.frontier_queue (status, discovered_at)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_status_domain"
+        f" ON {q}.frontier_queue (status, domain)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]
@@ -1135,6 +1210,11 @@ def postgres_frontier_coordination_migrations(
         f" DEFAULT {DEFAULT_LEASE_TTL_S}",
         f"ALTER TABLE {q}.frontier_queue"  # noqa: S608
         " ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0",
+        f"ALTER TABLE {q}.frontier_queue"  # noqa: S608
+        " ADD COLUMN IF NOT EXISTS domain TEXT",
+        f"UPDATE {q}.frontier_queue SET domain = "  # noqa: S608
+        + _PG_DOMAIN_BACKFILL_EXPR
+        + " WHERE domain IS NULL",
         f"CREATE TABLE IF NOT EXISTS {q}.crawl_workers ("  # noqa: S608
         "worker_id TEXT PRIMARY KEY,"
         " crawl_id TEXT NOT NULL DEFAULT 'default',"
@@ -1162,6 +1242,8 @@ def postgres_frontier_coordination_migrations(
         " (status, priority DESC, depth ASC, discovered_at ASC)",
         f"CREATE INDEX IF NOT EXISTS idx_frontier_queued_discovered"  # noqa: S608
         f" ON {q}.frontier_queue (status, discovered_at)",
+        f"CREATE INDEX IF NOT EXISTS idx_frontier_status_domain"  # noqa: S608
+        f" ON {q}.frontier_queue (status, domain)",
         f"CREATE INDEX IF NOT EXISTS idx_crawl_requests_status"  # noqa: S608
         f" ON {q}.crawl_requests (status, id)",
     ]
@@ -1376,9 +1458,15 @@ class SqliteFrontierStore(FrontierStore):
             with self._lock, self._conn:
                 cursor = self._conn.execute(
                     "INSERT OR IGNORE INTO frontier_queue"
-                    " (url, depth, status, parent_url, priority)"
-                    " VALUES (?, ?, 'queued', ?, ?)",
-                    (norm, depth, parent_url, prio if prio is not None else 0),
+                    " (url, depth, status, parent_url, priority, domain)"
+                    " VALUES (?, ?, 'queued', ?, ?, ?)",
+                    (
+                        norm,
+                        depth,
+                        parent_url,
+                        prio if prio is not None else 0,
+                        _domain_of_url(norm),
+                    ),
                 )
                 if cursor.rowcount == 1:
                     return True
@@ -1524,29 +1612,39 @@ class SqliteFrontierStore(FrontierStore):
     def skip_queued_domains(self, domains: Any) -> int:
         """Bulk-skip ``queued`` rows from ``domains`` (exact+subdomain).
 
-        One ``UPDATE`` per normalized domain (malformed entries ignored,
-        never fatal); each moved row carries a ``last_error`` reason
-        naming its domain. Returns the total number of rows moved.
+        Matches the stored ``domain`` column — exact host or
+        ``LIKE '%.<domain>'`` for subdomains — under the
+        ``(status, domain)`` index instead of scanning URLs with
+        ``LIKE``. Rows move in ``_FLUSH_CHUNK_SIZE`` batches (one
+        transaction each) so concurrent crawlers interleave between
+        commits; each moved row carries a ``last_error`` reason naming
+        its domain. Malformed entries ignored, never fatal. Returns the
+        total number of rows moved.
         """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
+        match = _domain_match_condition("?")
+        statement = (
+            "UPDATE frontier_queue SET status = 'skipped',"  # noqa: S608
+            " last_error = ? WHERE status = 'queued'"
+            " AND rowid IN (SELECT rowid FROM frontier_queue"
+            f" WHERE status = 'queued' AND {match} LIMIT ?)"
+        )
         total = 0
         try:
-            with self._lock, self._conn:
-                for domain in targets:
-                    patterns = _skip_domain_like_patterns(domain)
-                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
-                    statement = (
-                        "UPDATE frontier_queue SET status = 'skipped',"  # noqa: S608
-                        " last_error = ? WHERE status = 'queued'"
-                        f" AND ({condition})"
-                    )
-                    cursor = self._conn.execute(
-                        statement,
-                        (f"skipped: domain {domain}", *patterns),
-                    )
-                    total += cursor.rowcount
+            for domain in targets:
+                reason = f"skipped: domain {domain}"
+                while True:
+                    with self._lock, self._conn:
+                        cursor = self._conn.execute(
+                            statement,
+                            (reason, domain, domain, _FLUSH_CHUNK_SIZE),
+                        )
+                        moved = cursor.rowcount
+                        total += moved
+                    if moved < _FLUSH_CHUNK_SIZE:
+                        break
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to skip queued domains: {exc}",
@@ -2357,27 +2455,35 @@ class SqliteFrontierStore(FrontierStore):
     def requeue_failed_domains(self, domains: Any) -> int:
         """Revive ``failed`` rows from ``domains`` (exact+subdomain).
 
-        One ``UPDATE`` per normalized domain (malformed entries
-        ignored, never fatal); attempts reset to 0 with owner/lease
-        fields and the error cleared, mirroring :meth:`reseed`.
+        Matches the stored ``domain`` column under the
+        ``(status, domain)`` index in ``_FLUSH_CHUNK_SIZE`` batches;
+        attempts reset to 0 with owner/lease fields and the error
+        cleared, mirroring :meth:`reseed`. Malformed entries ignored,
+        never fatal.
         """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
+        match = _domain_match_condition("?")
+        statement = (
+            "UPDATE frontier_queue SET status = 'queued',"  # noqa: S608
+            " attempts = 0, last_error = NULL"
+            " WHERE status = 'failed'"
+            " AND rowid IN (SELECT rowid FROM frontier_queue"
+            f" WHERE status = 'failed' AND {match} LIMIT ?)"
+        )
         total = 0
         try:
-            with self._lock, self._conn:
-                for domain in targets:
-                    patterns = _skip_domain_like_patterns(domain)
-                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
-                    statement = (
-                        "UPDATE frontier_queue SET status = 'queued',"  # noqa: S608
-                        " attempts = 0, last_error = NULL"
-                        " WHERE status = 'failed'"
-                        f" AND ({condition})"
-                    )
-                    cursor = self._conn.execute(statement, (*patterns,))
-                    total += cursor.rowcount
+            for domain in targets:
+                while True:
+                    with self._lock, self._conn:
+                        cursor = self._conn.execute(
+                            statement, (domain, domain, _FLUSH_CHUNK_SIZE)
+                        )
+                        moved = cursor.rowcount
+                        total += moved
+                    if moved < _FLUSH_CHUNK_SIZE:
+                        break
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to requeue failed domains: {exc}",
@@ -2389,24 +2495,33 @@ class SqliteFrontierStore(FrontierStore):
     def purge_failed_domains(self, domains: Any) -> int:
         """Delete ``failed`` rows from ``domains`` (exact+subdomain).
 
-        One ``DELETE`` per normalized domain (malformed entries
-        ignored, never fatal). Queued/active/done rows are untouched.
+        Matches the stored ``domain`` column under the
+        ``(status, domain)`` index in ``_FLUSH_CHUNK_SIZE`` batches.
+        Malformed entries ignored, never fatal. Queued/active/done
+        rows are untouched.
         """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
+        match = _domain_match_condition("?")
+        statement = (
+            "DELETE FROM frontier_queue"  # noqa: S608
+            " WHERE status = 'failed'"
+            " AND rowid IN (SELECT rowid FROM frontier_queue"
+            f" WHERE status = 'failed' AND {match} LIMIT ?)"
+        )
         total = 0
         try:
-            with self._lock, self._conn:
-                for domain in targets:
-                    patterns = _skip_domain_like_patterns(domain)
-                    condition = " OR ".join(["url LIKE ? ESCAPE '\\'"] * len(patterns))
-                    cursor = self._conn.execute(
-                        "DELETE FROM frontier_queue"  # noqa: S608
-                        f" WHERE status = 'failed' AND ({condition})",
-                        (*patterns,),
-                    )
-                    total += cursor.rowcount
+            for domain in targets:
+                while True:
+                    with self._lock, self._conn:
+                        cursor = self._conn.execute(
+                            statement, (domain, domain, _FLUSH_CHUNK_SIZE)
+                        )
+                        moved = cursor.rowcount
+                        total += moved
+                    if moved < _FLUSH_CHUNK_SIZE:
+                        break
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to purge failed domains: {exc}",
@@ -2913,14 +3028,15 @@ class PostgresFrontierStore(FrontierStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         f"INSERT INTO {table}"  # noqa: S608
-                        " (url, depth, status, parent_url, priority)"
-                        " VALUES (%s, %s, 'queued', %s, %s)"
+                        " (url, depth, status, parent_url, priority, domain)"
+                        " VALUES (%s, %s, 'queued', %s, %s, %s)"
                         " ON CONFLICT (url) DO NOTHING",
                         (
                             norm,
                             max(0, int(depth or 0)),
                             parent_url,
                             prio if prio is not None else 0,
+                            _domain_of_url(norm),
                         ),
                     )
                     inserted = bool(cur.rowcount == 1)
@@ -3067,36 +3183,70 @@ class PostgresFrontierStore(FrontierStore):
             or 0
         )
 
+    def _flush_domain_locked(
+        self, statement: str, domain: str, params: tuple[Any, ...]
+    ) -> int:
+        """Run one domain flush in ``_FLUSH_CHUNK_SIZE`` batches, serialized.
+
+        Takes a session-level advisory lock for ``domain`` (released in
+        ``finally``), then commits per chunk so crawler writes interleave
+        instead of queueing behind one giant transaction. Domains are
+        locked by callers in sorted order — concurrent flushes over
+        different domain sets can never deadlock.
+        """
+        total = 0
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_lock(hashtext(%s))",
+                    (f"{_FLUSH_LOCK_PREFIX}{domain}",),
+                )
+                try:
+                    while True:
+                        cur.execute(statement, (*params, _FLUSH_CHUNK_SIZE))
+                        moved = cur.rowcount or 0
+                        total += moved
+                        conn.commit()
+                        if moved < _FLUSH_CHUNK_SIZE:
+                            break
+                finally:
+                    with contextlib.suppress(Exception):
+                        cur.execute(
+                            "SELECT pg_advisory_unlock(hashtext(%s))",
+                            (f"{_FLUSH_LOCK_PREFIX}{domain}",),
+                        )
+        return total
+
     def skip_queued_domains(self, domains: Any) -> int:
         """Bulk-skip ``queued`` rows from ``domains`` (exact+subdomain).
 
-        Postgres mirror of the SQLite implementation: one ``UPDATE``
-        per normalized domain (malformed entries ignored, never fatal)
-        with a ``last_error`` reason naming the domain. Patterns are
-        bound parameters with ``ESCAPE '\\'``; only the validated table
-        name is interpolated. Returns the total number of rows moved.
+        Matches the stored ``domain`` column — exact host or
+        ``%.<domain>`` — under the ``(status, domain)`` index instead
+        of scanning the table with URL ``LIKE`` patterns. One advisory
+        lock per domain (sorted order) serializes concurrent flushes;
+        rows move in ``_FLUSH_CHUNK_SIZE`` batches with a
+        ``last_error`` reason naming the domain. Malformed entries
+        ignored, never fatal. Returns the total number of rows moved.
         """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
         table = self._qualified("frontier_queue")
+        match = _domain_match_condition("%s")
+        statement = (
+            f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
+            " last_error = %s WHERE status = 'queued'"
+            " AND ctid = ANY (SELECT ctid"
+            f" FROM {table} WHERE status = 'queued' AND {match} LIMIT %s)"
+        )
         total = 0
         try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    for domain in targets:
-                        patterns = _skip_domain_like_patterns(domain)
-                        condition = " OR ".join(
-                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
-                        )
-                        cur.execute(
-                            f"UPDATE {table} SET status = 'skipped',"  # noqa: S608
-                            " last_error = %s WHERE status = 'queued'"
-                            f" AND ({condition})",
-                            (f"skipped: domain {domain}", *patterns),
-                        )
-                        total += cur.rowcount or 0
-                conn.commit()
+            for domain in sorted(targets):
+                total += self._flush_domain_locked(
+                    statement,
+                    domain,
+                    (f"skipped: domain {domain}", domain, domain),
+                )
         except Exception as exc:
             raise ProviderError(
                 f"failed to skip queued domains: {exc}",
@@ -4031,32 +4181,27 @@ class PostgresFrontierStore(FrontierStore):
     def requeue_failed_domains(self, domains: Any) -> int:
         """Revive ``failed`` rows from ``domains`` (exact+subdomain).
 
-        Postgres mirror of the SQLite implementation: attempts reset
-        to 0 and the error clears (reseed semantics), so the rows
-        actually refetch.
+        Matches the stored ``domain`` column under the
+        ``(status, domain)`` index in ``_FLUSH_CHUNK_SIZE`` batches
+        behind the per-domain advisory lock; attempts reset to 0 and
+        the error clears (reseed semantics), so the rows refetch.
         """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
         table = self._qualified("frontier_queue")
+        match = _domain_match_condition("%s")
+        statement = (
+            f"UPDATE {table} SET status = 'queued',"  # noqa: S608
+            " attempts = 0, last_error = NULL"
+            " WHERE status = 'failed'"
+            " AND ctid = ANY (SELECT ctid"
+            f" FROM {table} WHERE status = 'failed' AND {match} LIMIT %s)"
+        )
         total = 0
         try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    for domain in targets:
-                        patterns = _skip_domain_like_patterns(domain)
-                        condition = " OR ".join(
-                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
-                        )
-                        cur.execute(
-                            f"UPDATE {table} SET status = 'queued',"  # noqa: S608
-                            " attempts = 0, last_error = NULL"
-                            " WHERE status = 'failed'"
-                            f" AND ({condition})",
-                            (*patterns,),
-                        )
-                        total += cur.rowcount or 0
-                conn.commit()
+            for domain in sorted(targets):
+                total += self._flush_domain_locked(statement, domain, (domain, domain))
         except Exception as exc:
             raise ProviderError(
                 f"failed to requeue failed domains: {exc}",
@@ -4066,27 +4211,27 @@ class PostgresFrontierStore(FrontierStore):
         return total
 
     def purge_failed_domains(self, domains: Any) -> int:
-        """Delete ``failed`` rows from ``domains`` (exact+subdomain)."""
+        """Delete ``failed`` rows from ``domains`` (exact+subdomain).
+
+        Matches the stored ``domain`` column under the
+        ``(status, domain)`` index in ``_FLUSH_CHUNK_SIZE`` batches
+        behind the per-domain advisory lock.
+        """
         targets = normalize_skip_domains(domains)
         if not targets:
             return 0
         table = self._qualified("frontier_queue")
+        match = _domain_match_condition("%s")
+        statement = (
+            f"DELETE FROM {table}"  # noqa: S608
+            " WHERE status = 'failed'"
+            " AND ctid = ANY (SELECT ctid"
+            f" FROM {table} WHERE status = 'failed' AND {match} LIMIT %s)"
+        )
         total = 0
         try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    for domain in targets:
-                        patterns = _skip_domain_like_patterns(domain)
-                        condition = " OR ".join(
-                            ["url LIKE %s ESCAPE '\\'"] * len(patterns)
-                        )
-                        cur.execute(
-                            f"DELETE FROM {table}"  # noqa: S608
-                            f" WHERE status = 'failed' AND ({condition})",
-                            (*patterns,),
-                        )
-                        total += cur.rowcount or 0
-                conn.commit()
+            for domain in sorted(targets):
+                total += self._flush_domain_locked(statement, domain, (domain, domain))
         except Exception as exc:
             raise ProviderError(
                 f"failed to purge failed domains: {exc}",

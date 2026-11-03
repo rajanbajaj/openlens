@@ -218,6 +218,12 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
       if (node !== el) node.classList.remove('ol-tour-target');
     });
     if (!el) return;
+    const disclosure = el.closest('details');
+    if (disclosure instanceof HTMLDetailsElement && !disclosure.open) {
+      // The tour opens accordions on demand instead of skipping them —
+      // the forced reflow below then measures the opened layout.
+      disclosure.open = true;
+    }
     el.classList.add('ol-tour-target');
     try {
       el.scrollIntoView({

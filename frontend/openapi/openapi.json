@@ -1094,6 +1094,48 @@
         }
       }
     },
+    "/api/v1/frontier/seeds": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Enqueue Seeds",
+        "description": "Enqueue seed URLs without touching crawl phase.\n\nAdmin-only: seed URLs choose what gets crawled, so untrusted\ncallers must not set them. Unlike resume, this never replaces the\nin-memory queue and never pauses or resumes \u2014 running crawlers\npick the seeds up through the normal durable queue (Kafka, store\nfallback). Explicit seeds refetch even when already finished once.",
+        "operationId": "frontier_enqueue_seeds_api_v1_frontier_seeds_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrontierSeedsSchema"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierEnqueueSeedsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/crawl-requests": {
       "post": {
         "tags": [
@@ -2669,6 +2711,20 @@
         "title": "FrontierDomainsResultSchema",
         "description": "Result of a domain-scoped failed-queue action."
       },
+      "FrontierEnqueueSeedsResponse": {
+        "properties": {
+          "enqueued": {
+            "type": "integer",
+            "title": "Enqueued"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enqueued"
+        ],
+        "title": "FrontierEnqueueSeedsResponse",
+        "description": "POST /api/v1/frontier/seeds response: seeds accepted to the queue."
+      },
       "FrontierFailedDomainListSchema": {
         "properties": {
           "domains": {
@@ -2914,6 +2970,32 @@
         "type": "object",
         "title": "FrontierResumeSchema",
         "description": "POST /api/v1/frontier/resume body: optional replacement seeds.\n\n`priority` applies to every seed in the call: higher values dequeue\nfirst (`ORDER BY priority DESC, depth ASC`). Omitted/`None` keeps\nwhatever the store already has (``0`` for new rows). Negative\nvalues deprioritize below the default."
+      },
+      "FrontierSeedsSchema": {
+        "properties": {
+          "seeds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Seeds"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FrontierSeedsSchema",
+        "description": "POST /api/v1/frontier/seeds body: URLs to enqueue, nothing else.\n\nSame seed shape as resume, but enqueue-only: no phase change, no\nin-memory queue replacement, no interruption to running crawlers \u2014\nseeds go to the durable queue (Kafka, store fallback) and refetch\neven when already finished once."
       },
       "FrontierSettingsResponseSchema": {
         "properties": {

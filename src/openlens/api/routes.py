@@ -43,7 +43,8 @@ from openlens.api.rate_limit import client_ip
 from openlens.api.schemas import AdminConfigDocResponseSchema, AdminConfigPutSchema
 from openlens.api.schemas import CrawlRequestListSchema, CrawlRequestSchema
 from openlens.api.schemas import CrawlRequestSubmitSchema
-from openlens.api.schemas import FrontierResumeSchema, FrontierSettingsResponseSchema
+from openlens.api.schemas import FrontierEnqueueSeedsResponse, FrontierResumeSchema
+from openlens.api.schemas import FrontierSeedsSchema, FrontierSettingsResponseSchema
 from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
 from openlens.api.schemas import (
     FrontierAutoTriageSchema,
@@ -2368,6 +2369,41 @@ def frontier_resume(
     return _overlay_store_status(
         _frontier_status_payload(app_config), _frontier_read_store(request)
     )
+
+
+@router.post("/frontier/seeds", response_model=FrontierEnqueueSeedsResponse)
+def frontier_enqueue_seeds(
+    body: FrontierSeedsSchema, request: Request
+) -> FrontierEnqueueSeedsResponse | JSONResponse:
+    """Enqueue seed URLs without touching crawl phase.
+
+    Admin-only: seed URLs choose what gets crawled, so untrusted
+    callers must not set them. Unlike resume, this never replaces the
+    in-memory queue and never pauses or resumes — running crawlers
+    pick the seeds up through the normal durable queue (Kafka, store
+    fallback). Explicit seeds refetch even when already finished once.
+    """
+    denied = _frontier_admin_response(request)
+    if denied is not None:
+        return denied
+    seeds = [seed.strip() for seed in body.seeds if seed.strip()]
+    app_config = getattr(request.app.state, "config", None)
+    _publish_seeds(app_config, seeds, priority=body.priority)
+    if seeds:
+        try:
+            store = _frontier_read_store(request)
+            if store is not None:
+                bulk = getattr(store, "reseed_many", None)
+                if callable(bulk):
+                    with suppress(Exception):
+                        bulk(seeds)
+                else:
+                    for seed in seeds:
+                        with suppress(Exception):
+                            store.reseed(seed)
+        except Exception as exc:
+            logger.warning("frontier seeds: store reseed failed: %s", exc)
+    return FrontierEnqueueSeedsResponse(enqueued=len(seeds))
 
 
 # -- user-requested crawl URLs (public submit, admin review) -------------

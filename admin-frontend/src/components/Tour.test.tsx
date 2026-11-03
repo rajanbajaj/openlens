@@ -133,6 +133,19 @@ describe('Tour guided onboarding', () => {
     });
   });
 
+  it('opens a closed accordion to reach its target', async () => {
+    const host = document.createElement('div');
+    host.innerHTML =
+      '<details><summary>Section</summary><section data-testid="tour-a">aaa</section></details>';
+    document.body.append(host);
+    const { rerender } = render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
+    rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'First stop' })).toBeInTheDocument();
+    });
+    expect(host.querySelector('details')?.open).toBe(true);
+  });
+
   it('pauses on a gate step until the awaited view mounts', async () => {
     const gateSteps: TourStep[] = [
       { target: 'tour-a', title: 'First stop', body: 'First body.' },

@@ -249,6 +249,11 @@ export interface FrontierStatus {
   discovery?: FrontierDiscovery | null;
 }
 
+/** POST /api/v1/frontier/seeds response body. */
+export interface FrontierEnqueueSeedsResponse {
+  enqueued: number;
+}
+
 /** Admin analytics overview: durable per-name counts over a window. */
 export interface AnalyticsCounts {
   days: number;

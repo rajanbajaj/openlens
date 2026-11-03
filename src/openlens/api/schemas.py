@@ -769,6 +769,36 @@ class FrontierResumeSchema(BaseModel):
         return value
 
 
+class FrontierSeedsSchema(BaseModel):
+    """POST /api/v1/frontier/seeds body: URLs to enqueue, nothing else.
+
+    Same seed shape as resume, but enqueue-only: no phase change, no
+    in-memory queue replacement, no interruption to running crawlers —
+    seeds go to the durable queue (Kafka, store fallback) and refetch
+    even when already finished once.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seeds: list[str] = Field(default_factory=list)
+    priority: int | None = Field(default=None)
+
+    @field_validator("priority")
+    @classmethod
+    def priority_must_be_int(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("priority must be an integer")
+        return value
+
+
+class FrontierEnqueueSeedsResponse(BaseModel):
+    """POST /api/v1/frontier/seeds response: seeds accepted to the queue."""
+
+    enqueued: int
+
+
 class AdminConfigPutSchema(BaseModel):
     """PUT /api/v1/admin/config/{doc} body: one config doc section.
 

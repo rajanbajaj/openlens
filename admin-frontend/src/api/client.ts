@@ -16,6 +16,7 @@ import {
   isErrorEnvelope,
   isFeedbackSummary,
   isFrontierDomainsResult,
+  isFrontierEnqueueSeedsResponse,
   isFrontierFailedDomainList,
   isFrontierFailedList,
   isFrontierQueuedDomainList,
@@ -56,6 +57,7 @@ import type {
   FeedbackRequest,
   FeedbackSummary,
   FrontierDomainsResult,
+  FrontierEnqueueSeedsResponse,
   FrontierFailedDomainList,
   FrontierFailedList,
   FrontierQueuedDomainList,
@@ -479,6 +481,40 @@ export async function resumeFrontier(
     );
   }
   return parseFrontier(response, isFrontierStatus);
+}
+
+/**
+ * Issue `POST {API_URL}/api/v1/frontier/seeds` with `seeds` to enqueue.
+ * Unlike resume this never touches crawl phase or the in-memory queue:
+ * running crawlers pick the seeds up through the durable queue without
+ * interruption. `priority`, when given, applies to every seed.
+ * Throws {@link SearchApiError} on failure.
+ * Pass `adminToken` when the backend sets
+ * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
+ */
+export async function enqueueSeeds(
+  seeds: string[],
+  fetchImpl: FetchImpl = fetch,
+  adminToken: string = '',
+  priority?: number,
+): Promise<FrontierEnqueueSeedsResponse> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${API_BASE_URL}/api/v1/frontier/seeds`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...frontierAdminHeaders(adminToken),
+      },
+      body: JSON.stringify(priority === undefined ? { seeds } : { seeds, priority }),
+    });
+  } catch (error) {
+    throw new SearchApiError(
+      'network_error',
+      error instanceof Error ? error.message : 'Network request failed.',
+    );
+  }
+  return parseFrontier(response, isFrontierEnqueueSeedsResponse);
 }
 
 /**

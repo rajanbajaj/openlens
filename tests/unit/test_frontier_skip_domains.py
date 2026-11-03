@@ -152,6 +152,82 @@ def test_sqlite_bulk_skip_leaves_active_and_done_rows() -> None:
         store.close()
 
 
+def test_domain_of_url_extracts_host() -> None:
+    assert frontier_mod._domain_of_url("https://Evil.Test:8080/a?x=1") == "evil.test"
+    assert frontier_mod._domain_of_url("http://sub.evil.test/") == "sub.evil.test"
+    assert frontier_mod._domain_of_url("ftp://files.test/x") == "files.test"
+    assert frontier_mod._domain_of_url("not a url") is None
+    assert frontier_mod._domain_of_url("mailto:foo@evil.test") is None
+    assert frontier_mod._domain_of_url("") is None
+    assert frontier_mod._domain_of_url(None) is None
+
+
+def test_sqlite_enqueue_stores_domain() -> None:
+    store = _sqlite_store()
+    try:
+        assert store.enqueue("https://Sub.Evil.Test:8080/a", 0) is True
+        with store._lock:
+            row = store._conn.execute("SELECT domain FROM frontier_queue").fetchone()
+        assert row["domain"] == "sub.evil.test"
+    finally:
+        store.close()
+
+
+def test_sqlite_legacy_rows_get_domain_backfill() -> None:
+    store = _sqlite_store()
+    try:
+        assert store.enqueue("https://evil.test/a", 0) is True
+        assert store.enqueue("https://sub.good.test/b", 0) is True
+        with store._lock:
+            store._conn.execute("UPDATE frontier_queue SET domain = NULL")
+        frontier_mod._ensure_sqlite_coordination(store._conn)
+        with store._lock:
+            rows = {
+                row["url"]: row["domain"]
+                for row in store._conn.execute(
+                    "SELECT url, domain FROM frontier_queue"
+                ).fetchall()
+            }
+        assert rows == {
+            "https://evil.test/a": "evil.test",
+            "https://sub.good.test/b": "sub.good.test",
+        }
+    finally:
+        store.close()
+
+
+def test_sqlite_flush_moves_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(frontier_mod, "_FLUSH_CHUNK_SIZE", 2)
+    store = _sqlite_store()
+    try:
+        for i in range(5):
+            assert store.enqueue(f"https://evil.test/{i}", 0) is True
+        assert store.skip_queued_domains(["evil.test"]) == 5
+        assert store.status_of("https://evil.test/4") == "skipped"
+    finally:
+        store.close()
+
+
+def test_sqlite_requeue_and_purge_use_domain_column() -> None:
+    store = _sqlite_store()
+    try:
+        assert store.enqueue("https://evil.test/a", 0) is True
+        assert store.enqueue("https://sub.evil.test/b", 0) is True
+        assert store.enqueue("https://good.test/c", 0) is True
+        with store._lock:
+            store._conn.execute(
+                "UPDATE frontier_queue SET status = 'failed',"
+                " attempts = 3, last_error = 'x'"
+            )
+        assert store.requeue_failed_domains(["evil.test"]) == 2
+        assert store.status_of("https://sub.evil.test/b") == "queued"
+        assert store.status_of("https://good.test/c") == "failed"
+        assert store.purge_failed_domains(["good.test"]) == 1
+        assert store.status_of("https://good.test/c") is None
+    finally:
+        store.close()
+
+
 # -- Postgres bulk-skip (fake-pool SQL capture) ------------------------------
 
 
@@ -159,9 +235,14 @@ class _FakeCursor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.rowcount = 0
+        self.rowcount_plan: list[int] = []
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self.executed.append((sql, params))
+        # Lock/unlock statements do not move rows; only the chunked
+        # UPDATE/DELETE consumes the next planned rowcount.
+        if self.rowcount_plan and sql.lstrip()[:6] in ("UPDATE", "DELETE"):
+            self.rowcount = self.rowcount_plan.pop(0)
 
     def __enter__(self) -> "_FakeCursor":
         return self
@@ -201,22 +282,31 @@ def _postgres_store(cursor: _FakeCursor) -> frontier_mod.PostgresFrontierStore:
     return store
 
 
-def test_postgres_bulk_skip_sql_matches_scheme_and_subdomains() -> None:
+def test_postgres_bulk_skip_sql_uses_domain_equality_with_lock() -> None:
     cursor = _FakeCursor()
     cursor.rowcount = 4
     store = _postgres_store(cursor)
     assert store.skip_queued_domains(["EVIL.test"]) == 4
-    assert len(cursor.executed) == 1
-    sql, params = cursor.executed[0]
-    assert "SET status = 'skipped'" in sql
-    assert "status = 'queued'" in sql
-    assert "LIKE" in sql and "ESCAPE" in sql
-    assert params[0] == "skipped: domain evil.test"
-    patterns = list(params[1:])
-    assert "%://evil.test" in patterns  # exact host, scheme-bound
-    assert "%://evil.test/%" in patterns
-    assert "%://%.evil.test" in patterns  # subdomain, scheme-bound
-    assert "%://%.evil.test/%" in patterns
+    # lock -> one chunked UPDATE -> unlock (4 < chunk size: single chunk).
+    assert len(cursor.executed) == 3
+    lock_sql, lock_params = cursor.executed[0]
+    assert "pg_advisory_lock" in lock_sql
+    assert lock_params == ("openlens:flush:evil.test",)
+    update_sql, update_params = cursor.executed[1]
+    assert "SET status = 'skipped'" in update_sql
+    assert "status = 'queued'" in update_sql
+    assert "domain = %s" in update_sql
+    assert "LIKE '%.' || %s" in update_sql
+    assert "url LIKE" not in update_sql
+    assert update_params == (
+        "skipped: domain evil.test",
+        "evil.test",
+        "evil.test",
+        1000,
+    )
+    unlock_sql, unlock_params = cursor.executed[2]
+    assert "pg_advisory_unlock" in unlock_sql
+    assert unlock_params == ("openlens:flush:evil.test",)
 
 
 def test_postgres_bulk_skip_sums_per_domain_and_skips_empty() -> None:
@@ -224,12 +314,63 @@ def test_postgres_bulk_skip_sums_per_domain_and_skips_empty() -> None:
     cursor.rowcount = 2
     store = _postgres_store(cursor)
     assert store.skip_queued_domains(["a.test", "b.test"]) == 4
-    assert len(cursor.executed) == 2
+    # lock + UPDATE + unlock per domain.
+    assert len(cursor.executed) == 6
     cursor2 = _FakeCursor()
     store2 = _postgres_store(cursor2)
     assert store2.skip_queued_domains([]) == 0
     assert store2.skip_queued_domains(None) == 0
     assert cursor2.executed == []
+
+
+def test_postgres_bulk_skip_locks_domains_in_sorted_order() -> None:
+    cursor = _FakeCursor()
+    cursor.rowcount = 0
+    store = _postgres_store(cursor)
+    assert store.skip_queued_domains(["z.test", "a.test", "m.test"]) == 0
+    locks = [params[0] for sql, params in cursor.executed if "pg_advisory_lock" in sql]
+    assert locks == [
+        "openlens:flush:a.test",
+        "openlens:flush:m.test",
+        "openlens:flush:z.test",
+    ]
+
+
+def test_postgres_bulk_skip_chunks_large_flushes() -> None:
+    cursor = _FakeCursor()
+    cursor.rowcount_plan = [1000, 1000, 3]
+    store = _postgres_store(cursor)
+    pool_conn = store._pool.get_nowait()
+    store._pool.put(pool_conn)
+    assert store.skip_queued_domains(["big.test"]) == 2003
+    updates = [sql for sql, _ in cursor.executed if sql.lstrip().startswith("UPDATE")]
+    assert len(updates) == 3
+    assert pool_conn.commits == 3  # one commit per chunk
+
+
+def test_postgres_purge_and_requeue_use_domain_equality() -> None:
+    cursor = _FakeCursor()
+    cursor.rowcount = 2
+    store = _postgres_store(cursor)
+    assert store.purge_failed_domains(["Evil.Test"]) == 2
+    lock_sql, _ = cursor.executed[0]
+    delete_sql, delete_params = cursor.executed[1]
+    assert "pg_advisory_lock" in lock_sql
+    assert delete_sql.lstrip().startswith("DELETE FROM")
+    assert "status = 'failed'" in delete_sql
+    assert "domain = %s" in delete_sql
+    assert "url LIKE" not in delete_sql
+    assert delete_params == ("evil.test", "evil.test", 1000)
+
+    cursor2 = _FakeCursor()
+    cursor2.rowcount = 1
+    store2 = _postgres_store(cursor2)
+    assert store2.requeue_failed_domains(["evil.test"]) == 1
+    requeue_sql, _ = cursor2.executed[1]
+    assert "attempts = 0" in requeue_sql
+    assert "status = 'failed'" in requeue_sql
+    assert "domain = %s" in requeue_sql
+    assert "url LIKE" not in requeue_sql
 
 
 def test_like_patterns_escape_metacharacters() -> None:
