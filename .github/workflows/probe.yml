@@ -1,0 +1,96 @@
+name: probe
+
+# Read-only production probe. Runs on the release server via the
+# self-hosted runner and prints diagnostics without changing
+# anything: container list, frontier status (queue/paused/settings),
+# kafka consumer lag, and recent backend log lines about seed
+# enqueueing. No restarts, no rebuilds, no deploys.
+#
+# Actions -> probe -> Run workflow, optionally passing `url` to
+# search the status payload for one seed (e.g. a URL you enqueued
+# and cannot find).
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL to look for in the frontier queue (empty = skip the lookup)."
+        required: false
+        default: ""
+
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, openlens-release]
+    timeout-minutes: 10
+    steps:
+      - name: Check out repo (compose file only)
+        uses: actions/checkout@v5
+
+      - name: Container list
+        working-directory: deploy/local
+        run: docker compose ps
+
+      - name: Frontier status summary
+        run: |
+          curl -fsS http://localhost:8000/api/v1/frontier/status -o /tmp/frontier-status.json
+          python3 - <<'EOF'
+          import json
+          body = json.load(open('/tmp/frontier-status.json'))
+          print('paused:', body.get('paused'))
+          print('queue_depth:', body.get('queue_depth'))
+          print('kafka_enabled:', body.get('kafka_enabled'))
+          print('kafka_lag_total:', body.get('kafka_lag_total'))
+          print('phase:', (body.get('checkpoint') or {}).get('phase'))
+          print('queue_rows_shown:', len(body.get('queue') or []))
+          for entry in (body.get('queue') or [])[:15]:
+              print('  queued:', entry.get('url'), '| priority:', entry.get('priority'), '| status:', entry.get('status'))
+          settings = body.get('settings') or {}
+          for key in ('skip_domains', 'allow_domains', 'deny_domains', 'max_pages'):
+              if key in settings:
+                  print(f'setting {key}:', settings[key])
+          EOF
+
+      - name: Look up seed URL
+        if: inputs.url != ''
+        run: |
+          python3 - "${{ inputs.url }}" <<'EOF'
+          import json, sys
+          want = sys.argv[1].strip().rstrip('/').lower()
+          body = json.load(open('/tmp/frontier-status.json'))
+          hits = [e for e in (body.get('queue') or []) if str(e.get('url', '')).rstrip('/').lower() == want]
+          print(f'seed rows matching {want!r}: {len(hits)} (of {body.get("queue_depth")} total queued)')
+          for entry in hits:
+              print(' ', entry)
+          EOF
+
+      - name: Backend effective queue config
+        working-directory: deploy/local
+        run: |
+          docker compose exec -T backend python -c "
+          from openlens.main import load_effective_config
+          from openlens.indexing.kafka_queue import kafka_section
+          config = load_effective_config() or {}
+          kafka = kafka_section(config)
+          print('kafka.enabled:', kafka.get('enabled'))
+          print('kafka.bootstrap_servers:', kafka.get('bootstrap_servers'))
+          print('kafka.topic:', kafka.get('topic'))
+          print('storage.backend:', (config.get('storage') or {}).get('backend'))
+          " || echo 'config probe unavailable'
+
+      - name: Kafka consumer lag
+        working-directory: deploy/local
+        run: |
+          docker compose exec -T kafka-1 /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:19092 --describe --group crawlers 2>/dev/null \
+            | head -30 || echo 'lag probe unavailable'
+
+      - name: Seed-related backend log lines
+        working-directory: deploy/local
+        run: |
+          docker compose logs --tail 2000 backend 2>/dev/null \
+            | grep -iE 'frontier (seeds|resume)|store enqueue failed|Kafka publish failed|seed queue' \
+            | tail -20 || echo 'no seed-related log lines in recent backend logs'
