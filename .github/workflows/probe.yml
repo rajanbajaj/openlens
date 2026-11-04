@@ -98,7 +98,7 @@ jobs:
             "SELECT url, status, priority, attempts, left(coalesce(last_error,''),120) AS err FROM public.frontier_queue WHERE url ILIKE '%developer.mozilla.org%/array/array%';"
           echo '--- documents matching the seed ---'
           docker compose exec -T postgres psql -U "$USER" -d "$DB" -c \
-            "SELECT left(url,120) AS url, left(title,80) AS title FROM public.documents WHERE url ILIKE '%developer.mozilla.org%/array/array%' LIMIT 5;"
+            "SELECT left(url,120) AS url, left(title,80) AS title, length(content) AS chars, left(content,300) AS snippet FROM public.documents WHERE url ILIKE '%developer.mozilla.org%/array/array%' LIMIT 5;"
           echo '--- index check: is the seed page searchable? ---'
           curl -fsS -X POST http://localhost:8000/api/v1/search \
             -H 'Content-Type: application/json' \
