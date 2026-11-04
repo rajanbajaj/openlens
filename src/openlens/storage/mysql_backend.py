@@ -623,6 +623,66 @@ class MySQLDocumentStore(DocumentStore):
                 ) from exc
         return _row_to_document(row) if row is not None else None
 
+    def get_by_url(self, url: str) -> Document | None:
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, title, content, url, metadata,"  # noqa: S608
+                        " content_type, published, fetch_ms"
+                        " FROM `" + self._table + "` WHERE lower(url) = lower(%s)"
+                        " LIMIT 1",
+                        (url.strip(),),
+                    )
+                    row = cur.fetchone()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to fetch document by URL: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return _row_to_document(row) if row is not None else None
+
+    def outbound_links(self, doc_id: str, limit: int = 10) -> tuple[int, list[str]]:
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) AS n FROM `document_links`"  # noqa: S608
+                        " WHERE source_id = %s",
+                        (doc_id,),
+                    )
+                    total_row = cur.fetchone()
+                    cur.execute(
+                        "SELECT target FROM `document_links`"  # noqa: S608
+                        " WHERE source_id = %s LIMIT %s",
+                        (doc_id, max(0, int(limit or 0))),
+                    )
+                    rows = cur.fetchall()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to fetch document outlinks: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        if isinstance(total_row, Mapping):
+            total = total_row.get("n", total_row.get("N", 0))
+        elif total_row is not None:
+            total = total_row[0]
+        else:
+            total = 0
+        targets: list[str] = []
+        for row in rows:
+            if isinstance(row, Mapping):
+                targets.append(str(row.get("target", "")))
+            else:
+                targets.append(str(row[0]))
+        try:
+            count = int(total)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            count = 0
+        return count, targets
+
     def count(self) -> int:
         with self._connection() as conn:
             try:

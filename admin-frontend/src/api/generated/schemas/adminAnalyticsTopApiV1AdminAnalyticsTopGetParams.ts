@@ -15,4 +15,8 @@ export type AdminAnalyticsTopApiV1AdminAnalyticsTopGetParams = {
   limit?: number;
   filter_prop?: string | null;
   filter_value?: string | null;
+  offset?: number;
+  match?: string | null;
+  start?: string | null;
+  end?: string | null;
 };

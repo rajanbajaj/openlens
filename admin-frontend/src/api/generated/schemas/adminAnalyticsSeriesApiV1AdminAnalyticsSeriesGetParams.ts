@@ -12,4 +12,6 @@ export type AdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams = {
    */
   bucket?: string;
   days?: number;
+  start?: string | null;
+  end?: string | null;
 };

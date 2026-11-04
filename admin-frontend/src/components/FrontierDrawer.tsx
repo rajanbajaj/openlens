@@ -16,6 +16,7 @@ import {
   listCrawlRequests,
   pauseFrontier,
   enqueueSeeds,
+  fetchFrontierUrlInfo,
   resumeFrontier,
   saveFrontierSettings,
 } from '../api/client.ts';
@@ -40,6 +41,7 @@ import type {
   FrontierQueuedDomainList,
   FrontierSettings,
   FrontierStatus,
+  FrontierUrlInfo,
   FrontierWorker,
 } from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
@@ -150,6 +152,10 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [settings, setSettings] = useState<FrontierSettings>(DEFAULT_SETTINGS);
   const [seeds, setSeeds] = useState('');
   const [priority, setPriority] = useState('');
+  const [inspectUrl, setInspectUrl] = useState('');
+  const [inspectResult, setInspectResult] = useState<FrontierUrlInfo | null>(null);
+  const [inspectBusy, setInspectBusy] = useState(false);
+  const [inspectError, setInspectError] = useState<string | null>(null);
   const [skipInput, setSkipInput] = useState('');
   const [allowInput, setAllowInput] = useState('');
   const [denyInput, setDenyInput] = useState('');
@@ -469,6 +475,23 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       await snapshot.refetch();
     } catch {
       pushToast('Enqueue seeds failed.', 'error');
+    }
+  }
+
+  async function handleInspectUrl() {
+    const target = inspectUrl.trim();
+    if (target === '' || inspectBusy) return;
+    setInspectBusy(true);
+    setInspectError(null);
+    try {
+      const info = await fetchFrontierUrlInfo(target, fetch);
+      setInspectResult(info);
+      if (info === null) setInspectError('Could not load URL info.');
+    } catch {
+      setInspectResult(null);
+      setInspectError('Could not load URL info.');
+    } finally {
+      setInspectBusy(false);
     }
   }
 
@@ -863,7 +886,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       </li>
                     ))}
                   </ul>
-                  <div className="flex items-center gap-ol-s my-ol-s">
+                  <div className="flex flex-wrap items-center gap-ol-s my-ol-s">
                     <Button
                       variant="ghost"
                       data-testid="frontier-failed-prev"
@@ -882,6 +905,40 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       disabled={failedPage >= failedPages - 1}
                     >
                       Next
+                    </Button>
+                    <label className="flex items-center gap-ol-xs text-ol-s">
+                      Go to
+                      <input
+                        data-testid="frontier-failed-jump"
+                        type="number"
+                        min={1}
+                        max={failedPages}
+                        defaultValue={failedPage + 1}
+                        key={`frontier-failed-jump-${failedPage}-${failedPages}`}
+                        className="w-16 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter') return;
+                          const next = Number((event.target as HTMLInputElement).value);
+                          if (Number.isInteger(next) && next >= 1 && next <= failedPages) {
+                            setFailedPage(next - 1);
+                          }
+                        }}
+                      />
+                    </label>
+                    <Button
+                      variant="ghost"
+                      data-testid="frontier-failed-go"
+                      onClick={() => {
+                        const input = document.querySelector<HTMLInputElement>(
+                          '[data-testid="frontier-failed-jump"]',
+                        );
+                        const next = Number(input?.value);
+                        if (Number.isInteger(next) && next >= 1 && next <= failedPages) {
+                          setFailedPage(next - 1);
+                        }
+                      }}
+                    >
+                      Go
                     </Button>
                   </div>
                 </>
@@ -1256,6 +1313,84 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     Enqueue seeds
                   </Button>
                 </div>
+              </details>
+              <details className="ol-disclosure">
+                <summary className="ol-disclosure-title">Inspect URL</summary>
+                <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                  URL to inspect
+                  <input
+                    data-testid="frontier-inspect-url"
+                    type="url"
+                    value={inspectUrl}
+                    onChange={(event) => setInspectUrl(event.target.value)}
+                    placeholder="https://example.com/page"
+                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                  />
+                </label>
+                <div className="mt-ol-s">
+                  <Button
+                    variant="secondary"
+                    data-testid="frontier-inspect-submit"
+                    disabled={inspectBusy || inspectUrl.trim() === ''}
+                    onClick={() => void handleInspectUrl()}
+                  >
+                    {inspectBusy ? 'Inspecting…' : 'Inspect URL'}
+                  </Button>
+                </div>
+                {inspectError ? (
+                  <p
+                    data-testid="frontier-inspect-error"
+                    role="alert"
+                    className="my-ol-s text-ol-s"
+                  >
+                    {inspectError}
+                  </p>
+                ) : null}
+                {inspectResult ? (
+                  <div data-testid="frontier-inspect-result" className="my-ol-s text-ol-s">
+                    <p className="my-ol-xs break-all">
+                      <strong>Normalized:</strong> {inspectResult.normalized_url}
+                    </p>
+                    {inspectResult.frontier ? (
+                      <p data-testid="frontier-inspect-frontier" className="my-ol-xs">
+                        <strong>Queue:</strong> {inspectResult.frontier.status}
+                        {' · '}priority {inspectResult.frontier.priority ?? 0}
+                        {' · '}attempts {inspectResult.frontier.attempts ?? 0}
+                        {inspectResult.frontier.last_error
+                          ? ` · ${inspectResult.frontier.last_error}`
+                          : ''}
+                      </p>
+                    ) : (
+                      <p data-testid="frontier-inspect-frontier" className="my-ol-xs">
+                        Queue: never seen — enqueue it first.
+                      </p>
+                    )}
+                    {inspectResult.document ? (
+                      <p data-testid="frontier-inspect-document" className="my-ol-xs">
+                        <strong>Indexed:</strong> {inspectResult.document.title}
+                        {inspectResult.document.chars !== undefined
+                          ? ` (${inspectResult.document.chars} chars)`
+                          : ''}
+                      </p>
+                    ) : (
+                      <p data-testid="frontier-inspect-document" className="my-ol-xs">
+                        Indexed: no — not crawled yet or fetch failed.
+                      </p>
+                    )}
+                    <p data-testid="frontier-inspect-links" className="my-ol-xs">
+                      <strong>Extracted links:</strong> {inspectResult.extracted_links ?? 0}
+                    </p>
+                    {(inspectResult.link_sample ?? []).length > 0 ? (
+                      <ul className="flex flex-col gap-ol-xs my-ol-xs pl-ol-m">
+                        {(inspectResult.link_sample ?? []).map((target) => (
+                          <li key={target} className="break-all">
+                            {target}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
               </details>
               <details className="ol-disclosure">
                 <summary className="ol-disclosure-title">Settings</summary>

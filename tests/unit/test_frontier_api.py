@@ -853,6 +853,87 @@ def test_enqueue_seeds_503_when_nothing_accepted(
     assert body["error"]["code"] == "provider_unavailable"
 
 
+def _doc_store(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    """File-backed document store wired into the endpoint's opener."""
+    from openlens.providers import custom_index as custom_index_mod
+    from openlens.storage.repository import DocumentRepository
+
+    db_path = str(tmp_path / "docs.db")
+    monkeypatch.setattr(
+        custom_index_mod, "open_store", lambda config: DocumentRepository(db_path)
+    )
+    return db_path
+
+
+def test_url_info_reports_full_story(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from openlens.core.interfaces import Document
+    from openlens.storage.repository import DocumentRepository
+
+    frontier_db = _file_store(monkeypatch, tmp_path)
+    frontier = SqliteFrontierStore(frontier_db)
+    try:
+        assert frontier.enqueue("https://example.com/a", 0, priority=9) is True
+    finally:
+        frontier.close()
+    doc_db = _doc_store(monkeypatch, tmp_path)
+    docs = DocumentRepository(doc_db)
+    try:
+        docs.add_documents(
+            [
+                Document(
+                    id="doc-a",
+                    title="Example A",
+                    content="hello world",
+                    url="https://example.com/a",
+                    metadata={
+                        "outlinks": ["https://example.com/b", "https://example.com/c"]
+                    },
+                )
+            ]
+        )
+    finally:
+        docs.close()
+    resp = client.get(
+        "/api/v1/frontier/url-info", params={"url": "https://example.com/a"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["url"] == "https://example.com/a"
+    assert body["normalized_url"] == "https://example.com/a"
+    assert body["frontier"] == {
+        "status": "queued",
+        "priority": 9,
+        "attempts": 0,
+        "last_error": None,
+    }
+    assert body["document"] == {"title": "Example A", "chars": 11}
+    assert body["extracted_links"] == 2
+    assert body["link_sample"] == ["https://example.com/b", "https://example.com/c"]
+
+
+def test_url_info_unknown_url_resolves_to_nulls(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _file_store(monkeypatch, tmp_path)
+    _doc_store(monkeypatch, tmp_path)
+    resp = client.get(
+        "/api/v1/frontier/url-info", params={"url": "https://example.com/never-seen"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["frontier"] is None
+    assert body["document"] is None
+    assert body["extracted_links"] == 0
+    assert body["link_sample"] == []
+
+
+def test_url_info_rejects_blank(client: TestClient) -> None:
+    resp = client.get("/api/v1/frontier/url-info", params={"url": "   "})
+    assert resp.status_code == 422
+
+
 def test_enqueue_seeds_validates_priority(client: TestClient) -> None:
     resp = client.post("/api/v1/frontier/seeds", json={"seeds": [], "priority": "high"})
     assert resp.status_code == 422

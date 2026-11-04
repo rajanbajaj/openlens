@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnalyticsPanel } from './AnalyticsPanel.tsx';
 
@@ -9,23 +9,17 @@ afterEach(() => {
 
 const COUNTS = {
   days: 30,
-  total: 3,
-  by_name: { 'search.served': 2, 'search.feedback': 1 },
+  total: 4,
+  by_name: { 'crawl.fetched': 2, 'crawl.failed': 1, 'crawl.skipped': 1 },
 };
 
-const FEEDBACK = {
-  total: 1,
-  by_action: { helpful: 1 },
-  by_reason: { unspecified: 1 },
-  top_docs: [
-    {
-      doc_id: 'https://example.com/a',
-      total: 1,
-      helpful: 1,
-      not_helpful: 0,
-      reports: 0,
-      top_reason: null,
-    },
+const SERIES = {
+  name: 'crawl.page',
+  bucket: 'day',
+  days: 30,
+  points: [
+    { t: '2026-10-27', count: 1 },
+    { t: '2026-10-28', count: 3 },
   ],
 };
 
@@ -35,9 +29,9 @@ const TOP_OUTCOME = {
   days: 30,
   total: 4,
   top: [
-    { value: 'skipped', count: 2 },
+    { value: 'fetched', count: 2 },
     { value: 'failed', count: 1 },
-    { value: 'fetched', count: 1 },
+    { value: 'skipped', count: 1 },
   ],
 };
 
@@ -45,69 +39,49 @@ const TOP_REASON = {
   name: 'crawl.page',
   prop: 'reason',
   days: 30,
-  total: 3,
-  top: [
-    { value: 'denied by deny_domains', count: 2 },
-    { value: 'fetch timeout', count: 1 },
-  ],
-};
-
-const TOP_DOMAIN = {
-  name: 'crawl.page',
-  prop: 'domain',
-  days: 30,
-  total: 4,
-  top: [
-    { value: 'example.com', count: 3 },
-    { value: 'other.example', count: 1 },
-  ],
-};
-
-const TOP_FAILING_DOMAIN = {
-  name: 'crawl.page',
-  prop: 'domain',
-  days: 30,
   total: 1,
-  top: [{ value: 'example.com', count: 1 }],
+  top: [{ value: 'http 404', count: 1 }],
 };
 
-const SERIES = {
-  name: 'crawl.page',
-  bucket: 'day',
-  days: 30,
-  points: [
-    { t: '2026-10-26', count: 0 },
-    { t: '2026-10-27', count: 4 },
-    { t: '2026-10-28', count: 8 },
-  ],
-};
+const ALL_DOMAINS = Array.from({ length: 25 }, (_, i) => ({
+  value: `example${i}.com`,
+  count: 25 - i,
+}));
 
-function stubBackend(
-  counts: unknown = COUNTS,
-  feedback: unknown = FEEDBACK,
-  topOutcome: unknown = TOP_OUTCOME,
-  topReason: unknown = TOP_REASON,
-  topDomain: unknown = TOP_DOMAIN,
-  topFailingDomain: unknown = TOP_FAILING_DOMAIN,
-  series: unknown = SERIES,
-): void {
+function stubBackend(): void {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockImplementation((url: string) => {
       const text = String(url);
-      const payload = text.includes('/api/v1/admin/feedback/summary')
-        ? feedback
-        : text.includes('/api/v1/admin/analytics/series')
-          ? series
-          : text.includes('/api/v1/admin/analytics/top') && text.includes('filter_value=failed')
-            ? topFailingDomain
-            : text.includes('/api/v1/admin/analytics/top') && text.includes('prop=domain')
-              ? topDomain
-              : text.includes('/api/v1/admin/analytics/top') && text.includes('prop=reason')
-                ? topReason
-                : text.includes('/api/v1/admin/analytics/top')
-                  ? topOutcome
-                  : counts;
+      const params = new URL(text, 'http://localhost').searchParams;
+      let payload: unknown = COUNTS;
+      if (text.includes('/api/v1/admin/analytics/series')) {
+        payload = SERIES;
+      } else if (text.includes('/api/v1/admin/analytics/top')) {
+        payload = TOP_OUTCOME;
+        if (text.includes('prop=reason')) payload = TOP_REASON;
+        if (text.includes('prop=domain') && text.includes('filter_value=failed')) {
+          payload = {
+            name: 'crawl.page',
+            prop: 'domain',
+            days: 30,
+            total: 1,
+            top: [{ value: 'example0.com', count: 1 }],
+          };
+        } else if (text.includes('prop=domain')) {
+          const match = (params.get('match') ?? '').toLowerCase();
+          const offset = Number(params.get('offset') ?? 0);
+          const limit = Number(params.get('limit') ?? 10);
+          const rows = ALL_DOMAINS.filter((row) => row.value.includes(match));
+          payload = {
+            name: 'crawl.page',
+            prop: 'domain',
+            days: 30,
+            total: rows.length,
+            top: rows.slice(offset, offset + limit),
+          };
+        }
+      }
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -120,60 +94,88 @@ function stubBackend(
 }
 
 describe('AnalyticsPanel', () => {
-  it('renders durable event counts and the feedback summary', async () => {
+  it('renders key events, throughput, and breakdowns', async () => {
     stubBackend();
     render(<AnalyticsPanel adminToken="" />);
-    expect(await screen.findByTestId('analytics-total')).toHaveTextContent('3 events');
-    expect(screen.getByTestId('analytics-by-name')).toHaveTextContent('search.served');
-    expect(screen.getByTestId('feedback-total')).toHaveTextContent('1 signals');
-    expect(screen.getByTestId('feedback-top-docs')).toHaveTextContent('https://example.com/a');
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example0.com');
+    });
+    expect(screen.getByTestId('analytics-failing-domains-list')).toHaveTextContent('example0.com');
+    expect(screen.getByTestId('analytics-reasons-list')).toHaveTextContent('http 404');
   });
 
-  it('sends the admin token on every read', async () => {
-    stubBackend();
+  it('sends an absolute range instead of the trailing window', async () => {
     const seen: string[] = [];
-    const impl = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      seen.push(headers.get('X-Admin-Token') ?? '');
-      const text = String(url);
-      const payload = text.includes('/api/v1/admin/feedback/summary')
-        ? FEEDBACK
-        : text.includes('/api/v1/admin/analytics/top')
-          ? TOP_OUTCOME
-          : COUNTS;
+    const impl = vi.fn().mockImplementation((url: string) => {
+      seen.push(String(url));
       return Promise.resolve({
         ok: true,
         status: 200,
         headers: new Headers(),
-        text: () => Promise.resolve(JSON.stringify(payload)),
-        json: () => Promise.resolve(payload),
+        text: () => Promise.resolve(JSON.stringify(COUNTS)),
+        json: () => Promise.resolve(COUNTS),
       });
     });
     vi.stubGlobal('fetch', impl);
-    render(<AnalyticsPanel adminToken="s3cret" />);
-    await screen.findByTestId('analytics-total');
-    await screen.findByTestId('feedback-total');
-    await screen.findByTestId('crawler-summary');
-    await waitFor(() => expect(impl).toHaveBeenCalledTimes(7));
-    expect(seen).toEqual(['s3cret', 's3cret', 's3cret', 's3cret', 's3cret', 's3cret', 's3cret']);
+    render(<AnalyticsPanel adminToken="" />);
+    fireEvent.change(screen.getByTestId('analytics-from'), {
+      target: { value: '2026-10-01' },
+    });
+    fireEvent.change(screen.getByTestId('analytics-to'), {
+      target: { value: '2026-10-10' },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-range-note')).toBeInTheDocument();
+    });
+    const ranged = seen.filter(
+      (url) => url.includes('start=2026-10-01') && url.includes('end=2026-10-10'),
+    );
+    expect(ranged.length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/2026-10-01 → 2026-10-10/).length).toBeGreaterThan(1);
   });
 
-  it('renders crawler outcomes and top reasons', async () => {
+  it('searches domains by substring and clears back', async () => {
     stubBackend();
     render(<AnalyticsPanel adminToken="" />);
-    expect(await screen.findByTestId('crawler-by-outcome')).toHaveTextContent('skipped');
-    expect(screen.getByTestId('crawler-by-reason')).toHaveTextContent('denied by deny_domains (2)');
-    expect(screen.getByTestId('crawler-success-rate')).toHaveTextContent('25% fetched (1/4)');
-    expect(screen.getByTestId('crawler-throughput')).toHaveTextContent('peak 8/day');
-    expect(screen.getByTestId('crawler-by-domain')).toHaveTextContent('example.com');
-    expect(screen.getByTestId('crawler-failing-domains')).toHaveTextContent('example.com (1)');
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('analytics-domain'), {
+      target: { value: 'example1' },
+    });
+    fireEvent.click(screen.getByTestId('analytics-domain-search'));
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains')).toHaveTextContent('matching “example1”');
+    });
+    // example1, example10-example19 match; example0 filtered out.
+    expect(screen.getByTestId('analytics-domains-list')).not.toHaveTextContent('example0.com');
+    expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example1.com');
+    fireEvent.click(screen.getByTestId('analytics-domain-clear'));
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example0.com');
+    });
   });
 
-  it('degrades to empty panels when the store is unavailable', async () => {
-    stubBackend(null, null, null, null, null, null, null);
+  it('pages through top domains with next and jump', async () => {
+    stubBackend();
     render(<AnalyticsPanel adminToken="" />);
-    expect(await screen.findByTestId('analytics-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('feedback-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('crawler-empty')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example0.com');
+    });
+    expect(screen.getByTestId('analytics-domains-page')).toHaveTextContent('Page 1');
+    expect(screen.getByTestId('analytics-domains-next')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('analytics-domains-next'));
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example10.com');
+    });
+    expect(screen.getByTestId('analytics-domains-page')).toHaveTextContent('Page 2');
+    fireEvent.change(screen.getByTestId('analytics-domains-jump'), {
+      target: { value: '3' },
+    });
+    fireEvent.click(screen.getByTestId('analytics-domains-go'));
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example20.com');
+    });
+    expect(screen.getByTestId('analytics-domains-page')).toHaveTextContent('Page 3');
   });
 });

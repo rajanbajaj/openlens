@@ -366,6 +366,160 @@ def test_admin_top_groups_and_rejects(
         store.close()
 
 
+def _dated_crawl_page(url, outcome, reason, at_epoch):
+    from urllib.parse import urlsplit
+
+    domain = urlsplit(url).hostname or ""
+    payload = crawl_page_event(url, outcome, reason, domain=domain).to_payload()
+    payload["at"] = at_epoch
+    return payload
+
+
+def _range_dates():
+    """Two UTC day labels: 20 and 10 days ago (both inside 30d, ordered)."""
+    import datetime
+
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    old = (today - datetime.timedelta(days=20)).isoformat()
+    new = (today - datetime.timedelta(days=10)).isoformat()
+    start = (today - datetime.timedelta(days=21)).isoformat()
+    mid = (today - datetime.timedelta(days=15)).isoformat()
+    end = (today - datetime.timedelta(days=5)).isoformat()
+    return old, new, start, mid, end
+
+
+def _range_day_ts(day_label):
+    import datetime
+
+    return (
+        datetime.datetime.fromisoformat(day_label)
+        .replace(tzinfo=datetime.timezone.utc)
+        .timestamp()
+    )
+
+
+def _seed_range_store(tmp_path):
+    """Two domains on two days: 20 days ago (alpha x2) and 10 days ago (beta)."""
+    from openlens.analytics.store import AnalyticsStore
+
+    old, new, _, _, _ = _range_dates()
+    store = AnalyticsStore(str(tmp_path / "range.db"))
+    assert (
+        store.insert_many(
+            [
+                _dated_crawl_page(
+                    "https://alpha.example/1", "fetched", "ok", _range_day_ts(old)
+                ),
+                _dated_crawl_page(
+                    "https://alpha.example/2", "fetched", "ok", _range_day_ts(old)
+                ),
+                _dated_crawl_page(
+                    "https://beta.example/1", "failed", "http 404", _range_day_ts(new)
+                ),
+            ]
+        )
+        == 3
+    )
+    return store
+
+
+def test_top_props_range_match_and_offset(tmp_path) -> None:
+    old, new, start, mid, end = _range_dates()
+    store = _seed_range_store(tmp_path)
+    try:
+        assert store.top_props("crawl.page", "domain") == [
+            ("alpha.example", 2),
+            ("beta.example", 1),
+        ]
+        assert store.top_props("crawl.page", "domain", start=mid, end=end) == [
+            ("beta.example", 1)
+        ]
+        assert store.top_props("crawl.page", "domain", match="ALPHA") == [
+            ("alpha.example", 2)
+        ]
+        assert store.top_props("crawl.page", "domain", limit=1, offset=1) == [
+            ("beta.example", 1)
+        ]
+        assert store.top_props("crawl.page", "domain", limit=1, offset=9) == []
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "domain", start=new)
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "domain", start="2026-13-01", end=end)
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "domain", start=new, end=old)
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "domain", match="a'b")
+        with pytest.raises(ProviderError):
+            store.top_props("crawl.page", "domain", match="a%")
+    finally:
+        store.close()
+
+
+def test_counts_and_series_range(tmp_path) -> None:
+    old, new, start, mid, end = _range_dates()
+    store = _seed_range_store(tmp_path)
+    try:
+        assert store.counts_by_name(start=start, end=old) == {"crawl.page": 2}
+        assert store.counts_by_name(start=mid, end=end) == {"crawl.page": 1}
+        assert sum(n for _, n in store.series("crawl.page", start=start, end=end)) == 3
+        assert sum(n for _, n in store.series("crawl.page", start=mid, end=end)) == 1
+        with pytest.raises(ProviderError):
+            store.series("crawl.page", start="not-a-date", end=end)
+    finally:
+        store.close()
+
+
+def test_admin_top_range_and_match_params(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from openlens.analytics.store import AnalyticsStore
+
+    old, _new, start, mid, end = _range_dates()
+    seed = _seed_range_store(tmp_path)
+    seed.close()
+    monkeypatch.setattr(
+        "openlens.analytics.store.open_analytics_store",
+        lambda section: AnalyticsStore(str(tmp_path / "range.db")),
+    )
+    resp = client.get(
+        f"/api/v1/admin/analytics/top?name=crawl.page&prop=domain&start={mid}&end={end}"
+    )
+    assert resp.status_code == 200, resp.text
+    assert [entry["value"] for entry in resp.json()["top"]] == ["beta.example"]
+    resp = client.get(
+        "/api/v1/admin/analytics/top?name=crawl.page&prop=domain&match=alpha&limit=1&offset=1"
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["top"] == []
+    assert (
+        client.get(
+            f"/api/v1/admin/analytics/top?name=crawl.page&prop=domain&start={mid}"
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/api/v1/admin/analytics/top?name=crawl.page&prop=domain&match=a%25"
+        ).status_code
+        == 422
+    )
+    resp = client.get(f"/api/v1/admin/analytics/counts?start={start}&end={old}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["by_name"] == {"crawl.page": 2}
+    assert resp.json()["days"] == 2
+    assert (
+        client.get(
+            f"/api/v1/admin/analytics/counts?start=2026-13-01&end={old}"
+        ).status_code
+        == 422
+    )
+    resp = client.get(
+        f"/api/v1/admin/analytics/series?name=crawl.page&start={mid}&end={end}"
+    )
+    assert resp.status_code == 200, resp.text
+    assert sum(point["count"] for point in resp.json()["points"]) == 1
+
+
 def test_admin_counts_503_when_store_down(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

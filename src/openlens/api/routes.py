@@ -45,6 +45,9 @@ from openlens.api.schemas import CrawlRequestListSchema, CrawlRequestSchema
 from openlens.api.schemas import CrawlRequestSubmitSchema
 from openlens.api.schemas import FrontierEnqueueSeedsResponse, FrontierResumeSchema
 from openlens.api.schemas import FrontierSeedsSchema, FrontierSettingsResponseSchema
+from openlens.api.schemas import FrontierUrlInfoSchema
+from openlens.api.schemas import FrontierUrlInspectorDocumentSchema
+from openlens.api.schemas import FrontierUrlInspectorFrontierSchema
 from openlens.api.schemas import FrontierFailedListSchema, FrontierFailedUrlSchema
 from openlens.api.schemas import (
     FrontierAutoTriageSchema,
@@ -798,19 +801,41 @@ def admin_feedback_summary(request: Request) -> FeedbackSummarySchema | JSONResp
 
 @router.get("/admin/analytics/counts", response_model=AnalyticsCountsSchema)
 def admin_analytics_counts(
-    request: Request, days: int = 30
+    request: Request,
+    days: int = 30,
+    start: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> AnalyticsCountsSchema | JSONResponse:
     """Admin-only durable analytics counts (same gate as config mutations).
 
     Reads the separate analytics database over the trailing ``days``
-    window. Fail-closed auth, fail-open store: an unreachable analytics
-    database reports 503 instead of breaking the admin screen.
+    window, or over the absolute ``start``..``end`` range (``YYYY-MM-DD``,
+    both required together) when given. Fail-closed auth, fail-open
+    store: an unreachable analytics database reports 503 instead of
+    breaking the admin screen.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
         return denied
+    if (start is None) != (end is None):
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "start and end go together"),
+        )
     window = days if isinstance(days, int) and days >= 1 else 30
     window = min(window, 365)
+    if start is not None and end is not None:
+        from datetime import date as _date
+
+        try:
+            window = (_date.fromisoformat(end) - _date.fromisoformat(start)).days + 1
+        except ValueError:
+            return JSONResponse(
+                status_code=422,
+                content=error_body(
+                    "invalid_request", "start and end must be calendar dates"
+                ),
+            )
     try:
         from openlens.analytics.store import open_analytics_store
 
@@ -828,7 +853,18 @@ def admin_analytics_counts(
             content=error_body("provider_unavailable", "analytics store unavailable"),
         )
     try:
-        by_name = store.counts_by_name(window) or {}
+        by_name = store.counts_by_name(window, start=start, end=end) or {}
+    except ProviderError as exc:
+        if exc.code == ProviderError.INVALID_REQUEST:
+            return JSONResponse(
+                status_code=422,
+                content=error_body("invalid_request", str(exc)),
+            )
+        logger.warning("analytics counts: read failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content=error_body("provider_unavailable", "analytics store unavailable"),
+        )
     except Exception as exc:
         logger.warning("analytics counts: read failed: %s", exc)
         return JSONResponse(
@@ -878,6 +914,10 @@ def admin_analytics_top(
     limit: int = 10,
     filter_prop: str | None = Query(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
     filter_value: str | None = Query(default=None, max_length=256),
+    offset: int = 0,
+    match: str | None = Query(default=None, max_length=64),
+    start: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> AnalyticsTopSchema | JSONResponse:
     """Admin-only top-values breakdown for one analytics event prop.
 
@@ -887,7 +927,10 @@ def admin_analytics_top(
     charset-restricted (fail-closed, 422 otherwise) so no user input
     reaches the aggregation query raw. The optional
     ``filter_prop=filter_value`` clause restricts rows first — e.g.
-    top domains among failed pages only.
+    top domains among failed pages only. ``offset`` pages through the
+    ranking, ``match`` keeps only values containing the substring, and
+    ``start``/``end`` (``YYYY-MM-DD``, both required together) select
+    an absolute range instead of the trailing ``days`` window.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -909,6 +952,11 @@ def admin_analytics_top(
                 "invalid_request", "filter_prop and filter_value go together"
             ),
         )
+    if (start is None) != (end is None):
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "start and end go together"),
+        )
     store, unavailable = _admin_analytics_store(request)
     if store is None:
         if unavailable is None:
@@ -927,6 +975,10 @@ def admin_analytics_top(
             limit=capped,
             filter_prop=filter_prop,
             filter_value=filter_value,
+            offset=offset,
+            match=match,
+            start=start,
+            end=end,
         )
     except ProviderError as exc:
         if exc.code == ProviderError.INVALID_REQUEST:
@@ -966,11 +1018,15 @@ def admin_analytics_series(
     name: str = "crawl.page",
     bucket: str = Query(default="day", pattern=r"^(hour|day)$"),
     days: int = 30,
+    start: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ) -> AnalyticsSeriesSchema | JSONResponse:
     """Admin-only per-bucket event counts (throughput) over a window.
 
     Same gate and fail-open store as the counts endpoint. ``bucket`` is
-    ``hour`` or ``day``; points come back oldest-first.
+    ``hour`` or ``day``; points come back oldest-first. ``start``/``end``
+    (``YYYY-MM-DD``, both required together) select an absolute range
+    instead of the trailing ``days`` window.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -984,6 +1040,11 @@ def admin_analytics_series(
         )
     window = days if isinstance(days, int) and days >= 1 else 30
     window = min(window, 365)
+    if (start is None) != (end is None):
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "start and end go together"),
+        )
     store, unavailable = _admin_analytics_store(request)
     if store is None:
         if unavailable is None:
@@ -995,7 +1056,9 @@ def admin_analytics_series(
             )
         return unavailable
     try:
-        points = store.series(name, bucket=bucket, since_days=window)
+        points = store.series(
+            name, bucket=bucket, since_days=window, start=start, end=end
+        )
     except ProviderError as exc:
         if exc.code == ProviderError.INVALID_REQUEST:
             return JSONResponse(
@@ -2445,6 +2508,83 @@ def frontier_enqueue_seeds(
                 ),
             )
     return FrontierEnqueueSeedsResponse(enqueued=accepted)
+
+
+@router.get("/frontier/url-info", response_model=FrontierUrlInfoSchema)
+def frontier_url_info(
+    request: Request, url: str = Query(default="", max_length=2048)
+) -> Any:
+    """One URL's crawl story for the admin dashboard (open read).
+
+    Combines the frontier queue row (status, priority, attempts, last
+    error), the indexed document (title, size), and the extracted-link
+    fan-out (count plus sample) so "did my seed work?" needs one call
+    instead of three views. Unknown URLs resolve to null parts, never
+    404: absence itself is the answer. Never 500s on store trouble:
+    unreadable parts degrade to null, mirroring ``/frontier/status``.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "url must not be blank"),
+        )
+    try:
+        normalized = normalize_frontier_url(raw)
+    except (AttributeError, ValueError):
+        normalized = ""
+    if not normalized:
+        return JSONResponse(
+            status_code=422,
+            content=error_body("invalid_request", "url must not be blank"),
+        )
+    app_config = getattr(request.app.state, "config", None)
+    frontier_part: FrontierUrlInspectorFrontierSchema | None = None
+    try:
+        store = _frontier_read_store(request)
+        if store is not None:
+            entry = store.entry_of(normalized)
+            if entry is not None:
+                frontier_part = FrontierUrlInspectorFrontierSchema(
+                    status=entry.status,
+                    priority=entry.priority,
+                    attempts=entry.attempts,
+                    last_error=entry.last_error,
+                )
+    except Exception:
+        frontier_part = None
+    document_part: FrontierUrlInspectorDocumentSchema | None = None
+    extracted = 0
+    sample: list[str] = []
+    try:
+        if isinstance(app_config, dict):
+            from openlens.providers.custom_index import open_store
+
+            doc_store = open_store(app_config)
+            try:
+                doc = doc_store.get_by_url(normalized)
+                if doc is not None:
+                    document_part = FrontierUrlInspectorDocumentSchema(
+                        title=doc.title,
+                        chars=len(doc.content or ""),
+                    )
+                    total, sample = doc_store.outbound_links(doc.id, limit=10)
+                    extracted = max(0, int(total or 0))
+            finally:
+                with suppress(Exception):
+                    doc_store.close()
+    except Exception:
+        document_part = None
+        extracted = 0
+        sample = []
+    return FrontierUrlInfoSchema(
+        url=raw,
+        normalized_url=normalized,
+        frontier=frontier_part,
+        document=document_part,
+        extracted_links=extracted,
+        link_sample=sample,
+    )
 
 
 # -- user-requested crawl URLs (public submit, admin review) -------------

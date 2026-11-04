@@ -7,4 +7,6 @@
 
 export type AdminAnalyticsCountsApiV1AdminAnalyticsCountsGetParams = {
   days?: number;
+  start?: string | null;
+  end?: string | null;
 };

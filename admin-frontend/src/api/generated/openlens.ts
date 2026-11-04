@@ -43,6 +43,8 @@ import type {
   FrontierSettingsSchema,
   FrontierStatusSchema,
   FrontierTriageResultSchema,
+  FrontierUrlInfoApiV1FrontierUrlInfoGetParams,
+  FrontierUrlInfoSchema,
   FrontierWorkerHeartbeatSchema,
   FrontierWorkersResponseSchema,
   HTTPValidationError,
@@ -411,8 +413,10 @@ export const getAdminAnalyticsCountsApiV1AdminAnalyticsCountsGetUrl = (
  * Admin-only durable analytics counts (same gate as config mutations).
  *
  * Reads the separate analytics database over the trailing ``days``
- * window. Fail-closed auth, fail-open store: an unreachable analytics
- * database reports 503 instead of breaking the admin screen.
+ * window, or over the absolute ``start``..``end`` range (``YYYY-MM-DD``,
+ * both required together) when given. Fail-closed auth, fail-open
+ * store: an unreachable analytics database reports 503 instead of
+ * breaking the admin screen.
  * @summary Admin Analytics Counts
  */
 export const adminAnalyticsCountsApiV1AdminAnalyticsCountsGet = async (
@@ -486,7 +490,10 @@ export const getAdminAnalyticsTopApiV1AdminAnalyticsTopGetUrl = (
  * charset-restricted (fail-closed, 422 otherwise) so no user input
  * reaches the aggregation query raw. The optional
  * ``filter_prop=filter_value`` clause restricts rows first — e.g.
- * top domains among failed pages only.
+ * top domains among failed pages only. ``offset`` pages through the
+ * ranking, ``match`` keeps only values containing the substring, and
+ * ``start``/``end`` (``YYYY-MM-DD``, both required together) select
+ * an absolute range instead of the trailing ``days`` window.
  * @summary Admin Analytics Top
  */
 export const adminAnalyticsTopApiV1AdminAnalyticsTopGet = async (
@@ -555,7 +562,9 @@ export const getAdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetUrl = (
  * Admin-only per-bucket event counts (throughput) over a window.
  *
  * Same gate and fail-open store as the counts endpoint. ``bucket`` is
- * ``hour`` or ``day``; points come back oldest-first.
+ * ``hour`` or ``day``; points come back oldest-first. ``start``/``end``
+ * (``YYYY-MM-DD``, both required together) select an absolute range
+ * instead of the trailing ``days`` window.
  * @summary Admin Analytics Series
  */
 export const adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet = async (
@@ -1706,6 +1715,77 @@ export const frontierEnqueueSeedsApiV1FrontierSeedsPost = async (
     status: res.status,
     headers: res.headers,
   } as frontierEnqueueSeedsApiV1FrontierSeedsPostResponse;
+};
+
+export type frontierUrlInfoApiV1FrontierUrlInfoGetResponse200 = {
+  data: FrontierUrlInfoSchema;
+  status: 200;
+};
+
+export type frontierUrlInfoApiV1FrontierUrlInfoGetResponse422 = {
+  data: HTTPValidationError;
+  status: 422;
+};
+
+export type frontierUrlInfoApiV1FrontierUrlInfoGetResponseSuccess =
+  frontierUrlInfoApiV1FrontierUrlInfoGetResponse200 & {
+    headers: Headers;
+  };
+export type frontierUrlInfoApiV1FrontierUrlInfoGetResponseError =
+  frontierUrlInfoApiV1FrontierUrlInfoGetResponse422 & {
+    headers: Headers;
+  };
+
+export type frontierUrlInfoApiV1FrontierUrlInfoGetResponse =
+  | frontierUrlInfoApiV1FrontierUrlInfoGetResponseSuccess
+  | frontierUrlInfoApiV1FrontierUrlInfoGetResponseError;
+
+export const getFrontierUrlInfoApiV1FrontierUrlInfoGetUrl = (
+  params?: FrontierUrlInfoApiV1FrontierUrlInfoGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/frontier/url-info?${stringifiedParams}`
+    : `/api/v1/frontier/url-info`;
+};
+
+/**
+ * One URL's crawl story for the admin dashboard (open read).
+ *
+ * Combines the frontier queue row (status, priority, attempts, last
+ * error), the indexed document (title, size), and the extracted-link
+ * fan-out (count plus sample) so "did my seed work?" needs one call
+ * instead of three views. Unknown URLs resolve to null parts, never
+ * 404: absence itself is the answer. Never 500s on store trouble:
+ * unreadable parts degrade to null, mirroring ``/frontier/status``.
+ * @summary Frontier Url Info
+ */
+export const frontierUrlInfoApiV1FrontierUrlInfoGet = async (
+  params?: FrontierUrlInfoApiV1FrontierUrlInfoGetParams,
+  options?: RequestInit,
+): Promise<frontierUrlInfoApiV1FrontierUrlInfoGetResponse> => {
+  const res = await fetch(getFrontierUrlInfoApiV1FrontierUrlInfoGetUrl(params), {
+    ...options,
+    method: 'GET',
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: frontierUrlInfoApiV1FrontierUrlInfoGetResponse['data'] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as frontierUrlInfoApiV1FrontierUrlInfoGetResponse;
 };
 
 export type createCrawlRequestApiV1CrawlRequestsPostResponse201 = {

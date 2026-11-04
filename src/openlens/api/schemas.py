@@ -799,6 +799,38 @@ class FrontierEnqueueSeedsResponse(BaseModel):
     enqueued: int
 
 
+class FrontierUrlInspectorFrontierSchema(BaseModel):
+    """Queue row for one inspected URL (None when never seen)."""
+
+    status: str
+    priority: int = 0
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = None
+
+
+class FrontierUrlInspectorDocumentSchema(BaseModel):
+    """Indexed document for one inspected URL (None when not indexed)."""
+
+    title: str
+    chars: int = Field(ge=0)
+
+
+class FrontierUrlInfoSchema(BaseModel):
+    """GET /api/v1/frontier/url-info response: one URL's crawl story.
+
+    Combines the frontier queue row, the indexed document, and the
+    extracted-link fan-out so the admin dashboard can answer "did my
+    seed work?" without joining three views by hand.
+    """
+
+    url: str
+    normalized_url: str
+    frontier: FrontierUrlInspectorFrontierSchema | None = None
+    document: FrontierUrlInspectorDocumentSchema | None = None
+    extracted_links: int = Field(default=0, ge=0)
+    link_sample: list[str] = Field(default_factory=list)
+
+
 class AdminConfigPutSchema(BaseModel):
     """PUT /api/v1/admin/config/{doc} body: one config doc section.
 

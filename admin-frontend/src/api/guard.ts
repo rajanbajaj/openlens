@@ -26,6 +26,7 @@ import type {
   FrontierTriageResult,
   FrontierFailedUrl,
   FrontierSettings,
+  FrontierUrlInfo,
   FrontierSettingsResponse,
   FrontierStatus,
   FrontierWorkersResponse,
@@ -286,6 +287,36 @@ export function isFrontierEnqueueSeedsResponse(
 ): value is FrontierEnqueueSeedsResponse {
   if (!isRecord(value)) return false;
   return typeof value.enqueued === 'number';
+}
+
+export function isFrontierUrlInfo(value: unknown): value is FrontierUrlInfo {
+  if (!isRecord(value)) return false;
+  if (typeof value.url !== 'string' || typeof value.normalized_url !== 'string') {
+    return false;
+  }
+  if (value.frontier !== null) {
+    if (!isRecord(value.frontier) || typeof value.frontier.status !== 'string') return false;
+    if (
+      (value.frontier.priority !== undefined && typeof value.frontier.priority !== 'number') ||
+      (value.frontier.attempts !== undefined && typeof value.frontier.attempts !== 'number') ||
+      (value.frontier.last_error !== undefined &&
+        value.frontier.last_error !== null &&
+        typeof value.frontier.last_error !== 'string')
+    ) {
+      return false;
+    }
+  }
+  if (value.document !== null) {
+    if (!isRecord(value.document) || typeof value.document.title !== 'string') return false;
+    if (value.document.chars !== undefined && typeof value.document.chars !== 'number') {
+      return false;
+    }
+  }
+  if (value.extracted_links !== undefined && typeof value.extracted_links !== 'number') {
+    return false;
+  }
+  if (value.link_sample !== undefined && !isStringArray(value.link_sample)) return false;
+  return true;
 }
 
 /** Live workers, or `[]` when absent or malformed. */

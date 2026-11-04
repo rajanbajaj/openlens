@@ -1,362 +1,46 @@
-import { useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import {
   fetchAnalyticsCounts,
   fetchAnalyticsSeries,
   fetchAnalyticsTop,
-  fetchFeedbackSummary,
 } from '../api/client.ts';
-import type {
-  AnalyticsCounts,
-  AnalyticsSeries,
-  AnalyticsTop,
-  FeedbackSummary,
-} from '../api/types.ts';
 
-/** Text-sparkline blocks for the throughput strip (no chart dependency). */
-const SPARK_LEVELS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-/** Compact sparkline over per-bucket counts (empty when all zero). */
-export function sparkline(counts: number[]): string {
-  const peak = Math.max(0, ...counts);
-  if (peak <= 0) return '';
-  return counts
-    .map(
-      (count) =>
-        SPARK_LEVELS[
-          Math.min(SPARK_LEVELS.length - 1, Math.round((count / peak) * (SPARK_LEVELS.length - 1)))
-        ],
-    )
-    .join('');
-}
-import { Badge } from './ui/Badge.tsx';
-import { Button } from './ui/Button.tsx';
-import { Card } from './ui/Card.tsx';
-import { GlassPanel } from './ui/GlassPanel.tsx';
-import { Toasts, useToasts } from './ui/Toast.tsx';
-
-/** Trailing windows offered by the analytics view (backend caps at 365). */
-const WINDOW_OPTIONS = [7, 30, 90];
-
-/** Props for the analytics dashboard: the admin token comes from the app shell. */
-export interface AnalyticsPanelProps {
+interface AnalyticsPanelProps {
+  /** Admin token for the admin-only analytics reads. */
   adminToken: string;
 }
 
-/**
- * Analytics dashboard: durable event counts from the analytics store
- * plus the in-process feedback summary. Both reads are admin-only;
- * every fetch failure degrades to an empty panel with an error toast
- * instead of crashing the page.
- */
-function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
-  const [days, setDays] = useState<number>(30);
-  const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
+const WINDOW_OPTIONS = [7, 30, 90];
 
-  const countsQuery = useQuery({
-    queryKey: ['admin', 'analytics-counts', days, adminToken],
-    queryFn: () => fetchAnalyticsCounts(days, adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const feedbackQuery = useQuery({
-    queryKey: ['admin', 'feedback-summary', adminToken],
-    queryFn: () => fetchFeedbackSummary(adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const crawlOutcomeQuery = useQuery({
-    queryKey: ['admin', 'analytics-top', 'crawl.page', 'outcome', days, adminToken],
-    queryFn: () => fetchAnalyticsTop('crawl.page', 'outcome', days, 10, adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const crawlReasonQuery = useQuery({
-    queryKey: ['admin', 'analytics-top', 'crawl.page', 'reason', days, adminToken],
-    queryFn: () => fetchAnalyticsTop('crawl.page', 'reason', days, 10, adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const crawlDomainQuery = useQuery({
-    queryKey: ['admin', 'analytics-top', 'crawl.page', 'domain', days, adminToken],
-    queryFn: () => fetchAnalyticsTop('crawl.page', 'domain', days, 10, adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const crawlFailingDomainQuery = useQuery({
-    queryKey: ['admin', 'analytics-top', 'crawl.page', 'domain', 'failed', days, adminToken],
-    queryFn: () =>
-      fetchAnalyticsTop('crawl.page', 'domain', days, 10, adminToken, 'outcome', 'failed'),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const crawlBucket = days <= 7 ? 'hour' : 'day';
-  const crawlSeriesQuery = useQuery({
-    queryKey: ['admin', 'analytics-series', 'crawl.page', crawlBucket, days, adminToken],
-    queryFn: () => fetchAnalyticsSeries('crawl.page', crawlBucket, days, adminToken),
-    retry: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
+const TOP_DOMAINS_LIMIT = 10;
 
-  const counts: AnalyticsCounts | null | undefined = countsQuery.data;
-  const feedback: FeedbackSummary | null | undefined = feedbackQuery.data;
-  const crawlOutcomes: AnalyticsTop | null | undefined = crawlOutcomeQuery.data;
-  const crawlReasons: AnalyticsTop | null | undefined = crawlReasonQuery.data;
-  const crawlDomains: AnalyticsTop | null | undefined = crawlDomainQuery.data;
-  const crawlFailingDomains: AnalyticsTop | null | undefined = crawlFailingDomainQuery.data;
-  const crawlSeries: AnalyticsSeries | null | undefined = crawlSeriesQuery.data;
+/** One row of the top-domains breakdown. */
+interface DomainRow {
+  value: string;
+  count: number;
+}
 
-  useEffect(() => {
-    if (countsQuery.isError || (countsQuery.isSuccess && countsQuery.data === null)) {
-      pushToast('Analytics counts unavailable.', 'error');
-    }
-  }, [countsQuery.isError, countsQuery.isSuccess, countsQuery.data]);
-  useEffect(() => {
-    if (feedbackQuery.isError || (feedbackQuery.isSuccess && feedbackQuery.data === null)) {
-      pushToast('Feedback summary unavailable.', 'error');
-    }
-  }, [feedbackQuery.isError, feedbackQuery.isSuccess, feedbackQuery.data]);
-
-  async function refresh() {
-    const results = await Promise.all([
-      countsQuery.refetch(),
-      feedbackQuery.refetch(),
-      crawlOutcomeQuery.refetch(),
-      crawlReasonQuery.refetch(),
-      crawlDomainQuery.refetch(),
-      crawlFailingDomainQuery.refetch(),
-      crawlSeriesQuery.refetch(),
-    ]);
-    if (results.some((result) => result.isError)) {
-      pushToast('Refresh failed.', 'error');
-    }
-  }
-
-  const loading =
-    countsQuery.isPending ||
-    feedbackQuery.isPending ||
-    crawlOutcomeQuery.isPending ||
-    crawlReasonQuery.isPending ||
-    crawlDomainQuery.isPending ||
-    crawlFailingDomainQuery.isPending ||
-    crawlSeriesQuery.isPending;
-  const eventEntries = counts ? Object.entries(counts.by_name).sort((a, b) => b[1] - a[1]) : [];
-  const actionEntries = feedback
-    ? Object.entries(feedback.by_action).sort((a, b) => b[1] - a[1])
-    : [];
-  const reasonEntries = feedback
-    ? Object.entries(feedback.by_reason).sort((a, b) => b[1] - a[1])
-    : [];
-
-  return (
-    <GlassPanel variant="rail">
-      <div className="flex flex-wrap gap-ol-s my-ol-s">
-        <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
-          Window
-          <select
-            data-testid="analytics-window"
-            value={days}
-            onChange={(event) => setDays(Number(event.target.value))}
-            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
-          >
-            {WINDOW_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option} days
-              </option>
-            ))}
-          </select>
-        </label>
-        <Button variant="ghost" onClick={() => void refresh()}>
-          Refresh
-        </Button>
-      </div>
-      {loading ? (
-        <p>Loading analytics…</p>
-      ) : (
-        <>
-          <h4 className="mt-ol-m mb-ol-s text-ol-m">Event counts</h4>
-          {counts === null || counts === undefined ? (
-            <p data-testid="analytics-empty" className="my-ol-s text-ol-s">
-              No analytics data — the analytics store is unreachable or empty.
-            </p>
-          ) : (
-            <Card data-testid="analytics-counts">
-              <p data-testid="analytics-total" className="my-ol-s">
-                <Badge>{counts.total} events</Badge> in the last {counts.days} days
-              </p>
-              {eventEntries.length === 0 ? (
-                <p className="my-ol-s text-ol-s">No events recorded in this window.</p>
-              ) : (
-                <ul
-                  data-testid="analytics-by-name"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {eventEntries.map(([name, count]) => (
-                    <li key={name} className="break-all">
-                      <Badge>{count}</Badge> {name}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          )}
-
-          <h4 className="mt-ol-m mb-ol-s text-ol-m">Crawler</h4>
-          {crawlOutcomes == null &&
-          crawlReasons == null &&
-          crawlDomains == null &&
-          crawlFailingDomains == null &&
-          crawlSeries == null ? (
-            <p data-testid="crawler-empty" className="my-ol-s text-ol-s">
-              No crawler activity — workers have not reported page outcomes yet.
-            </p>
-          ) : (
-            <Card data-testid="crawler-summary">
-              {(() => {
-                const outcomeCounts: Record<string, number> = {};
-                for (const entry of crawlOutcomes?.top ?? []) {
-                  outcomeCounts[entry.value] = entry.count;
-                }
-                const total =
-                  (outcomeCounts.fetched ?? 0) +
-                  (outcomeCounts.failed ?? 0) +
-                  (outcomeCounts.skipped ?? 0);
-                const successRate =
-                  total > 0
-                    ? `${Math.round(((outcomeCounts.fetched ?? 0) / total) * 100)}% fetched (${outcomeCounts.fetched ?? 0}/${total})`
-                    : null;
-                const seriesCounts = (crawlSeries?.points ?? []).map((point) => point.count);
-                const seriesPeak = Math.max(0, ...seriesCounts);
-                return (
-                  <>
-                    {crawlOutcomes != null && crawlOutcomes.top.length > 0 && (
-                      <ul
-                        data-testid="crawler-by-outcome"
-                        className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                      >
-                        {crawlOutcomes.top.map((entry) => (
-                          <li key={entry.value} className="break-all">
-                            <Badge>{entry.count}</Badge> {entry.value}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {successRate != null && (
-                      <p data-testid="crawler-success-rate" className="my-ol-s text-ol-s">
-                        Success rate: {successRate}
-                      </p>
-                    )}
-                    {seriesCounts.length > 0 && seriesPeak > 0 && (
-                      <p data-testid="crawler-throughput" className="my-ol-s">
-                        <span aria-hidden="true">{sparkline(seriesCounts)}</span>{' '}
-                        <span className="text-ol-s">
-                          {crawlSeries?.bucket === 'hour' ? 'hourly' : 'daily'} pages · peak{' '}
-                          {seriesPeak}/{crawlSeries?.bucket === 'hour' ? 'hour' : 'day'}
-                        </span>
-                      </p>
-                    )}
-                    {crawlDomains != null && crawlDomains.top.length > 0 && (
-                      <ul
-                        data-testid="crawler-by-domain"
-                        className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                      >
-                        {crawlDomains.top.map((entry) => (
-                          <li key={entry.value} className="break-all">
-                            <Badge>{entry.count}</Badge> {entry.value}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {crawlFailingDomains != null && crawlFailingDomains.top.length > 0 && (
-                      <p data-testid="crawler-failing-domains" className="my-ol-s text-ol-s">
-                        Top failing domains:{' '}
-                        {crawlFailingDomains.top
-                          .map((entry) => `${entry.value} (${entry.count})`)
-                          .join(', ')}
-                      </p>
-                    )}
-                    {crawlReasons != null && crawlReasons.top.length > 0 && (
-                      <p data-testid="crawler-by-reason" className="my-ol-s text-ol-s">
-                        Top reasons:{' '}
-                        {crawlReasons.top
-                          .map((entry) => `${entry.value} (${entry.count})`)
-                          .join(', ')}
-                      </p>
-                    )}
-                    {crawlOutcomes != null &&
-                      crawlOutcomes.top.length === 0 &&
-                      (crawlReasons == null || crawlReasons.top.length === 0) &&
-                      (crawlDomains == null || crawlDomains.top.length === 0) && (
-                        <p className="my-ol-s text-ol-s">
-                          No page outcomes recorded in this window.
-                        </p>
-                      )}
-                  </>
-                );
-              })()}
-            </Card>
-          )}
-
-          <h4 className="mt-ol-m mb-ol-s text-ol-m">Feedback summary</h4>
-          {feedback === null || feedback === undefined ? (
-            <p data-testid="feedback-empty" className="my-ol-s text-ol-s">
-              No feedback summary — the backend did not return one.
-            </p>
-          ) : (
-            <Card data-testid="feedback-summary">
-              <p data-testid="feedback-total" className="my-ol-s">
-                <Badge>{feedback.total} signals</Badge> total
-              </p>
-              {actionEntries.length > 0 && (
-                <ul
-                  data-testid="feedback-by-action"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {actionEntries.map(([action, count]) => (
-                    <li key={action} className="break-all">
-                      <Badge>{count}</Badge> {action}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {reasonEntries.length > 0 && (
-                <p data-testid="feedback-by-reason" className="my-ol-s text-ol-s">
-                  Reasons:{' '}
-                  {reasonEntries.map(([reason, count]) => `${reason} (${count})`).join(', ')}
-                </p>
-              )}
-              {feedback.top_docs.length > 0 && (
-                <ul
-                  data-testid="feedback-top-docs"
-                  className="flex flex-col gap-ol-xs my-ol-s pl-ol-m"
-                >
-                  {feedback.top_docs.slice(0, 10).map((doc) => (
-                    <li key={doc.doc_id} className="break-all">
-                      <Badge>{doc.total}</Badge> {doc.doc_id}
-                      {doc.top_reason ? ` · ${doc.top_reason}` : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          )}
-        </>
-      )}
-      <Toasts items={toasts} onDismiss={dismissToast} />
-    </GlassPanel>
+function readTopRows(top: { top?: DomainRow[] } | null | undefined): DomainRow[] {
+  if (!top || !Array.isArray(top.top)) return [];
+  return top.top.filter(
+    (entry): entry is DomainRow =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof entry.value === 'string' &&
+      typeof entry.count === 'number',
   );
 }
 
 /**
- * Self-contained Query provider so the panel works wherever it is
- * mounted (admin page, tests) without app-wide wiring yet.
+ * Totomo-style analytics rows: key metrics, throughput, and ranked
+ * breakdown lists — searchable by date range and domain, with paging
+ * on the long domain lists. The window select covers trailing presets;
+ * the From/To inputs replace it with an absolute ``YYYY-MM-DD`` range.
+ * Reads degrade to skeletons on store trouble (fail-open).
+ *
+ * Owns its query client (same pattern as ``FrontierDrawer``) so the
+ * panel works wherever it is mounted.
  */
 export function AnalyticsPanel({ adminToken }: AnalyticsPanelProps) {
   const [client] = useState(
@@ -371,5 +55,446 @@ export function AnalyticsPanel({ adminToken }: AnalyticsPanelProps) {
     <QueryClientProvider client={client}>
       <AnalyticsPanelView adminToken={adminToken} />
     </QueryClientProvider>
+  );
+}
+
+function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
+  const [days, setDays] = useState(30);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [domainDraft, setDomainDraft] = useState('');
+  const [domain, setDomain] = useState('');
+  const [domainPage, setDomainPage] = useState(1);
+  const [failingDomainPage, setFailingDomainPage] = useState(1);
+
+  const rangeActive = fromDate !== '' && toDate !== '';
+  const start = rangeActive ? fromDate : undefined;
+  const end = rangeActive ? toDate : undefined;
+  const appliedDomain = domain.trim() === '' ? undefined : domain.trim();
+  const windowLabel = rangeActive ? `${fromDate} → ${toDate}` : `in the last ${days} days`;
+  const rangeSpanDays = rangeActive
+    ? Math.max(
+        0,
+        Math.round(
+          (new Date(`${toDate}T00:00:00Z`).getTime() -
+            new Date(`${fromDate}T00:00:00Z`).getTime()) /
+            86400000,
+        ),
+      )
+    : undefined;
+  const effectiveSpan = rangeSpanDays ?? days;
+
+  const countsQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'counts', days, fromDate, toDate],
+    queryFn: () => fetchAnalyticsCounts(days, adminToken, start, end),
+  });
+  const seriesQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'series', days, fromDate, toDate],
+    queryFn: () =>
+      fetchAnalyticsSeries(
+        'crawl.page',
+        effectiveSpan <= 7 ? 'hour' : 'day',
+        days,
+        adminToken,
+        start,
+        end,
+      ),
+  });
+  const crawlDomainsQuery = useQuery({
+    queryKey: [
+      'admin',
+      'analytics',
+      'top-domains',
+      days,
+      fromDate,
+      toDate,
+      appliedDomain,
+      domainPage,
+    ],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'crawl.page',
+        'domain',
+        days,
+        TOP_DOMAINS_LIMIT,
+        adminToken,
+        undefined,
+        undefined,
+        (domainPage - 1) * TOP_DOMAINS_LIMIT,
+        appliedDomain,
+        start,
+        end,
+      ),
+  });
+  const failingDomainsQuery = useQuery({
+    queryKey: [
+      'admin',
+      'analytics',
+      'failing-domains',
+      days,
+      fromDate,
+      toDate,
+      failingDomainPage,
+    ],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'crawl.page',
+        'domain',
+        days,
+        TOP_DOMAINS_LIMIT,
+        adminToken,
+        'outcome',
+        'failed',
+        (failingDomainPage - 1) * TOP_DOMAINS_LIMIT,
+        undefined,
+        start,
+        end,
+      ),
+  });
+  const failingReasonsQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'failing-reasons', days, fromDate, toDate],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'crawl.page',
+        'reason',
+        days,
+        10,
+        adminToken,
+        'outcome',
+        'failed',
+        undefined,
+        undefined,
+        start,
+        end,
+      ),
+  });
+  const outcomesQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'outcomes', days, fromDate, toDate],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'crawl.page',
+        'outcome',
+        days,
+        10,
+        adminToken,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        start,
+        end,
+      ),
+  });
+
+  const counts = countsQuery.data ?? null;
+  const series = seriesQuery.data?.points ?? [];
+  const domains = readTopRows(crawlDomainsQuery.data);
+  const failingDomains = readTopRows(failingDomainsQuery.data);
+  const failingReasons = readTopRows(failingReasonsQuery.data);
+  const outcomes = readTopRows(outcomesQuery.data);
+  const totals = counts?.by_name ?? {};
+  const fetched = totals['crawl.fetched'] ?? 0;
+  const failed = totals['crawl.failed'] ?? 0;
+  const skipped = totals['crawl.skipped'] ?? 0;
+  const feedbackHelpful = totals['search.feedback.helpful'] ?? 0;
+  const feedbackTotal =
+    feedbackHelpful + (totals['search.feedback.not_helpful'] ?? 0);
+  const anyLoading =
+    countsQuery.isLoading ||
+    seriesQuery.isLoading ||
+    crawlDomainsQuery.isLoading ||
+    failingDomainsQuery.isLoading ||
+    failingReasonsQuery.isLoading ||
+    outcomesQuery.isLoading;
+  const failedQuery =
+    countsQuery.isError ||
+    seriesQuery.isError ||
+    crawlDomainsQuery.isError ||
+    failingDomainsQuery.isError ||
+    failingReasonsQuery.isError ||
+    outcomesQuery.isError;
+
+  function applyDomainSearch() {
+    setDomain(domainDraft.trim());
+    setDomainPage(1);
+  }
+
+  function clearDomainSearch() {
+    setDomainDraft('');
+    setDomain('');
+    setDomainPage(1);
+  }
+
+  function changeWindow(next: number) {
+    setDays(next);
+    setDomainPage(1);
+    setFailingDomainPage(1);
+  }
+
+  function changeFromDate(next: string) {
+    setFromDate(next);
+    setDomainPage(1);
+    setFailingDomainPage(1);
+  }
+
+  function changeToDate(next: string) {
+    setToDate(next);
+    setDomainPage(1);
+    setFailingDomainPage(1);
+  }
+
+  function renderDomainPager(
+    page: number,
+    setPage: (next: number) => void,
+    rows: DomainRow[],
+    prefix: string,
+  ) {
+    return (
+      <div className="mt-ol-s flex flex-wrap items-center gap-ol-s text-ol-s">
+        <button
+          type="button"
+          data-testid={`${prefix}-prev`}
+          className="ol-button-ghost"
+          disabled={page <= 1}
+          onClick={() => setPage(Math.max(1, page - 1))}
+        >
+          Previous
+        </button>
+        <span data-testid={`${prefix}-page`}>Page {page}</span>
+        <button
+          type="button"
+          data-testid={`${prefix}-next`}
+          className="ol-button-ghost"
+          disabled={rows.length < TOP_DOMAINS_LIMIT}
+          onClick={() => setPage(page + 1)}
+        >
+          Next
+        </button>
+        <label className="flex items-center gap-ol-xs">
+          Go to
+          <input
+            data-testid={`${prefix}-jump`}
+            type="number"
+            min={1}
+            defaultValue={page}
+            key={`${prefix}-jump-${page}`}
+            className="w-16 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              const next = Number((event.target as HTMLInputElement).value);
+              if (Number.isInteger(next) && next >= 1) setPage(next);
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          data-testid={`${prefix}-go`}
+          className="ol-button-ghost"
+          onClick={() => {
+            const input = document.querySelector<HTMLInputElement>(
+              `[data-testid="${prefix}-jump"]`,
+            );
+            const next = Number(input?.value);
+            if (Number.isInteger(next) && next >= 1) setPage(next);
+          }}
+        >
+          Go
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <section aria-label="Analytics" className="flex flex-col gap-ol-m text-ol-s">
+      {failedQuery ? (
+        <p role="alert" className="my-ol-s">
+          Analytics unavailable right now.
+        </p>
+      ) : null}
+      <div className="flex flex-wrap items-end gap-ol-m">
+        <label className="flex flex-col gap-ol-xs font-semibold">
+          Window
+          <select
+            data-testid="analytics-window"
+            value={days}
+            onChange={(event) => changeWindow(Number(event.target.value))}
+            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          >
+            {WINDOW_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                Last {option} days
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-ol-xs font-semibold">
+          From
+          <input
+            data-testid="analytics-from"
+            type="date"
+            value={fromDate}
+            max={toDate === '' ? undefined : toDate}
+            onChange={(event) => changeFromDate(event.target.value)}
+            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          />
+        </label>
+        <label className="flex flex-col gap-ol-xs font-semibold">
+          To
+          <input
+            data-testid="analytics-to"
+            type="date"
+            value={toDate}
+            min={fromDate === '' ? undefined : fromDate}
+            onChange={(event) => changeToDate(event.target.value)}
+            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          />
+        </label>
+        {rangeActive ? (
+          <p data-testid="analytics-range-note" className="my-ol-xs">
+            Showing absolute range; the window preset is ignored.
+          </p>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-end gap-ol-m">
+        <label className="flex flex-col gap-ol-xs font-semibold">
+          Domain contains
+          <input
+            data-testid="analytics-domain"
+            type="text"
+            value={domainDraft}
+            onChange={(event) => setDomainDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyDomainSearch();
+            }}
+            placeholder="e.g. wikipedia"
+            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          />
+        </label>
+        <button
+          type="button"
+          data-testid="analytics-domain-search"
+          className="ol-button-ghost"
+          onClick={applyDomainSearch}
+        >
+          Search
+        </button>
+        {appliedDomain !== undefined ? (
+          <button
+            type="button"
+            data-testid="analytics-domain-clear"
+            className="ol-button-ghost"
+            onClick={clearDomainSearch}
+          >
+            Clear
+          </button>
+        ) : null}
+      </div>
+      {anyLoading ? <p className="my-ol-s">Loading analytics…</p> : null}
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Key events {windowLabel}</h4>
+        <ul className="flex flex-col gap-ol-xs">
+          <li>
+            Pages fetched: <strong>{fetched}</strong>
+          </li>
+          <li>
+            Pages failed: <strong>{failed}</strong>
+          </li>
+          <li>
+            Pages skipped: <strong>{skipped}</strong>
+          </li>
+          <li>
+            Feedback helpful: <strong>{feedbackHelpful}</strong> of {feedbackTotal}
+          </li>
+        </ul>
+      </div>
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Pages per day {windowLabel}</h4>
+        {series.length === 0 ? (
+          <p className="my-ol-s">No throughput yet.</p>
+        ) : (
+          <ul className="flex flex-col gap-ol-xs">
+            {series.map((point) => (
+              <li key={point.t}>
+                {point.t}: <strong>{point.count}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m" data-testid="analytics-domains">
+          Top domains {windowLabel}
+          {appliedDomain !== undefined ? ` matching “${appliedDomain}”` : ''}
+        </h4>
+        {domains.length === 0 ? (
+          <p data-testid="analytics-domains-empty" className="my-ol-s">
+            No domains{domainPage > 1 ? ' on this page' : ''}.
+          </p>
+        ) : (
+          <ul data-testid="analytics-domains-list" className="flex flex-col gap-ol-xs">
+            {domains.map((entry) => (
+              <li key={entry.value}>
+                {entry.value}: <strong>{entry.count}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+        {renderDomainPager(domainPage, setDomainPage, domains, 'analytics-domains')}
+      </div>
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m" data-testid="analytics-failing-domains">
+          Top failing domains {windowLabel}
+        </h4>
+        {failingDomains.length === 0 ? (
+          <p data-testid="analytics-failing-domains-empty" className="my-ol-s">
+            No failed pages{failingDomainPage > 1 ? ' on this page' : ''}.
+          </p>
+        ) : (
+          <ul data-testid="analytics-failing-domains-list" className="flex flex-col gap-ol-xs">
+            {failingDomains.map((entry) => (
+              <li key={entry.value}>
+                {entry.value}: <strong>{entry.count}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+        {renderDomainPager(
+          failingDomainPage,
+          setFailingDomainPage,
+          failingDomains,
+          'analytics-failing-domains',
+        )}
+      </div>
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m" data-testid="analytics-reasons">
+          Top failing reasons {windowLabel}
+        </h4>
+        {failingReasons.length === 0 ? (
+          <p className="my-ol-s">No failed pages.</p>
+        ) : (
+          <ul data-testid="analytics-reasons-list" className="flex flex-col gap-ol-xs">
+            {failingReasons.map((entry) => (
+              <li key={entry.value}>
+                {entry.value}: <strong>{entry.count}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <h4 className="mt-ol-m mb-ol-s text-ol-m">Page outcomes {windowLabel}</h4>
+        {outcomes.length === 0 ? (
+          <p className="my-ol-s">No crawl activity.</p>
+        ) : (
+          <ul className="flex flex-col gap-ol-xs">
+            {outcomes.map((entry) => (
+              <li key={entry.value}>
+                {entry.value}: <strong>{entry.count}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }

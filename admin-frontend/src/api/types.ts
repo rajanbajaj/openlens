@@ -254,6 +254,30 @@ export interface FrontierEnqueueSeedsResponse {
   enqueued: number;
 }
 
+/** Queue row inside GET /api/v1/frontier/url-info (null when never seen). */
+export interface FrontierUrlInspectorFrontier {
+  status: string;
+  priority?: number;
+  attempts?: number;
+  last_error?: string | null;
+}
+
+/** Indexed document inside GET /api/v1/frontier/url-info (null when absent). */
+export interface FrontierUrlInspectorDocument {
+  title: string;
+  chars?: number;
+}
+
+/** GET /api/v1/frontier/url-info response body: one URL's crawl story. */
+export interface FrontierUrlInfo {
+  url: string;
+  normalized_url: string;
+  frontier: FrontierUrlInspectorFrontier | null;
+  document: FrontierUrlInspectorDocument | null;
+  extracted_links?: number;
+  link_sample?: string[];
+}
+
 /** Admin analytics overview: durable per-name counts over a window. */
 export interface AnalyticsCounts {
   days: number;

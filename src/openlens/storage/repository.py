@@ -786,6 +786,44 @@ class DocumentRepository(DocumentStore):
             ) from exc
         return _row_to_document(row) if row else None
 
+    def get_by_url(self, url: str) -> Document | None:
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT id, title, content, url, metadata, "
+                    + "content_type, published, site_category, "
+                    + "site_category_confidence, site_category_source, "
+                    + "kids_domain_hit, news_domain_hit, fetch_ms "
+                    + "FROM documents WHERE lower(url) = lower(?) LIMIT 1",
+                    (url.strip(),),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to fetch document by URL: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return _row_to_document(row) if row else None
+
+    def outbound_links(self, doc_id: str, limit: int = 10) -> tuple[int, list[str]]:
+        try:
+            with self._lock:
+                total = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM document_links WHERE source_id = ?",
+                    (doc_id,),
+                ).fetchone()
+                rows = self._conn.execute(
+                    "SELECT target FROM document_links WHERE source_id = ? LIMIT ?",
+                    (doc_id, max(0, int(limit or 0))),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to fetch document outlinks: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+        return int(total["n"]), [str(row["target"]) for row in rows]
+
     def count(self) -> int:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()

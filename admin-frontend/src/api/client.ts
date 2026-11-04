@@ -23,6 +23,7 @@ import {
   isFrontierTriageResult,
   isFrontierSettingsResponse,
   isFrontierStatus,
+  isFrontierUrlInfo,
   isFrontierWorkersResponse,
   isSearchResponse,
   isSuggestResponse,
@@ -63,6 +64,7 @@ import type {
   FrontierQueuedDomainList,
   FrontierTriageResult,
   FrontierSettings,
+  FrontierUrlInfo,
   FrontierSettingsResponse,
   FrontierStatus,
   FrontierWorker,
@@ -383,6 +385,33 @@ export async function fetchFrontierStatus(
   if (!response.ok) return null;
   try {
     return await parseFrontier(response, isFrontierStatus);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/frontier/url-info?url=...`: one URL's
+ * crawl story (queue row, indexed document, extracted-link fan-out).
+ * Resolves to `null` on blank input, transport, or shape failures so
+ * the inspector degrades to an empty note instead of throwing.
+ */
+export async function fetchFrontierUrlInfo(
+  url: string,
+  fetchImpl: FetchImpl = fetch,
+): Promise<FrontierUrlInfo | null> {
+  if (!url.trim()) return null;
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${API_BASE_URL}/api/v1/frontier/url-info?url=${encodeURIComponent(url.trim())}`,
+    );
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  try {
+    return await parseFrontier(response, isFrontierUrlInfo);
   } catch {
     return null;
   }
@@ -721,11 +750,17 @@ export async function saveAdminConfig(
 export async function fetchAnalyticsCounts(
   days: number = 30,
   adminToken: string = '',
+  start?: string,
+  end?: string,
 ): Promise<AnalyticsCounts | null> {
   let res;
   try {
     res = await adminAnalyticsCountsApiV1AdminAnalyticsCountsGet(
-      { days },
+      {
+        days,
+        ...(start !== undefined ? { start } : {}),
+        ...(end !== undefined ? { end } : {}),
+      },
       { headers: { ...frontierAdminHeaders(adminToken) } },
     );
   } catch {
@@ -772,6 +807,10 @@ export async function fetchAnalyticsTop(
   adminToken: string = '',
   filterProp?: string,
   filterValue?: string,
+  offset?: number,
+  match?: string,
+  start?: string,
+  end?: string,
 ): Promise<AnalyticsTop | null> {
   let res;
   try {
@@ -783,6 +822,10 @@ export async function fetchAnalyticsTop(
         limit,
         ...(filterProp !== undefined ? { filter_prop: filterProp } : {}),
         ...(filterValue !== undefined ? { filter_value: filterValue } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+        ...(match !== undefined ? { match } : {}),
+        ...(start !== undefined ? { start } : {}),
+        ...(end !== undefined ? { end } : {}),
       },
       { headers: { ...frontierAdminHeaders(adminToken) } },
     );
@@ -804,11 +847,19 @@ export async function fetchAnalyticsSeries(
   bucket: string = 'day',
   days: number = 30,
   adminToken: string = '',
+  start?: string,
+  end?: string,
 ): Promise<AnalyticsSeries | null> {
   let res;
   try {
     res = await adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet(
-      { name, bucket, days },
+      {
+        name,
+        bucket,
+        days,
+        ...(start !== undefined ? { start } : {}),
+        ...(end !== undefined ? { end } : {}),
+      },
       { headers: { ...frontierAdminHeaders(adminToken) } },
     );
   } catch {

@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   clearFrontier,
   fetchAdminConfig,
+  fetchAnalyticsCounts,
+  fetchAnalyticsSeries,
+  fetchAnalyticsTop,
   fetchFrontierSettings,
   fetchFrontierStatus,
+  fetchFrontierUrlInfo,
   fetchFrontierWorkers,
   frontierAdminHeaders,
   frontierLiveUrl,
@@ -145,6 +149,107 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
     expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
       seeds: ['https://example.com/x'],
     });
+  });
+
+  it('fetchFrontierUrlInfo returns the crawl story for one URL', async () => {
+    const payload = {
+      url: 'https://example.com/a',
+      normalized_url: 'https://example.com/a',
+      frontier: { status: 'done', priority: 9, attempts: 0, last_error: null },
+      document: { title: 'Example A', chars: 11 },
+      extracted_links: 2,
+      link_sample: ['https://example.com/b', 'https://example.com/c'],
+    };
+    const { fetchImpl, calls } = captureFetch(payload);
+    const info = await fetchFrontierUrlInfo('https://example.com/a', fetchImpl);
+    expect(String(calls[0][0])).toContain('/api/v1/frontier/url-info?url=');
+    expect(info).toEqual(payload);
+  });
+
+  it('fetchAnalyticsTop passes paging, match, and range params', async () => {
+    const seen: string[] = [];
+    const impl = vi.fn().mockImplementation((url: unknown) => {
+      seen.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              name: 'crawl.page',
+              prop: 'domain',
+              days: 30,
+              total: 1,
+              top: [{ value: 'example.com', count: 3 }],
+            }),
+          ),
+        json: () =>
+          Promise.resolve({
+            name: 'crawl.page',
+            prop: 'domain',
+            days: 30,
+            total: 1,
+            top: [{ value: 'example.com', count: 3 }],
+          }),
+      });
+    });
+    vi.stubGlobal('fetch', impl);
+    try {
+      const top = await fetchAnalyticsTop(
+        'crawl.page',
+        'domain',
+        30,
+        10,
+        '',
+        undefined,
+        undefined,
+        20,
+        'example',
+        '2026-10-01',
+        '2026-10-10',
+      );
+      expect(top?.top).toEqual([{ value: 'example.com', count: 3 }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const url = seen.find((candidate) => candidate.includes('/api/v1/admin/analytics/top')) ?? '';
+    expect(url).toContain('offset=20');
+    expect(url).toContain('match=example');
+    expect(url).toContain('start=2026-10-01');
+    expect(url).toContain('end=2026-10-10');
+  });
+
+  it('fetchAnalyticsCounts and fetchAnalyticsSeries pass range params', async () => {
+    const seen: string[] = [];
+    const impl = vi.fn().mockImplementation((url: unknown) => {
+      seen.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve('{}'),
+        json: () => Promise.resolve({}),
+      });
+    });
+    vi.stubGlobal('fetch', impl);
+    try {
+      await fetchAnalyticsCounts(30, '', '2026-10-01', '2026-10-10');
+      await fetchAnalyticsSeries('crawl.page', 'day', 30, '', '2026-10-01', '2026-10-10');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen.some((url) => url.includes('start=2026-10-01'))).toBe(true);
+    expect(seen.some((url) => url.includes('end=2026-10-10'))).toBe(true);
+  });
+
+  it('fetchFrontierUrlInfo degrades blank, failed, and malformed reads to null', async () => {
+    const { fetchImpl } = captureFetch(null);
+    await expect(fetchFrontierUrlInfo('   ', fetchImpl)).resolves.toBeNull();
+    const failing: FetchImpl = () => Promise.reject(new Error('down'));
+    await expect(fetchFrontierUrlInfo('https://example.com/a', failing)).resolves.toBeNull();
+    const { fetchImpl: malformed } = captureFetch({ nope: true });
+    await expect(fetchFrontierUrlInfo('https://example.com/a', malformed)).resolves.toBeNull();
   });
 
   it('save settings PUTs the document with the admin token', async () => {

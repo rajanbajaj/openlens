@@ -905,6 +905,51 @@ class PostgresDocumentStore(DocumentStore):
                 ) from exc
         return _row_to_document(row) if row is not None else None
 
+    def get_by_url(self, url: str) -> Document | None:
+        with self._read_connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT id, title, content, url, metadata,"  # noqa: S608
+                        f" content_type, published, {CATEGORY_SELECT}, fetch_ms"
+                        f" FROM {self._qualified()} WHERE lower(url) = lower(%s)"
+                        " LIMIT 1",
+                        (url.strip(),),
+                    )
+                    row = cur.fetchone()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to fetch document by URL: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        return _row_to_document(row) if row is not None else None
+
+    def outbound_links(self, doc_id: str, limit: int = 10) -> tuple[int, list[str]]:
+        links = f'"{self._schema}"."document_links"'
+        with self._read_connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {links} WHERE source_id = %s",  # noqa: S608
+                        (doc_id,),
+                    )
+                    total_row = cur.fetchone()
+                    cur.execute(
+                        f"SELECT target FROM {links} WHERE source_id = %s"  # noqa: S608
+                        " LIMIT %s",
+                        (doc_id, max(0, int(limit or 0))),
+                    )
+                    rows = cur.fetchall()
+            except Exception as exc:
+                raise ProviderError(
+                    f"failed to fetch document outlinks: {exc}",
+                    provider_name=_PROVIDER_NAME,
+                    code=ProviderError.UNAVAILABLE,
+                ) from exc
+        total = int(total_row[0]) if total_row is not None else 0
+        return total, [str(row[0]) for row in rows]
+
     def hash_exists(self, content_hash: str) -> bool:
         """True when any document carries this content hash.
 

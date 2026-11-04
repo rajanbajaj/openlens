@@ -62,6 +62,24 @@ class DocumentStore(ABC):
         """Fetch a document by id, or None when missing."""
         raise NotImplementedError
 
+    def get_by_url(self, url: str) -> Document | None:
+        """Fetch a document by URL (case-insensitive), or None when missing.
+
+        Concrete default (None) so older/test doubles keep working;
+        lets the admin URL inspector confirm a seed was indexed
+        without scanning the whole store.
+        """
+        return None
+
+    def outbound_links(self, doc_id: str, limit: int = 10) -> tuple[int, list[str]]:
+        """Outlinks extracted from one document: (total count, sample).
+
+        The sample holds up to ``limit`` targets in storage order.
+        Concrete default (empty) so backends without an authority
+        graph degrade to zero instead of failing.
+        """
+        return (0, [])
+
     @abstractmethod
     def search(
         self,

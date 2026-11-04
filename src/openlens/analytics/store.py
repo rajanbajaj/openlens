@@ -61,6 +61,77 @@ def _event_names() -> frozenset[str]:
 #: query builder, so they are restricted to a quote-free charset.
 _FILTER_VALUE_RE = re.compile(r"^[A-Za-z0-9 _.\-/:()@]+$")
 
+#: Absolute range bounds ride the same literal paths, so they are
+#: restricted to strict calendar dates (no quotes, no wildcards).
+_RANGE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+#: Absolute date ranges may not span more than this (mirrors the
+#: trailing-`days` cap of 365, plus the inclusive end day).
+_MAX_RANGE_DAYS = 366
+
+
+def _check_range_args(
+    start: str | None, end: str | None
+) -> tuple[str | None, str | None]:
+    """Validate an absolute ``YYYY-MM-DD`` range into storage bounds.
+
+    Returns ``(None, None)`` when neither bound is given (callers fall
+    back to the trailing-``days`` window). Exactly one bound, a
+    non-calendar date, a reversed range, or a span over
+    ``_MAX_RANGE_DAYS`` fails closed with ``INVALID_REQUEST``. Bounds
+    use the stored naive-UTC ``YYYY-MM-DD HH:MM:SS`` shape: the start
+    day is inclusive from midnight, the end day inclusive through
+    ``23:59:59`` (exclusive bound is the next midnight).
+    """
+    if start is None and end is None:
+        return None, None
+    import datetime as _datetime
+
+    if not (
+        isinstance(start, str)
+        and isinstance(end, str)
+        and _RANGE_DATE_RE.match(start)
+        and _RANGE_DATE_RE.match(end)
+    ):
+        raise ProviderError(
+            f"invalid analytics date range: {start!r}..{end!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+    try:
+        start_d = _datetime.date.fromisoformat(start)
+        end_d = _datetime.date.fromisoformat(end)
+    except ValueError:
+        raise ProviderError(
+            f"invalid analytics date range: {start!r}..{end!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        ) from None
+    span = (end_d - start_d).days
+    if span < 0 or span > _MAX_RANGE_DAYS:
+        raise ProviderError(
+            f"invalid analytics date range: {start!r}..{end!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+    end_exclusive = end_d + _datetime.timedelta(days=1)
+    return f"{start} 00:00:00", f"{end_exclusive.isoformat()} 00:00:00"
+
+
+def _check_match_arg(match: str | None) -> None:
+    """Fail-closed validation for the top-prop substring filter."""
+    if match is None:
+        return
+    # Same quote-free charset as filter values; it also carries no
+    # LIKE wildcards, so the caller's added ``%`` wrappers cannot be
+    # escaped into broader matches.
+    if not isinstance(match, str) or not _FILTER_VALUE_RE.match(match):
+        raise ProviderError(
+            f"invalid analytics match: {match!r}",
+            provider_name=_PROVIDER_NAME,
+            code=ProviderError.INVALID_REQUEST,
+        )
+
 
 def _check_top_args(name: str, prop: str) -> None:
     """Fail-closed validation for top-prop aggregation arguments."""
@@ -171,15 +242,28 @@ class AnalyticsStore:
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
-    def counts_by_name(self, since_days: int = 30) -> dict[str, int]:
-        """Event counts per name over the trailing window."""
-        cutoff = _window_cutoff(since_days)
+    def counts_by_name(
+        self,
+        since_days: int = 30,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, int]:
+        """Event counts per name over the trailing window or date range."""
+        range_start, range_end = _check_range_args(start, end)
+        if range_start is not None and range_end is not None:
+            where = "at >= ? AND at < ?"
+            args: tuple[Any, ...] = (range_start, range_end)
+        else:
+            where = "at >= ?"
+            args = (_window_cutoff(since_days),)
         try:
+            # ``where`` is one of two constant fragments above (bound
+            # values ride ``args``), never user input.
             with self._lock:
                 rows = self._conn.execute(
-                    "SELECT name, COUNT(*) AS n FROM analytics_events"
-                    " WHERE at >= ? GROUP BY name",
-                    (cutoff,),
+                    "SELECT name, COUNT(*) AS n FROM analytics_events"  # noqa: S608
+                    f" WHERE {where} GROUP BY name",
+                    args,
                 ).fetchall()
                 return {str(row["name"]): int(row["n"]) for row in rows}
         except Exception as exc:
@@ -197,23 +281,41 @@ class AnalyticsStore:
         limit: int = 10,
         filter_prop: str | None = None,
         filter_value: str | None = None,
+        offset: int = 0,
+        match: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
     ) -> list[tuple[str, int]]:
         """Top prop values for one event name over the trailing window.
 
         ``name`` must be a known event and ``prop`` a plain identifier
         (fail-closed); returns ``(value, count)`` pairs, most common
-        first. Powers the admin top-reasons view.
+        first. Powers the admin top-reasons view. ``offset`` pages
+        through the ranking; ``match`` keeps only values containing
+        the substring (case-insensitive); ``start``/``end`` select an
+        absolute ``YYYY-MM-DD`` range instead of the trailing window.
         """
         _check_top_args(name, prop)
         _check_filter_args(filter_prop, filter_value)
+        _check_match_arg(match)
+        range_start, range_end = _check_range_args(start, end)
         capped = max(1, min(int(limit or 10), 100))
-        cutoff = _window_cutoff(since_days)
+        skipped = max(0, int(offset or 0))
         path = f"$.{prop}"
-        where = ["name = ?", "at >= ?"]
-        args: list[Any] = [name, cutoff]
+        where = ["name = ?"]
+        args: list[Any] = [name]
+        if range_start is not None and range_end is not None:
+            where.append("at >= ? AND at < ?")
+            args.extend([range_start, range_end])
+        else:
+            where.append("at >= ?")
+            args.append(_window_cutoff(since_days))
         if filter_prop is not None and filter_value is not None:
             where.append("json_extract(props, ?) = ?")
             args.extend([f"$.{filter_prop}", filter_value])
+        if match is not None:
+            where.append("json_extract(props, ?) LIKE '%' || ? || '%' ESCAPE '\\'")
+            args.extend([path, match])
         where_sql = " AND ".join(where)
         try:
             with self._lock:
@@ -221,8 +323,8 @@ class AnalyticsStore:
                     f"SELECT json_extract(props, ?) AS v, COUNT(*) AS n"  # noqa: S608
                     f" FROM analytics_events WHERE {where_sql}"
                     " AND v IS NOT NULL AND v != ''"
-                    " GROUP BY v ORDER BY n DESC, v ASC LIMIT ?",
-                    (path, *args, capped),
+                    " GROUP BY v ORDER BY n DESC, v ASC LIMIT ? OFFSET ?",
+                    (path, *args, capped, skipped),
                 ).fetchall()
                 return [(str(row["v"]), int(row["n"])) for row in rows]
         except Exception as exc:
@@ -233,12 +335,19 @@ class AnalyticsStore:
             ) from exc
 
     def series(
-        self, name: str, bucket: str = "day", since_days: int = 30, limit: int = 500
+        self,
+        name: str,
+        bucket: str = "day",
+        since_days: int = 30,
+        limit: int = 500,
+        start: str | None = None,
+        end: str | None = None,
     ) -> list[tuple[str, int]]:
         """Per-bucket event counts over the trailing window (throughput).
 
         ``bucket`` is ``hour`` or ``day``; returns ``(bucket_start, count)``
-        pairs oldest-first, capped at ``limit`` buckets.
+        pairs oldest-first, capped at ``limit`` buckets. ``start``/``end``
+        select an absolute ``YYYY-MM-DD`` range instead of the window.
         """
         if name not in _event_names():
             raise ProviderError(
@@ -248,15 +357,21 @@ class AnalyticsStore:
             )
         bucket_sql = _bucket_sql(bucket)
         capped = max(1, min(int(limit or 500), 2000))
-        cutoff = _window_cutoff(since_days)
+        range_start, range_end = _check_range_args(start, end)
+        if range_start is not None and range_end is not None:
+            where = "name = ? AND at >= ? AND at < ?"
+            args: tuple[Any, ...] = (name, range_start, range_end)
+        else:
+            where = "name = ? AND at >= ?"
+            args = (name, _window_cutoff(since_days))
         try:
             with self._lock:
                 rows = self._conn.execute(
                     f"SELECT {bucket_sql} AS b, COUNT(*) AS n"  # noqa: S608
                     " FROM analytics_events"
-                    " WHERE name = ? AND at >= ?"
+                    f" WHERE {where}"
                     " GROUP BY b ORDER BY b ASC LIMIT ?",
-                    (name, cutoff, capped),
+                    (*args, capped),
                 ).fetchall()
                 return [(str(row["b"]), int(row["n"])) for row in rows]
         except Exception as exc:
@@ -472,12 +587,24 @@ class ClickHouseAnalyticsStore:
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
-    def counts_by_name(self, since_days: int = 30) -> dict[str, int]:
-        window = max(0, int(since_days))
+    def counts_by_name(
+        self,
+        since_days: int = 30,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, int]:
+        range_start, range_end = _check_range_args(start, end)
+        if range_start is not None and range_end is not None:
+            window_sql = (
+                f"at >= toDateTime('{range_start}') AND at < toDateTime('{range_end}')"
+            )
+        else:
+            window = max(0, int(since_days))
+            window_sql = f"at >= now() - INTERVAL {window} DAY"
         try:
             result = self._client.query(
                 f"SELECT name, COUNT() FROM {self._table()} "  # noqa: S608
-                f"WHERE at >= now() - INTERVAL {window} DAY GROUP BY name"
+                f"WHERE {window_sql} GROUP BY name"
             )
             return {str(name): int(n) for name, n in result.result_rows}
         except Exception as exc:
@@ -495,31 +622,47 @@ class ClickHouseAnalyticsStore:
         limit: int = 10,
         filter_prop: str | None = None,
         filter_value: str | None = None,
+        offset: int = 0,
+        match: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
     ) -> list[tuple[str, int]]:
         """Top prop values for one event name (fail-closed, see SQLite)."""
         _check_top_args(name, prop)
         _check_filter_args(filter_prop, filter_value)
-        window = max(0, int(since_days))
+        _check_match_arg(match)
+        range_start, range_end = _check_range_args(start, end)
         capped = max(1, min(int(limit or 10), 100))
+        skipped = max(0, int(offset or 0))
         # All interpolations are allowlisted above: ``name`` is a known
-        # event, props are plain identifiers, the filter value matches a
-        # quote-free charset — no user input reaches SQL raw.
+        # event, props are plain identifiers, the filter value and the
+        # match fragment match a quote-free charset, and range bounds
+        # are strict calendar dates — no user input reaches SQL raw.
         value_sql = f"JSONExtractString(props, '{prop}')"
+        if range_start is not None and range_end is not None:
+            window_clause = (
+                f"at >= toDateTime('{range_start}') AND at < toDateTime('{range_end}')"
+            )
+        else:
+            window = max(0, int(since_days))
+            window_clause = f"at >= now() - INTERVAL {window} DAY"
         clauses = [
             f"name = '{name}'",
-            f"at >= now() - INTERVAL {window} DAY",
+            window_clause,
             "v != ''",
         ]
         if filter_prop is not None and filter_value is not None:
             clauses.append(
                 f"JSONExtractString(props, '{filter_prop}') = '{filter_value}'"
             )
+        if match is not None:
+            clauses.append(f"positionCaseInsensitive({value_sql}, '{match}') > 0")
         try:
             result = self._client.query(
                 f"SELECT {value_sql} AS v, COUNT() AS n "  # noqa: S608
                 f"FROM {self._table()} "
                 f"WHERE {' AND '.join(clauses)} "
-                f"GROUP BY v ORDER BY n DESC, v ASC LIMIT {capped}"
+                f"GROUP BY v ORDER BY n DESC, v ASC LIMIT {capped} OFFSET {skipped}"
             )
             return [(str(v), int(n)) for v, n in result.result_rows]
         except Exception as exc:
@@ -530,7 +673,13 @@ class ClickHouseAnalyticsStore:
             ) from exc
 
     def series(
-        self, name: str, bucket: str = "day", since_days: int = 30, limit: int = 500
+        self,
+        name: str,
+        bucket: str = "day",
+        since_days: int = 30,
+        limit: int = 500,
+        start: str | None = None,
+        end: str | None = None,
     ) -> list[tuple[str, int]]:
         """Per-bucket event counts over the trailing window (throughput)."""
         if name not in _event_names():
@@ -549,14 +698,21 @@ class ClickHouseAnalyticsStore:
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.INVALID_REQUEST,
             )
-        window = max(0, int(since_days))
+        range_start, range_end = _check_range_args(start, end)
+        if range_start is not None and range_end is not None:
+            window_clause = (
+                f"at >= toDateTime('{range_start}') AND at < toDateTime('{range_end}')"
+            )
+        else:
+            window = max(0, int(since_days))
+            window_clause = f"at >= now() - INTERVAL {window} DAY"
         capped = max(1, min(int(limit or 500), 2000))
         try:
             result = self._client.query(
                 f"SELECT {bucket_sql} AS b, COUNT() AS n "  # noqa: S608
                 f"FROM {self._table()} "
                 f"WHERE name = '{name}' "
-                f"AND at >= now() - INTERVAL {window} DAY "
+                f"AND {window_clause} "
                 f"GROUP BY b ORDER BY b ASC LIMIT {capped}"
             )
             return [(str(b), int(n)) for b, n in result.result_rows]

@@ -559,6 +559,42 @@ describe('FrontierDrawer skip domains', () => {
     render(<FrontierDrawer adminToken="" />);
     expect(await screen.findByTestId('frontier-failed-empty')).toBeInTheDocument();
   });
+
+  it('jumps to a page number in failed URLs', async () => {
+    const failed = Array.from({ length: 45 }, (_, i) => ({
+      url: `https://example.com/f${i}`,
+      reason: 'fetch timeout',
+      attempts: 3,
+    }));
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      if (url.includes('/api/v1/frontier/failed')) {
+        const params = new URL(url, 'http://localhost').searchParams;
+        const limit = Number(params.get('limit') ?? 20);
+        const offset = Number(params.get('offset') ?? 0);
+        return {
+          urls: failed.slice(offset, offset + limit),
+          total: failed.length,
+          limit,
+          offset,
+        };
+      }
+      return STATUS;
+    });
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-failed')).toBeInTheDocument();
+    expect(screen.getByTestId('frontier-failed-page')).toHaveTextContent('Page 1 of 3');
+    fireEvent.change(screen.getByTestId('frontier-failed-jump'), {
+      target: { value: '3' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-failed-go'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-failed-page')).toHaveTextContent('Page 3 of 3');
+    });
+    expect(screen.getByTestId('frontier-failed')).toHaveTextContent('https://example.com/f44');
+    expect(screen.getByTestId('frontier-failed-next')).toBeDisabled();
+  });
 });
 
 describe('FrontierDrawer crawl-request review', () => {
@@ -987,5 +1023,69 @@ describe('FrontierDrawer failed domains', () => {
       domains: ['example.com'],
       delta: 1,
     });
+  });
+});
+
+describe('FrontierDrawer URL inspector', () => {
+  function stubInspectBackend(info: unknown): void {
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/url-info')) return info;
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+  }
+
+  it('shows queue, index, and fan-out for an inspected URL', async () => {
+    stubInspectBackend({
+      url: 'https://example.com/a',
+      normalized_url: 'https://example.com/a',
+      frontier: { status: 'done', priority: 9, attempts: 0, last_error: null },
+      document: { title: 'Example A', chars: 11 },
+      extracted_links: 2,
+      link_sample: ['https://example.com/b'],
+    });
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-inspect-url')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-inspect-url'), {
+      target: { value: 'https://example.com/a' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-inspect-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-inspect-result')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('frontier-inspect-frontier')).toHaveTextContent('done');
+    expect(screen.getByTestId('frontier-inspect-document')).toHaveTextContent('Example A');
+    expect(screen.getByTestId('frontier-inspect-links')).toHaveTextContent('2');
+    expect(screen.getByTestId('frontier-inspect-result')).toHaveTextContent(
+      'https://example.com/b',
+    );
+  });
+
+  it('explains a never-seen URL instead of failing', async () => {
+    stubInspectBackend({
+      url: 'https://example.com/never-seen',
+      normalized_url: 'https://example.com/never-seen',
+      frontier: null,
+      document: null,
+      extracted_links: 0,
+      link_sample: [],
+    });
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-inspect-url')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-inspect-url'), {
+      target: { value: 'https://example.com/never-seen' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-inspect-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-inspect-result')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('frontier-inspect-frontier')).toHaveTextContent('never seen');
+    expect(screen.getByTestId('frontier-inspect-document')).toHaveTextContent('Indexed: no');
   });
 });
