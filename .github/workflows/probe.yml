@@ -72,7 +72,7 @@ jobs:
               failed = json.load(open('/tmp/frontier-failed.json'))
           except Exception:
               failed = {}
-          rows = failed.get('failed') if isinstance(failed, dict) else None
+          rows = failed.get('urls') if isinstance(failed, dict) else None
           print('failed rows fetched:', len(rows) if isinstance(rows, list) else 'n/a')
           if isinstance(rows, list):
               matches = [r for r in rows if str((r or {}).get('url', '')).rstrip('/').lower() == want]
@@ -83,6 +83,25 @@ jobs:
               print(f'failed rows on host {want_host!r}: {len(host_hits)}')
               for entry in host_hits[:10]:
                   print(' ', (entry or {}).get('url'), '|', (entry or {}).get('reason'))
+          print('failed total:', (failed.get('total') if isinstance(failed, dict) else 'n/a'))
+          EOF
+          echo '--- index check: is the seed page searchable? ---'
+          curl -fsS -X POST http://localhost:8000/api/v1/search \
+            -H 'Content-Type: application/json' \
+            -d '{"query": "MDN Array global object", "limit": 5}' -o /tmp/probe-search.json \
+          && python3 - '"${{ inputs.url }}"' <<'EOF'
+          import json, sys
+          want = sys.argv[1].strip().rstrip('/').lower()
+          try:
+              body = json.load(open('/tmp/probe-search.json'))
+          except Exception as exc:
+              print('search unreadable:', exc)
+              raise SystemExit
+          results = body.get('results') or []
+          print(f'search returned {len(results)} results (total {body.get("total")})')
+          for hit in results:
+              mark = ' <== SEED' if str(hit.get('url', '')).rstrip('/').lower() == want else ''
+              print(' ', hit.get('url'), '|', (hit.get('title') or '')[:80], mark)
           EOF
 
       - name: Backend effective queue config
