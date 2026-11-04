@@ -941,6 +941,11 @@ def _domain_match_condition(placeholder: str) -> str:
     covered without a leading wildcard over the whole URL. Static SQL —
     only the table name is interpolated by callers.
     """
+    if placeholder == "%s":
+        # psycopg scans ``%X`` client-side and rejects a bare ``%.`` as
+        # a bad placeholder (ProgrammingError); ``%%`` collapses to one
+        # literal ``%``, so the executed pattern is unchanged.
+        return "(domain = %s OR domain LIKE '%%.' || %s ESCAPE '\\')"
     return f"(domain = {placeholder} OR domain LIKE '%.' || {placeholder} ESCAPE '\\')"
 
 

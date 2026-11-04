@@ -13,6 +13,7 @@ captures the generated SQL (same harness style as
 from __future__ import annotations
 
 import queue
+import re
 import threading
 from typing import Any
 
@@ -296,7 +297,7 @@ def test_postgres_bulk_skip_sql_uses_domain_equality_with_lock() -> None:
     assert "SET status = 'skipped'" in update_sql
     assert "status = 'queued'" in update_sql
     assert "domain = %s" in update_sql
-    assert "LIKE '%.' || %s" in update_sql
+    assert "LIKE '%%.' || %s" in update_sql
     assert "url LIKE" not in update_sql
     assert update_params == (
         "skipped: domain evil.test",
@@ -371,6 +372,32 @@ def test_postgres_purge_and_requeue_use_domain_equality() -> None:
     assert "status = 'failed'" in requeue_sql
     assert "domain = %s" in requeue_sql
     assert "url LIKE" not in requeue_sql
+
+
+def test_postgres_domain_flush_sql_has_no_bare_percent() -> None:
+    """psycopg rejects ``%X`` outside ``%s``/``%%`` client-side.
+
+    Regression: the domain-equality flush shipped
+    ``LIKE '%.' || %s``, which psycopg refuses with ProgrammingError —
+    every purge/skip/requeue and auto-triage 503'd while block (config
+    store only, no frontier SQL) kept working.
+    """
+    statements: list[str] = []
+    for op in (
+        lambda store: store.skip_queued_domains(["evil.test"]),
+        lambda store: store.purge_failed_domains(["evil.test"]),
+        lambda store: store.requeue_failed_domains(["evil.test"]),
+    ):
+        cursor = _FakeCursor()
+        cursor.rowcount = 0
+        op(_postgres_store(cursor))
+        statements.extend(sql for sql, _ in cursor.executed if "%" in sql)
+    assert statements, "expected Postgres flush statements to render"
+    stray = re.compile(r"%(?![sbt])")
+    for sql in statements:
+        # Collapse psycopg's %% escape first: what remains must only
+        # be real %s/%b/%t placeholders.
+        assert not stray.search(sql.replace("%%", "")), sql
 
 
 def test_like_patterns_escape_metacharacters() -> None:

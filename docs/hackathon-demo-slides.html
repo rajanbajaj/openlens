@@ -94,6 +94,7 @@
   .col.next h3 { color: var(--muted); }
   .col ul { list-style: none; }
   .col li { font-size: 1.55vw; line-height: 1.4; padding: 1vh 0 1vh 2.4vw; border-top: 1px solid var(--line); position: relative; }
+  .col li::before { content: "–"; position: absolute; left: 0.6vw; color: var(--muted); }
   .col li:last-child { border-bottom: 1px solid var(--line); }
   .col.shipped li::before { content: "✓"; position: absolute; left: 0.4vw; color: var(--accent); }
   .col.next li::before { content: "○"; position: absolute; left: 0.4vw; color: var(--muted); }
@@ -118,7 +119,27 @@
 <section class="slide">
   <div class="kicker">Hackathon submission · live demo</div>
   <h1>OpenLens:<br><em>search you can own.</em></h1>
-  <p class="lede">Crawl the web, index it, search it — the whole pipeline, on your own machine. No API keys, no black box.</p>
+  <p class="lede">One self-hosted search engine, positioned for whoever runs it.</p>
+  <div class="cols">
+    <div class="col">
+      <h3>For parents</h3>
+      <ul>
+        <li>Child-safe search out of the box<small>Ranking that protects — parental control without surveillance</small></li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>For developers</h3>
+      <ul>
+        <li>Search with your community's taste<small>Borrow a senior dev's index, keep your own rules</small></li>
+      </ul>
+    </div>
+    <div class="col">
+      <h3>For self-hosters</h3>
+      <ul>
+        <li>Your index on your machine<small>No API keys, no tracking, no black box</small></li>
+      </ul>
+    </div>
+  </div>
 </section>
 
 <section class="slide">
