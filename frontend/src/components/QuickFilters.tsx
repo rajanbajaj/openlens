@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+import { FILTER_DEBOUNCE_MS } from '../api/client.ts';
 import type { UserFilterState } from '../api/filters.ts';
 import { DATE_PRESET_OPTIONS, SAFETY_PRESETS } from '../api/filters.ts';
 import FilterToggle from './FilterToggle.tsx';
@@ -17,12 +19,43 @@ export interface QuickFiltersProps {
  * DuckDuckGo-style inline filter row: date, safe-search, sort, and
  * the sponsored toggle directly under the results header. This row is
  * the only filter surface; the sidebar carries non-filter utilities
- * only (library, URL requests, provider prefs). Edits re-run page 1
- * through the parent handler. The custom date inputs only render for
- * the custom preset.
+ * only (library, URL requests, provider prefs, applied filters). Edits
+ * re-run page 1 through the parent handler. The custom date inputs
+ * only render for the custom preset.
+ *
+ * Selects and the toggle apply immediately (one discrete change is
+ * already polite). The custom date fields edit a local draft so
+ * typing stays instant, and propagate after FILTER_DEBOUNCE_MS of
+ * quiet — without the delay every typed digit would re-run the
+ * search. The draft re-syncs when the parent state changes
+ * from elsewhere.
  */
 export function QuickFilters({ value, onChange, disabled = false }: QuickFiltersProps) {
   const set = (patch: Partial<UserFilterState>) => onChange({ ...value, ...patch });
+
+  const [draftDates, setDraftDates] = useState({ from: value.dateFrom, to: value.dateTo });
+  const parentDates = `${value.dateFrom}|${value.dateTo}`;
+  const [syncedDates, setSyncedDates] = useState(parentDates);
+  if (parentDates !== syncedDates) {
+    setSyncedDates(parentDates);
+    setDraftDates({ from: value.dateFrom, to: value.dateTo });
+  }
+
+  const latestRef = useRef({ value, onChange });
+  latestRef.current = { value, onChange };
+
+  useEffect(() => {
+    const current = latestRef.current;
+    if (draftDates.from === current.value.dateFrom && draftDates.to === current.value.dateTo) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const next = latestRef.current;
+      next.onChange({ ...next.value, dateFrom: draftDates.from, dateTo: draftDates.to });
+    }, FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [draftDates]);
+
   return (
     <div aria-label="Quick filters" data-testid="quick-filters" className="ol-quickfilters">
       <Select
@@ -44,18 +77,18 @@ export function QuickFilters({ value, onChange, disabled = false }: QuickFilters
             id="quickfilter-date-from"
             name="quick_date_from"
             type="date"
-            value={value.dateFrom}
+            value={draftDates.from}
             disabled={disabled}
-            onChange={(event) => set({ dateFrom: event.target.value })}
+            onChange={(event) => setDraftDates({ ...draftDates, from: event.target.value })}
           />
           <TextInput
             label="To"
             id="quickfilter-date-to"
             name="quick_date_to"
             type="date"
-            value={value.dateTo}
+            value={draftDates.to}
             disabled={disabled}
-            onChange={(event) => set({ dateTo: event.target.value })}
+            onChange={(event) => setDraftDates({ ...draftDates, to: event.target.value })}
           />
         </>
       )}

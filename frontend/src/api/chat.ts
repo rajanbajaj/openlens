@@ -6,7 +6,7 @@
  * No hardcoded hosts, no secrets or API keys anywhere in this module.
  */
 
-import { API_BASE_URL, MAX_QUERY_LENGTH } from './client.ts';
+import { API_BASE_URL, MAX_QUERY_LENGTH, sanitizeInput } from './client.ts';
 import { isChatResponse, isErrorEnvelope } from './guard.ts';
 import type { ChatHistoryTurn, ChatRequest, ChatResponse } from './types.ts';
 
@@ -68,7 +68,7 @@ export function buildChatBody(options: ChatOptions): ChatRequest {
     )
     .slice(-MAX_CHAT_HISTORY);
   return {
-    message: options.message,
+    message: sanitizeInput(options.message),
     history,
     limit: clampChatLimit(options.limit),
   };

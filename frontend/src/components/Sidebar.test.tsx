@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FILTER_DEBOUNCE_MS } from '../api/client.ts';
 import type { ProviderPrefs } from '../api/types.ts';
 import { Sidebar } from './Sidebar.tsx';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 const EMPTY_PREFS: ProviderPrefs = { include: [], exclude: [], primary: null };
@@ -60,10 +62,23 @@ describe('Sidebar utilities rail', () => {
     expect(onLibraryOpen).toHaveBeenCalledTimes(1);
   });
 
-  it('prefs edits flow through the change callback', () => {
-    const { onPrefsChange } = setup();
-
-    fireEvent.change(screen.getByLabelText(/primary provider/i), { target: { value: 'mock' } });
-    expect(onPrefsChange).toHaveBeenCalledWith({ include: [], exclude: [], primary: 'mock' });
+  it('prefs edits flow through the change callback after the debounce', () => {
+    vi.useFakeTimers();
+    try {
+      const { onPrefsChange } = setup();
+      const input = screen.getByLabelText(/primary provider/i);
+      fireEvent.change(input, { target: { value: 'mock' } });
+      expect(input).toHaveValue('mock');
+      expect(onPrefsChange).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+      expect(onPrefsChange).toHaveBeenCalledTimes(1);
+      expect(onPrefsChange).toHaveBeenCalledWith({
+        include: [],
+        exclude: [],
+        primary: 'mock',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

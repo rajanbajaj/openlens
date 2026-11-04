@@ -50,6 +50,24 @@ export interface SearchOptions {
 }
 
 /**
+ * Sanitize free-text input at the request boundary: strip ASCII
+ * control characters (keeping tab, LF, and CR), trim surrounding
+ * whitespace, and cap the length. Interior text - including query
+ * operators like `site:` and quoted phrases - passes through
+ * untouched, so this never changes what the user asked for.
+ */
+export function sanitizeInput(raw: string, maxLength: number = MAX_QUERY_LENGTH): string {
+  let clean = '';
+  for (const char of raw) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code === 127) continue;
+    if (code < 32 && char !== '\t' && char !== '\n' && char !== '\r') continue;
+    clean += char;
+  }
+  return clean.trim().slice(0, maxLength);
+}
+
+/**
  * Validate a raw query string against the backend contract:
  * non-blank, 1–1000 chars. Returns an error message, or `null`
  * when the query is valid.
@@ -69,7 +87,7 @@ export function validateQuery(query: string): string | null {
  */
 export function buildSearchBody(options: SearchOptions): SearchRequest {
   const body: SearchRequest = {
-    query: options.query,
+    query: sanitizeInput(options.query),
     mode: options.mode ?? 'default',
     limit: options.limit ?? DEFAULT_LIMIT,
     offset: options.offset ?? 0,
@@ -182,6 +200,14 @@ export function pageItems(page: number, total: number): PageItem[] {
 /** Debounce delay for as-you-type suggestions (plan contract). */
 export const SUGGEST_DEBOUNCE_MS = 150;
 
+/**
+ * Debounce delay for filter and provider-preference text edits that
+ * re-run the search. Discrete controls (selects, toggles) still apply
+ * immediately; only free-text fields wait out this delay so a burst
+ * of keystrokes issues one request instead of one per keystroke.
+ */
+export const FILTER_DEBOUNCE_MS = 350;
+
 type AnyArgs = unknown[];
 
 /**
@@ -233,8 +259,9 @@ export async function fetchSuggestions(
   options: SuggestOptions = {},
   fetchImpl: FetchImpl = fetch,
 ): Promise<string[]> {
-  if (!query.trim()) return [];
-  const params = new URLSearchParams({ q: query });
+  const clean = sanitizeInput(query);
+  if (!clean) return [];
+  const params = new URLSearchParams({ q: clean });
   if (options.limit !== undefined) params.set('limit', String(options.limit));
   let response: Response;
   try {
@@ -293,7 +320,9 @@ export async function requestCrawlUrl(
   url: string,
   fetchImpl: FetchImpl = fetch,
 ): Promise<CrawlRequestOutcome> {
-  const trimmed = url.trim();
+  // URLs may legitimately run longer than a search query; the wide
+  // cap only drops control characters and surrounding whitespace.
+  const trimmed = sanitizeInput(url, 2048);
   if (!trimmed) return { ok: false, message: 'Enter a URL first.' };
   let response: Response;
   try {

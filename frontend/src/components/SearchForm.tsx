@@ -131,10 +131,12 @@ export default function SearchForm({
       setActiveIndex(-1);
       return;
     }
-    setSuggestLoading(true);
-    setSuggestOpen(true);
+    // Loading chrome waits for the debounce timer: showing it on
+    // every keystroke flashes an empty dropdown while typing.
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
+      setSuggestLoading(true);
+      setSuggestOpen(true);
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;

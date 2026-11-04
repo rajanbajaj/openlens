@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FILTER_DEBOUNCE_MS } from '../api/client.ts';
 import { EMPTY_FILTER_STATE } from '../api/filters.ts';
 import { QuickFilters } from './QuickFilters.tsx';
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe('QuickFilters', () => {
@@ -26,12 +28,34 @@ describe('QuickFilters', () => {
     rerender(
       <QuickFilters value={{ ...EMPTY_FILTER_STATE, datePreset: 'custom' }} onChange={onChange} />,
     );
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-01' } });
-    expect(onChange).toHaveBeenCalledWith({
-      ...EMPTY_FILTER_STATE,
-      datePreset: 'custom',
-      dateFrom: '2026-10-01',
-    });
+    expect(screen.getByLabelText('From')).toBeInTheDocument();
+  });
+
+  it('debounces custom date typing into a single change', () => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      render(
+        <QuickFilters
+          value={{ ...EMPTY_FILTER_STATE, datePreset: 'custom' }}
+          onChange={onChange}
+        />,
+      );
+      const from = screen.getByLabelText('From');
+      fireEvent.change(from, { target: { value: '2026-10-01' } });
+      expect(from).toHaveValue('2026-10-01');
+      expect(onChange).not.toHaveBeenCalled();
+      fireEvent.change(from, { target: { value: '2026-10-02' } });
+      vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith({
+        ...EMPTY_FILTER_STATE,
+        datePreset: 'custom',
+        dateFrom: '2026-10-02',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disables every field while a search is in flight', () => {
