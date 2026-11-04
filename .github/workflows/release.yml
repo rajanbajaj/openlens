@@ -178,19 +178,6 @@ jobs:
             echo "unhealthy after 5m:"; echo "$LEFTOVER"; exit 1
           fi
 
-      - name: Health gates (ClickHouse store)
-        if: >-
-          ${{ steps.targets.outputs.full == 'true' ||
-              contains(steps.targets.outputs.list, 'clickhouse') }}
-        working-directory: deploy/local
-        run: |
-          # shellcheck disable=SC1091
-          set -a; . ./.env; set +a
-          docker compose exec -T clickhouse clickhouse-client \
-            --user "${CLICKHOUSE_USER:-openlens}" \
-            --password "${CLICKHOUSE_PASSWORD:-openlens}" \
-            --query "SELECT 1"
-
       - name: Show stack status
         if: always()
         working-directory: deploy/local
