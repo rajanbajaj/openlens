@@ -57,14 +57,32 @@ jobs:
       - name: Look up seed URL
         if: inputs.url != ''
         run: |
+          curl -fsS 'http://localhost:8000/api/v1/frontier/failed?limit=100' -o /tmp/frontier-failed.json || echo '{}' > /tmp/frontier-failed.json
           python3 - "${{ inputs.url }}" <<'EOF'
           import json, sys
+          from urllib.parse import urlsplit
           want = sys.argv[1].strip().rstrip('/').lower()
+          want_host = (urlsplit(want).hostname or '').lower()
           body = json.load(open('/tmp/frontier-status.json'))
           hits = [e for e in (body.get('queue') or []) if str(e.get('url', '')).rstrip('/').lower() == want]
-          print(f'seed rows matching {want!r}: {len(hits)} (of {body.get("queue_depth")} total queued)')
+          print(f'seed rows in queue matching {want!r}: {len(hits)} (of {body.get("queue_depth")} total queued)')
           for entry in hits:
               print(' ', entry)
+          try:
+              failed = json.load(open('/tmp/frontier-failed.json'))
+          except Exception:
+              failed = {}
+          rows = failed.get('failed') if isinstance(failed, dict) else None
+          print('failed rows fetched:', len(rows) if isinstance(rows, list) else 'n/a')
+          if isinstance(rows, list):
+              matches = [r for r in rows if str((r or {}).get('url', '')).rstrip('/').lower() == want]
+              print(f'seed rows in failed matching {want!r}: {len(matches)}')
+              for entry in matches:
+                  print(' ', entry)
+              host_hits = [r for r in rows if want_host and want_host in str((r or {}).get('url', '')).lower()]
+              print(f'failed rows on host {want_host!r}: {len(host_hits)}')
+              for entry in host_hits[:10]:
+                  print(' ', (entry or {}).get('url'), '|', (entry or {}).get('reason'))
           EOF
 
       - name: Backend effective queue config
