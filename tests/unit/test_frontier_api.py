@@ -788,7 +788,10 @@ def test_clear_sweeps_reaped_orphans(
     assert _row_statuses(db_path) == {}
 
 
-def test_enqueue_seeds_accepts_without_touching_phase(client: TestClient) -> None:
+def test_enqueue_seeds_accepts_without_touching_phase(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_path = _file_store(monkeypatch, tmp_path)
     paused = client.post("/api/v1/frontier/pause")
     assert paused.status_code == 200
     assert paused.json()["paused"] is True
@@ -798,10 +801,56 @@ def test_enqueue_seeds_accepts_without_touching_phase(client: TestClient) -> Non
     )
     assert resp.status_code == 200
     assert resp.json() == {"enqueued": 1}
+    # The count is real: the row lands queued with the given priority.
+    probe = SqliteFrontierStore(db_path)
+    try:
+        rows = {
+            row["url"]: (row["status"], row["priority"])
+            for row in probe._conn.execute(
+                "SELECT url, status, priority FROM frontier_queue"
+            ).fetchall()
+        }
+    finally:
+        probe.close()
+    assert rows == {"https://example.com/a": ("queued", 3)}
     # Still paused: seeds never resume, never replace the queue.
     status = client.get("/api/v1/frontier/status").json()
     assert status["paused"] is True
     assert status["checkpoint"]["phase"] == "paused"
+
+
+def test_enqueue_seeds_repeat_paste_counts_known_url(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _file_store(monkeypatch, tmp_path)
+    first = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
+    )
+    assert first.status_code == 200
+    assert first.json() == {"enqueued": 1}
+    # A re-paste of an already-queued seed stays a 200: the queue is
+    # healthy, there is just nothing new to do.
+    second = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
+    )
+    assert second.status_code == 200
+    assert second.json() == {"enqueued": 1}
+
+
+def test_enqueue_seeds_503_when_nothing_accepted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openlens.api import routes as routes_mod
+
+    monkeypatch.setattr(routes_mod, "_publish_seeds", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: None)
+    resp = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
+    )
+    assert resp.status_code == 503
+    body = resp.json()
+    assert set(body.keys()) == {"error"}
+    assert body["error"]["code"] == "provider_unavailable"
 
 
 def test_enqueue_seeds_validates_priority(client: TestClient) -> None:

@@ -2154,30 +2154,32 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
 
 def _enqueue_seeds_to_store(
     app_config: Any, seeds: list[str], priority: int | None
-) -> bool:
+) -> int:
     """Best-effort store enqueue for resume seeds (never raises).
 
-    Returns True when the store accepted the write; failures only log,
+    Returns how many seeds the store newly queued; failures only log,
     so a sick store never turns a successful Kafka publish into a 500.
     """
+    accepted = 0
     try:
         store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
         try:
             for seed in seeds:
                 with suppress(Exception):
-                    store.enqueue(seed, 0, priority=priority)
+                    if store.enqueue(seed, 0, priority=priority):
+                        accepted += 1
         finally:
             with suppress(Exception):
                 store.close()
-        return True
+        return accepted
     except Exception as exc:
         logger.warning("frontier resume: store enqueue failed: %s", exc)
-        return False
+        return accepted
 
 
 def _publish_seeds(
     app_config: Any, seeds: list[str], priority: int | None = None
-) -> bool:
+) -> int:
     """Publish seeds to Kafka, else enqueue them into the persistent store.
 
     Kafka-first when ``kafka:`` is enabled; the store fallback keeps
@@ -2190,8 +2192,11 @@ def _publish_seeds(
     behind the whole backlog, while the store copy lets the next
     per-message drain claim it first (``priority DESC``); the later
     Kafka twin then dedups to a no-op.
-    Returns True when a durable queue (Kafka or store) accepted them.
+    Returns how many seeds a durable queue (Kafka or store) accepted,
+    capped at ``len(seeds)``: a priority seed written to both the topic
+    and the store still counts once.
     """
+    accepted = 0
     if seeds and kafka_enabled(app_config if isinstance(app_config, dict) else None):
         try:
             queue = open_kafka_queue(app_config)
@@ -2200,23 +2205,25 @@ def _publish_seeds(
                 if callable(batched):
                     # One broker flush for the whole paste instead of one
                     # round trip per seed.
-                    batched([(seed, 0, priority) for seed in seeds])
+                    sent = batched([(seed, 0, priority) for seed in seeds])
+                    accepted += max(0, int(sent or 0))
                 else:
                     for seed in seeds:
-                        queue.publish(seed, 0, priority=priority)
+                        if queue.publish(seed, 0, priority=priority):
+                            accepted += 1
             finally:
                 with suppress(Exception):
                     queue.close()
             if priority is not None:
-                _enqueue_seeds_to_store(app_config, seeds, priority)
-            return True
+                accepted += _enqueue_seeds_to_store(app_config, seeds, priority)
+            return min(len(seeds), accepted)
         except ProviderError as exc:
             logger.warning(
                 "frontier resume: Kafka publish failed, using store fallback: %s", exc
             )
     if not seeds:
-        return True
-    return _enqueue_seeds_to_store(app_config, seeds, priority)
+        return 0
+    return min(len(seeds), _enqueue_seeds_to_store(app_config, seeds, priority))
 
 
 #: Quiesce budget for POST /frontier/clear: after pausing, in-flight
@@ -2388,22 +2395,56 @@ def frontier_enqueue_seeds(
         return denied
     seeds = [seed.strip() for seed in body.seeds if seed.strip()]
     app_config = getattr(request.app.state, "config", None)
-    _publish_seeds(app_config, seeds, priority=body.priority)
+    # Durably accepted count, not input count: `_publish_seeds` reports
+    # what Kafka/the store fallback took, and the insert below covers a
+    # seed the consumer has not claimed yet (or a Kafka outage the
+    # fallback could not reach). `reseed` alone only revives already
+    # known URLs, so without the insert a brand-new seed could report
+    # success yet land nowhere.
+    accepted = _publish_seeds(app_config, seeds, priority=body.priority)
     if seeds:
+        settled: set[int] = set()
         try:
             store = _frontier_read_store(request)
             if store is not None:
-                bulk = getattr(store, "reseed_many", None)
-                if callable(bulk):
+                known = getattr(store, "is_known", None)
+                for index, seed in enumerate(seeds):
+                    # Already queued counts as accepted (idempotent
+                    # re-paste); only genuinely new seeds insert below.
                     with suppress(Exception):
-                        bulk(seeds)
-                else:
-                    for seed in seeds:
+                        if callable(known) and known(seed):
+                            settled.add(index)
+                        elif store.enqueue(seed, 0, priority=body.priority):
+                            settled.add(index)
+                pending = [
+                    seed for index, seed in enumerate(seeds) if index not in settled
+                ]
+                if pending:
+                    # `reseed_many` reports a count, not which rows it
+                    # revived: credit at most the pending remainder.
+                    bulk = getattr(store, "reseed_many", None)
+                    if callable(bulk):
                         with suppress(Exception):
-                            store.reseed(seed)
+                            revived = int(bulk(pending) or 0)
+                            accepted += min(len(pending), revived)
+                    else:
+                        for seed in pending:
+                            with suppress(Exception):
+                                if store.reseed(seed):
+                                    accepted += 1
         except Exception as exc:
             logger.warning("frontier seeds: store reseed failed: %s", exc)
-    return FrontierEnqueueSeedsResponse(enqueued=len(seeds))
+        accepted = min(len(seeds), accepted + len(settled))
+        if accepted == 0:
+            return JSONResponse(
+                status_code=503,
+                content=error_body(
+                    "provider_unavailable",
+                    "seed queue unavailable: Kafka and the frontier store "
+                    "both refused the seeds; check backend logs and retry",
+                ),
+            )
+    return FrontierEnqueueSeedsResponse(enqueued=accepted)
 
 
 # -- user-requested crawl URLs (public submit, admin review) -------------
