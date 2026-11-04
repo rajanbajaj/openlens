@@ -122,7 +122,7 @@ export function ConfigEditor({
           onChange={(event) => setText(event.target.value)}
           rows={14}
           spellCheck={false}
-          className="font-mono font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          className="font-mono font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
         />
       </label>
       <div className="mt-ol-s">

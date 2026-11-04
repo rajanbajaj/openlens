@@ -915,7 +915,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                         max={failedPages}
                         defaultValue={failedPage + 1}
                         key={`frontier-failed-jump-${failedPage}-${failedPages}`}
-                        className="w-16 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+                        className="w-16 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
                         onKeyDown={(event) => {
                           if (event.key !== 'Enter') return;
                           const next = Number((event.target as HTMLInputElement).value);
@@ -1289,7 +1289,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     value={seeds}
                     onChange={(event) => setSeeds(event.target.value)}
                     rows={3}
-                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                   />
                 </label>
                 <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1301,7 +1301,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     value={priority}
                     onChange={(event) => setPriority(event.target.value)}
                     placeholder="0"
-                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                   />
                 </label>
                 <div className="mt-ol-s">
@@ -1324,7 +1324,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     value={inspectUrl}
                     onChange={(event) => setInspectUrl(event.target.value)}
                     placeholder="https://example.com/page"
-                    className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                    className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                   />
                 </label>
                 <div className="mt-ol-s">
@@ -1405,7 +1405,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, max_pages: Number(event.target.value) })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1418,7 +1418,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, max_queued_urls: Number(event.target.value) })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1432,7 +1432,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, crawl_delay_s: Number(event.target.value) })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1445,7 +1445,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, default_max_depth: Number(event.target.value) })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1459,7 +1459,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, refresh_after_days: Number(event.target.value) })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1476,7 +1476,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                           discovery_interval_s: Number(event.target.value),
                         })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
@@ -1500,7 +1500,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                       onChange={(event) =>
                         setSettings({ ...settings, user_agent: event.target.value })
                       }
-                      className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                      className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                     />
                   </label>
                   <div className="flex flex-col gap-ol-xs text-ol-s font-semibold">
@@ -1515,7 +1515,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') handleAddSkipDomain();
                         }}
-                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                        className="flex-1 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                       />
                       <Button variant="secondary" onClick={handleAddSkipDomain}>
                         Add
@@ -1553,7 +1553,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') handleAddAllowDomain();
                         }}
-                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                        className="flex-1 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                       />
                       <Button variant="secondary" onClick={handleAddAllowDomain}>
                         Add
@@ -1591,7 +1591,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') handleAddDenyDomain();
                         }}
-                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                        className="flex-1 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                       />
                       <Button variant="secondary" onClick={handleAddDenyDomain}>
                         Add
@@ -1629,7 +1629,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') handleAddFeed();
                         }}
-                        className="flex-1 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                        className="flex-1 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
                       />
                       <Button variant="secondary" onClick={handleAddFeed}>
                         Add

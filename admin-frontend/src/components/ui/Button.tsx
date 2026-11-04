@@ -10,9 +10,9 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANT_UTILITIES: Record<ButtonVariant, string> = {
   primary:
-    'bg-gradient-to-br from-[#6d28d9] to-[#2563eb] text-ol-on-accent shadow-[0_4px_16px_rgb(37_99_235/0.4)] transition-transform transition-shadow duration-150 hover:-translate-y-px hover:shadow-[0_6px_22px_rgb(37_99_235/0.5)] disabled:cursor-not-allowed disabled:opacity-55',
+    'bg-ol-accent text-ol-on-accent transition-colors duration-150 hover:bg-ol-accent-strong disabled:cursor-not-allowed disabled:opacity-55',
   secondary:
-    'bg-white/45 border-ol-glass-border text-ol-ink hover:bg-white/60 disabled:cursor-not-allowed disabled:opacity-55',
+    'bg-white border-ol-glass-border text-ol-ink hover:bg-ol-well disabled:cursor-not-allowed disabled:opacity-55',
   ghost:
     'bg-transparent text-ol-accent-strong underline px-ol-xs disabled:cursor-not-allowed disabled:opacity-55',
 };

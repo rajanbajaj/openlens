@@ -1,17 +1,10 @@
 /* OpenLens design tokens + application styles.
  *
- * Vibrant "Liquid Glass" theme: a deep violet base carrying slowly
- * drifting blue/pink light sources, frosted white glass on every
- * surface, dark ink text throughout so AA contrast holds on glass.
- * Glass is selective by surface weight:
- *   - hero / sticky-header search: strongest glass + soft outer glow
- *   - sidebar / rail / drawers: moderate glass
- *   - result cards: subtle glass, with a bounded hover lift
- * Every --ol-* class keeps the Task-18 component contract (same
- * class names, same testids); only the palette and surface recipe
- * changed. Fallbacks stay flat + opaque where backdrop-filter is
- * unsupported, and text colors are dark ink on light glass so AA
- * pairs hold with or without blur.
+ * Plain flat theme: light neutral page, white cards, slate text and
+ * controls, status colors reserved for states. No gradients, no
+ * backdrop blur, no motion beyond short fades. Every --ol-* class
+ * keeps the Task-18 component contract (same class names, same
+ * testids); only the palette and surface recipe changed.
  *
  * Tailwind v4 utilities are available alongside these tokens
  * (see tailwindcss import below); new styling should prefer
@@ -25,25 +18,25 @@
   --color-ol-well: #eef2f7;
   --color-ol-ink: #101828;
   --color-ol-ink-soft: #344054;
-  --color-ol-line: rgb(255 255 255 / 0.45);
-  --color-ol-accent: #4f46e5;
-  --color-ol-accent-strong: #3730a3;
+  --color-ol-line: #e2e8f0;
+  --color-ol-accent: #1f2937;
+  --color-ol-accent-strong: #111827;
   --color-ol-on-accent: #ffffff;
-  --color-ol-accent-wash: rgb(79 70 229 / 0.15);
+  --color-ol-accent-wash: rgb(31 41 55 / 0.08);
   --color-ol-error: #b91c1c;
   --color-ol-error-wash: #fdecec;
   --color-ol-warn: #92600a;
   --color-ol-warn-wash: #fdf3e0;
   --color-ol-ok: #166534;
   --color-ol-ok-wash: #e8f5ec;
-  --color-ol-glass-wash: rgb(255 255 255 / 0.28);
-  --color-ol-glass-wash-strong: rgb(255 255 255 / 0.35);
-  --color-ol-glass-wash-well: rgb(255 255 255 / 0.22);
+  --color-ol-glass-wash: #ffffff;
+  --color-ol-glass-wash-strong: #ffffff;
+  --color-ol-glass-wash-well: #f1f5f9;
   --color-ol-glass-fallback: #f8fafc;
   --color-ol-glass-fallback-strong: #ffffff;
   --color-ol-glass-fallback-well: #eef2f7;
-  --color-ol-glass-border: rgb(255 255 255 / 0.35);
-  --color-ol-glass-border-bright: rgb(255 255 255 / 0.55);
+  --color-ol-glass-border: #e2e8f0;
+  --color-ol-glass-border-bright: #cbd5e1;
 
   --font-ol: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --text-ol-s: 0.8125rem;
@@ -61,8 +54,8 @@
   --radius-ol-m: 6px;
   --radius-ol-l: 8px;
 
-  --shadow-ol: 0 4px 30px rgb(0 0 0 / 0.1);
-  --shadow-ol-l: 0 8px 40px rgb(0 0 0 / 0.15), 0 0 32px rgb(255 255 255 / 0.25);
+  --shadow-ol: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-ol-l: 0 4px 12px rgb(0 0 0 / 0.08);
 
   --blur-ol-s: 8px;
   --blur-ol-m: 12px;
@@ -77,19 +70,18 @@
   --ol-brand-navy-deep: #0f1a30;
   --ol-brand-teal: #0e9f8e;
 
-  /* Ink on light glass (dark so AA holds on translucent white washes) */
+  /* Ink on paper (dark ink on light neutrals clears WCAG AA) */
   --ol-paper: #ffffff;
   --ol-well: #eef2f7;
   --ol-ink: #101828;
   --ol-ink-soft: #344054;
-  --ol-line: rgb(255 255 255 / 0.45);
+  --ol-line: #e2e8f0;
 
-  /* Accent (deep indigo-violet): white-on-accent clears WCAG AA at
-   * normal sizes at both gradient stops. */
-  --ol-accent: #4f46e5;
-  --ol-accent-strong: #3730a3;
+  /* Accent (dark slate): white-on-accent clears WCAG AA. */
+  --ol-accent: #1f2937;
+  --ol-accent-strong: #111827;
   --ol-on-accent: #ffffff;
-  --ol-accent-wash: rgb(79 70 229 / 0.15);
+  --ol-accent-wash: rgb(31 41 55 / 0.08);
 
   /* Status (unchanged dark-on-wash AA pairs) */
   --ol-error: #b91c1c;
@@ -117,25 +109,24 @@
   --ol-radius-s: 4px;
   --ol-radius-m: 6px;
   --ol-radius-l: 8px;
-  --ol-shadow: 0 4px 30px rgb(0 0 0 / 0.1);
+  --ol-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 
-  /* Glass pillars: translucent white fill, 1px light-edge border,
-   * soft diffused shadow, GPU-composited. Blur caps at 16px so
-   * scrolling stays cheap; backdrop-filter is never animated. */
-  --ol-glass-wash: rgb(255 255 255 / 0.28);
-  --ol-glass-wash-strong: rgb(255 255 255 / 0.35);
-  --ol-glass-wash-well: rgb(255 255 255 / 0.22);
+  /* Flat surfaces: opaque white fill, 1px gray border, soft shadow.
+   * Blur tokens stay for compatibility but nothing reads them. */
+  --ol-glass-wash: #ffffff;
+  --ol-glass-wash-strong: #ffffff;
+  --ol-glass-wash-well: #f1f5f9;
   --ol-glass-fallback: #f8fafc;
   --ol-glass-fallback-strong: #ffffff;
   --ol-glass-fallback-well: #eef2f7;
-  --ol-glass-blur-s: 8px;
-  --ol-glass-blur-m: 12px;
-  --ol-glass-blur-l: 16px;
-  --ol-glass-border: rgb(255 255 255 / 0.35);
-  --ol-glass-border-bright: rgb(255 255 255 / 0.55);
-  --ol-glass-shadow: 0 4px 30px rgb(0 0 0 / 0.1);
-  --ol-glass-shadow-l: 0 8px 40px rgb(0 0 0 / 0.15), 0 0 32px rgb(255 255 255 / 0.25);
-  --ol-glass-fill: linear-gradient(135deg, rgb(255 255 255 / 0.28), rgb(255 255 255 / 0.14));
+  --ol-glass-blur-s: 0;
+  --ol-glass-blur-m: 0;
+  --ol-glass-blur-l: 0;
+  --ol-glass-border: #e2e8f0;
+  --ol-glass-border-bright: #cbd5e1;
+  --ol-glass-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  --ol-glass-shadow-l: 0 4px 12px rgb(0 0 0 / 0.08);
+  --ol-glass-fill: #ffffff;
 }
 
 *,
@@ -149,41 +140,7 @@ body {
   font-family: var(--ol-font);
   font-size: var(--ol-font-size-m);
   color: var(--ol-ink);
-  background: #1b1040;
-}
-
-/* ---- Vibrant backdrop (what the glass refracts) ----
- * Three soft light sources over a deep violet base, composited in
- * one fixed layer so no per-element filter is needed. Drift is a
- * slow transform on the whole layer (never backdrop-filter), and
- * reduced-motion users get a static backdrop.
- */
-body::before {
-  content: '';
-  position: fixed;
-  inset: -12vmax;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(55vmax 55vmax at 12% 18%, rgb(109 40 217 / 0.85), transparent 62%),
-    radial-gradient(48vmax 48vmax at 88% 22%, rgb(37 99 235 / 0.8), transparent 62%),
-    radial-gradient(42vmax 42vmax at 52% 96%, rgb(236 72 153 / 0.7), transparent 65%),
-    linear-gradient(160deg, #1b1040, #342065 45%, #1b1040);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  body::before {
-    animation: ol-backdrop-drift 40s ease-in-out infinite alternate;
-  }
-}
-
-@keyframes ol-backdrop-drift {
-  from {
-    transform: translate3d(0, 0, 0);
-  }
-  to {
-    transform: translate3d(-2vmax, 1.5vmax, 0);
-  }
+  background: var(--ol-well);
 }
 
 /* Visible keyboard focus everywhere; never remove without replacement. */
@@ -220,14 +177,12 @@ body::before {
   font-size: var(--ol-font-size-xl);
   font-weight: 700;
   letter-spacing: -0.01em;
-  text-shadow: 0 1px 2px rgb(255 255 255 / 0.6);
 }
 
 .ol-brand-sub {
   margin: 0;
   font-size: var(--ol-font-size-s);
   color: var(--ol-ink-soft);
-  text-shadow: 0 1px 2px rgb(255 255 255 / 0.5);
 }
 
 /* Google-style landing: nothing but the centered hero (brand + search +
@@ -265,7 +220,7 @@ body::before {
   font: inherit;
   font-weight: 400;
   color: var(--ol-ink);
-  background: rgb(255 255 255 / 0.55);
+  background: #ffffff;
   border: 1px solid var(--ol-glass-border);
   border-radius: var(--ol-radius-m);
   padding: var(--ol-space-s) var(--ol-space-m);
@@ -273,7 +228,7 @@ body::before {
 
 .ol-input:disabled,
 .ol-select:disabled {
-  background: rgb(255 255 255 / 0.3);
+  background: var(--ol-well);
   color: var(--ol-ink-soft);
 }
 
@@ -348,13 +303,13 @@ body::before {
 }
 
 .ol-button-secondary {
-  background: rgb(255 255 255 / 0.45);
+  background: #ffffff;
   border-color: var(--ol-glass-border);
   color: var(--ol-ink);
 }
 
 .ol-button-secondary:hover:not(:disabled) {
-  background: rgb(255 255 255 / 0.6);
+  background: var(--ol-well);
 }
 
 .ol-button-ghost {
@@ -373,42 +328,21 @@ body::before {
 }
 
 .ol-card {
-  border: 1px solid rgb(255 255 255 / 0.2);
+  border: 1px solid var(--ol-glass-border);
   border-radius: var(--ol-radius-m);
   box-shadow: var(--ol-shadow);
-  background: rgb(255 255 255 / 0.55);
+  background: #ffffff;
   padding: var(--ol-space-m) var(--ol-space-l);
-  transform: translateZ(0);
-  transition:
-    transform 0.18s ease,
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .ol-card {
-    background: linear-gradient(135deg, rgb(255 255 255 / 0.22), rgb(255 255 255 / 0.1));
-    -webkit-backdrop-filter: blur(var(--ol-glass-blur-s));
-    backdrop-filter: blur(var(--ol-glass-blur-s));
-  }
-}
-
-.ol-card:hover {
-  transform: translateZ(0) translateY(-3px) scale(1.01);
-  background-color: rgb(255 255 255 / 0.28);
-  border-color: rgb(255 255 255 / 0.55);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.16);
 }
 
 .ol-card h3 {
   margin: 0 0 var(--ol-space-xs);
   font-size: var(--ol-font-size-l);
-  text-shadow: 0 1px 2px rgb(255 255 255 / 0.5);
 }
 
 .ol-card a {
   color: var(--ol-accent-strong);
+  text-decoration: underline;
 }
 
 .ol-result-meta {
@@ -429,7 +363,7 @@ body::before {
 }
 
 .ol-badge {
-  background: rgb(255 255 255 / 0.3);
+  background: var(--ol-well);
   border: 1px solid var(--ol-glass-border);
   color: var(--ol-ink-soft);
 }
@@ -456,21 +390,10 @@ body::before {
 .ol-drawer {
   margin-top: var(--ol-space-l);
   border: 1px solid var(--ol-glass-border);
-  border-top-color: var(--ol-glass-border-bright);
-  border-left-color: var(--ol-glass-border-bright);
   border-radius: var(--ol-radius-l);
-  background: var(--ol-glass-fallback-well);
+  background: #ffffff;
   box-shadow: var(--ol-glass-shadow);
   padding: var(--ol-space-m) var(--ol-space-l);
-  transform: translateZ(0);
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .ol-drawer {
-    background: linear-gradient(135deg, var(--ol-glass-wash), rgb(255 255 255 / 0.12));
-    -webkit-backdrop-filter: blur(var(--ol-glass-blur-m));
-    backdrop-filter: blur(var(--ol-glass-blur-m));
-  }
 }
 
 .ol-drawer dl {
@@ -498,7 +421,7 @@ body::before {
 .ol-skeleton-bar {
   height: 0.9rem;
   border-radius: var(--ol-radius-s);
-  background: rgb(255 255 255 / 0.45);
+  background: var(--ol-line);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -562,29 +485,15 @@ body::before {
   }
 }
 
-/* ---- Frosted glass chrome (selective weights) ----
- * Flat fallback washes render by default; translucency + blur apply
- * only where backdrop-filter is supported. Hero carries the strongest
- * wash and the glow; sidebar/rail stay moderate.
+/* ---- Flat panels (selective weights) ----
+ * Opaque white fills with gray borders and soft shadows; the hero
+ * carries the strongest elevation, sidebar/rail stay moderate.
  */
 
 .ol-glass {
   background: var(--ol-glass-fallback);
   border: 1px solid var(--ol-line);
   box-shadow: var(--ol-shadow);
-  transform: translateZ(0);
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .ol-glass {
-    background: var(--ol-glass-fill);
-    -webkit-backdrop-filter: blur(var(--ol-glass-blur-m));
-    backdrop-filter: blur(var(--ol-glass-blur-m));
-    border-color: var(--ol-glass-border);
-    border-top-color: var(--ol-glass-border-bright);
-    border-left-color: var(--ol-glass-border-bright);
-    box-shadow: var(--ol-glass-shadow);
-  }
 }
 
 .ol-glass-hero {
@@ -592,15 +501,6 @@ body::before {
   padding: var(--ol-space-l) var(--ol-space-xl);
   background: var(--ol-glass-fallback-strong);
   box-shadow: var(--ol-glass-shadow-l);
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .ol-glass-hero {
-    background: linear-gradient(135deg, var(--ol-glass-wash-strong), rgb(255 255 255 / 0.14));
-    -webkit-backdrop-filter: blur(var(--ol-glass-blur-l));
-    backdrop-filter: blur(var(--ol-glass-blur-l));
-    box-shadow: var(--ol-glass-shadow-l);
-  }
 }
 
 .ol-glass-header {
@@ -611,13 +511,6 @@ body::before {
   border-left: 0;
   border-right: 0;
   border-top: 0;
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .ol-glass-header {
-    -webkit-backdrop-filter: blur(var(--ol-glass-blur-s));
-    backdrop-filter: blur(var(--ol-glass-blur-s));
-  }
 }
 
 .ol-glass-sidebar {
@@ -632,18 +525,11 @@ body::before {
 }
 
 /* ---- Suggestion dropdown readability ----
- * The dropdown rides on the subtle card surface; bump its surface
- * opacity so option text stays legible over the vibrant backdrop.
+ * Opaque white so option text stays legible.
  * (Owned by SuggestDropdown via data-testid; no markup change.)
  */
 [data-testid='suggest-dropdown'] {
-  background: rgb(255 255 255 / 0.85);
-}
-
-@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  [data-testid='suggest-dropdown'] {
-    background: rgb(255 255 255 / 0.6);
-  }
+  background: #ffffff;
 }
 
 /* ---- Workspace shell grid (sidebar / results / rail) ----
@@ -895,7 +781,7 @@ body::before {
   border: 1px solid var(--ol-line);
   border-radius: 12px;
   overflow: hidden;
-  background: rgb(255 255 255 / 0.35);
+  background: #ffffff;
 }
 
 .ol-admin-tab {
@@ -923,7 +809,7 @@ body::before {
   border-radius: 12px;
   padding: 0.9rem 1rem;
   margin: 1rem 0;
-  background: rgb(255 255 255 / 0.35);
+  background: #ffffff;
 }
 
 .ol-dash-title {
@@ -954,7 +840,7 @@ body::before {
   border: 1px solid var(--ol-line);
   border-radius: 8px;
   padding: 0.5rem 0.6rem;
-  background: rgb(255 255 255 / 0.4);
+  background: #ffffff;
 }
 
 /* Domain rows: identity on the first line, actions wrap below. */

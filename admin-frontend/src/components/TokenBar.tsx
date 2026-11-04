@@ -50,7 +50,7 @@ export function TokenBar({ adminToken, onChange }: TokenBarProps) {
             onChange(event.target.value);
             storeToken(event.target.value);
           }}
-          className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
         />
       </label>
       {adminToken ? (

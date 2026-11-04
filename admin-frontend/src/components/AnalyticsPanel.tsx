@@ -278,7 +278,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             min={1}
             defaultValue={page}
             key={`${prefix}-jump-${page}`}
-            className="w-16 font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+            className="w-16 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return;
               const next = Number((event.target as HTMLInputElement).value);
@@ -318,7 +318,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             data-testid="analytics-window"
             value={days}
             onChange={(event) => changeWindow(Number(event.target.value))}
-            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+            className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
           >
             {WINDOW_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -335,7 +335,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             value={fromDate}
             max={toDate === '' ? undefined : toDate}
             onChange={(event) => changeFromDate(event.target.value)}
-            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+            className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
           />
         </label>
         <label className="flex flex-col gap-ol-xs font-semibold">
@@ -346,7 +346,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             value={toDate}
             min={fromDate === '' ? undefined : fromDate}
             onChange={(event) => changeToDate(event.target.value)}
-            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+            className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
           />
         </label>
         {rangeActive ? (
@@ -367,7 +367,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
               if (event.key === 'Enter') applyDomainSearch();
             }}
             placeholder="e.g. wikipedia"
-            className="font-normal text-ol-ink bg-white/55 border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+            className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
           />
         </label>
         <button
