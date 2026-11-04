@@ -35,6 +35,26 @@ const TOP_OUTCOME = {
   ],
 };
 
+const PREV_COUNTS = {
+  days: 30,
+  total: 2,
+  by_name: { 'crawl.fetched': 1, 'crawl.failed': 1, 'crawl.skipped': 0 },
+};
+
+const FAILED_SERIES = {
+  name: 'crawl.page',
+  bucket: 'day',
+  days: 30,
+  points: [{ t: '2026-10-27', count: 1 }],
+};
+
+const EMPTY_SERIES = {
+  name: 'crawl.page',
+  bucket: 'day',
+  days: 30,
+  points: [],
+};
+
 const TOP_REASON = {
   name: 'crawl.page',
   prop: 'reason',
@@ -55,8 +75,12 @@ function stubBackend(): void {
       const text = String(url);
       const params = new URL(text, 'http://localhost').searchParams;
       let payload: unknown = COUNTS;
-      if (text.includes('/api/v1/admin/analytics/series')) {
+      if (text.includes('/api/v1/admin/analytics/counts') && text.includes('start=')) {
+        payload = PREV_COUNTS;
+      } else if (text.includes('/api/v1/admin/analytics/series')) {
         payload = SERIES;
+        if (text.includes('filter_value=failed')) payload = FAILED_SERIES;
+        if (text.includes('filter_value=skipped')) payload = EMPTY_SERIES;
       } else if (text.includes('/api/v1/admin/analytics/top')) {
         payload = TOP_OUTCOME;
         if (text.includes('prop=reason')) payload = TOP_REASON;
@@ -154,6 +178,43 @@ describe('AnalyticsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example0.com');
     });
+  });
+
+  it('renders KPI cards with prior-period deltas', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-kpi-fetched')).toHaveTextContent('+100.0%');
+    });
+    // Current window: 2 fetched of 4 attempted = 50.0% success.
+    expect(screen.getByTestId('analytics-kpi-fetched')).toHaveTextContent('2');
+    expect(screen.getByTestId('analytics-kpi-success')).toHaveTextContent('50.0%');
+    // Prior window: 1 fetched of 2 attempted, so fetched doubles.
+    expect(screen.getByTestId('analytics-kpi-fetched')).toHaveTextContent(
+      '+100.0% vs prior 30 days',
+    );
+    // Success rate is flat at 50 points vs 50 points.
+    expect(screen.getByTestId('analytics-kpi-success')).toHaveTextContent(
+      '±0.0 pp vs prior 30 days',
+    );
+    // Skipped goes 1 vs 0 history: new.
+    expect(screen.getByTestId('analytics-kpi-skipped')).toHaveTextContent('new vs prior 30 days');
+  });
+
+  it('stacks fetched, failed, and skipped throughput per bucket', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: /stacked pages per bucket/i })).toBeInTheDocument();
+    });
+    const chart = screen.getByRole('img', { name: /stacked pages per bucket/i });
+    expect(chart).toHaveAttribute(
+      'aria-label',
+      'Stacked pages per bucket: 4 fetched, 1 failed, 0 skipped',
+    );
+    const panel = screen.getByTestId('analytics-throughput');
+    expect(panel).toHaveTextContent('Fetched 4');
+    expect(panel).toHaveTextContent('Failed 1');
   });
 
   it('pages through top domains with next and jump', async () => {

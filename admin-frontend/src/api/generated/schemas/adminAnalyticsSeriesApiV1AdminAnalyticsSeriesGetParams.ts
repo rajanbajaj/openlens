@@ -14,4 +14,6 @@ export type AdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetParams = {
   days?: number;
   start?: string | null;
   end?: string | null;
+  filter_prop?: string | null;
+  filter_value?: string | null;
 };

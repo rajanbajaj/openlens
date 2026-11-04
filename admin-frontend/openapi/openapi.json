@@ -462,7 +462,7 @@
           "search"
         ],
         "summary": "Admin Analytics Series",
-        "description": "Admin-only per-bucket event counts (throughput) over a window.\n\nSame gate and fail-open store as the counts endpoint. ``bucket`` is\n``hour`` or ``day``; points come back oldest-first. ``start``/``end``\n(``YYYY-MM-DD``, both required together) select an absolute range\ninstead of the trailing ``days`` window.",
+        "description": "Admin-only per-bucket event counts (throughput) over a window.\n\nSame gate and fail-open store as the counts endpoint. ``bucket`` is\n``hour`` or ``day``; points come back oldest-first. ``start``/``end``\n(``YYYY-MM-DD``, both required together) select an absolute range\ninstead of the trailing ``days`` window. The optional\n``filter_prop=filter_value`` clause restricts rows first, so stacked\nthroughput charts can split one event by outcome.",
         "operationId": "admin_analytics_series_api_v1_admin_analytics_series_get",
         "parameters": [
           {
@@ -528,6 +528,40 @@
                 }
               ],
               "title": "End"
+            }
+          },
+          {
+            "name": "filter_prop",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Prop"
+            }
+          },
+          {
+            "name": "filter_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Value"
             }
           }
         ],

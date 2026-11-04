@@ -564,7 +564,9 @@ export const getAdminAnalyticsSeriesApiV1AdminAnalyticsSeriesGetUrl = (
  * Same gate and fail-open store as the counts endpoint. ``bucket`` is
  * ``hour`` or ``day``; points come back oldest-first. ``start``/``end``
  * (``YYYY-MM-DD``, both required together) select an absolute range
- * instead of the trailing ``days`` window.
+ * instead of the trailing ``days`` window. The optional
+ * ``filter_prop=filter_value`` clause restricts rows first, so stacked
+ * throughput charts can split one event by outcome.
  * @summary Admin Analytics Series
  */
 export const adminAnalyticsSeriesApiV1AdminAnalyticsSeriesGet = async (

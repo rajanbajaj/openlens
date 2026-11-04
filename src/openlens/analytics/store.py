@@ -342,12 +342,17 @@ class AnalyticsStore:
         limit: int = 500,
         start: str | None = None,
         end: str | None = None,
+        filter_prop: str | None = None,
+        filter_value: str | None = None,
     ) -> list[tuple[str, int]]:
         """Per-bucket event counts over the trailing window (throughput).
 
         ``bucket`` is ``hour`` or ``day``; returns ``(bucket_start, count)``
         pairs oldest-first, capped at ``limit`` buckets. ``start``/``end``
         select an absolute ``YYYY-MM-DD`` range instead of the window.
+        The optional ``filter_prop=filter_value`` clause restricts rows
+        first (mirrors :meth:`top_props`), so stacked throughput charts
+        can split one event by outcome.
         """
         if name not in _event_names():
             raise ProviderError(
@@ -357,13 +362,19 @@ class AnalyticsStore:
             )
         bucket_sql = _bucket_sql(bucket)
         capped = max(1, min(int(limit or 500), 2000))
+        _check_filter_args(filter_prop, filter_value)
         range_start, range_end = _check_range_args(start, end)
+        where = "name = ?"
+        args: list[Any] = [name]
         if range_start is not None and range_end is not None:
-            where = "name = ? AND at >= ? AND at < ?"
-            args: tuple[Any, ...] = (name, range_start, range_end)
+            where += " AND at >= ? AND at < ?"
+            args.extend([range_start, range_end])
         else:
-            where = "name = ? AND at >= ?"
-            args = (name, _window_cutoff(since_days))
+            where += " AND at >= ?"
+            args.append(_window_cutoff(since_days))
+        if filter_prop is not None and filter_value is not None:
+            where += " AND json_extract(props, ?) = ?"
+            args.extend([f"$.{filter_prop}", filter_value])
         try:
             with self._lock:
                 rows = self._conn.execute(
@@ -680,6 +691,8 @@ class ClickHouseAnalyticsStore:
         limit: int = 500,
         start: str | None = None,
         end: str | None = None,
+        filter_prop: str | None = None,
+        filter_value: str | None = None,
     ) -> list[tuple[str, int]]:
         """Per-bucket event counts over the trailing window (throughput)."""
         if name not in _event_names():
@@ -698,6 +711,7 @@ class ClickHouseAnalyticsStore:
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.INVALID_REQUEST,
             )
+        _check_filter_args(filter_prop, filter_value)
         range_start, range_end = _check_range_args(start, end)
         if range_start is not None and range_end is not None:
             window_clause = (
@@ -706,13 +720,18 @@ class ClickHouseAnalyticsStore:
         else:
             window = max(0, int(since_days))
             window_clause = f"at >= now() - INTERVAL {window} DAY"
+        filter_clause = ""
+        if filter_prop is not None and filter_value is not None:
+            filter_clause = (
+                f" AND JSONExtractString(props, '{filter_prop}') = '{filter_value}'"
+            )
         capped = max(1, min(int(limit or 500), 2000))
         try:
             result = self._client.query(
                 f"SELECT {bucket_sql} AS b, COUNT() AS n "  # noqa: S608
                 f"FROM {self._table()} "
                 f"WHERE name = '{name}' "
-                f"AND {window_clause} "
+                f"AND {window_clause}{filter_clause} "
                 f"GROUP BY b ORDER BY b ASC LIMIT {capped}"
             )
             return [(str(b), int(n)) for b, n in result.result_rows]

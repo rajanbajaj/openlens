@@ -849,6 +849,8 @@ export async function fetchAnalyticsSeries(
   adminToken: string = '',
   start?: string,
   end?: string,
+  filterProp?: string,
+  filterValue?: string,
 ): Promise<AnalyticsSeries | null> {
   let res;
   try {
@@ -859,6 +861,8 @@ export async function fetchAnalyticsSeries(
         days,
         ...(start !== undefined ? { start } : {}),
         ...(end !== undefined ? { end } : {}),
+        ...(filterProp !== undefined ? { filter_prop: filterProp } : {}),
+        ...(filterValue !== undefined ? { filter_value: filterValue } : {}),
       },
       { headers: { ...frontierAdminHeaders(adminToken) } },
     );

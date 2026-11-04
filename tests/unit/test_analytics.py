@@ -455,6 +455,34 @@ def test_top_props_range_match_and_offset(tmp_path) -> None:
         store.close()
 
 
+def test_series_filter_splits_by_outcome(tmp_path) -> None:
+    _, _, start, _, end = _range_dates()
+    store = _seed_range_store(tmp_path)
+    try:
+        fetched = store.series(
+            "crawl.page",
+            start=start,
+            end=end,
+            filter_prop="outcome",
+            filter_value="fetched",
+        )
+        assert sum(n for _, n in fetched) == 2
+        failed = store.series(
+            "crawl.page",
+            start=start,
+            end=end,
+            filter_prop="outcome",
+            filter_value="failed",
+        )
+        assert sum(n for _, n in failed) == 1
+        with pytest.raises(ProviderError):
+            store.series("crawl.page", start=start, end=end, filter_prop="outcome")
+        with pytest.raises(ProviderError):
+            store.series("crawl.page", filter_prop="outcome", filter_value="a'b")
+    finally:
+        store.close()
+
+
 def test_counts_and_series_range(tmp_path) -> None:
     old, new, start, mid, end = _range_dates()
     store = _seed_range_store(tmp_path)
@@ -518,6 +546,18 @@ def test_admin_top_range_and_match_params(
     )
     assert resp.status_code == 200, resp.text
     assert sum(point["count"] for point in resp.json()["points"]) == 1
+    resp = client.get(
+        "/api/v1/admin/analytics/series?name=crawl.page"
+        f"&start={start}&end={end}&filter_prop=outcome&filter_value=failed"
+    )
+    assert resp.status_code == 200, resp.text
+    assert sum(point["count"] for point in resp.json()["points"]) == 1
+    assert (
+        client.get(
+            "/api/v1/admin/analytics/series?name=crawl.page&filter_prop=outcome"
+        ).status_code
+        == 422
+    )
 
 
 def test_admin_counts_503_when_store_down(

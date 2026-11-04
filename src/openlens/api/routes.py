@@ -1020,13 +1020,17 @@ def admin_analytics_series(
     days: int = 30,
     start: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    filter_prop: str | None = Query(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
+    filter_value: str | None = Query(default=None, max_length=256),
 ) -> AnalyticsSeriesSchema | JSONResponse:
     """Admin-only per-bucket event counts (throughput) over a window.
 
     Same gate and fail-open store as the counts endpoint. ``bucket`` is
     ``hour`` or ``day``; points come back oldest-first. ``start``/``end``
     (``YYYY-MM-DD``, both required together) select an absolute range
-    instead of the trailing ``days`` window.
+    instead of the trailing ``days`` window. The optional
+    ``filter_prop=filter_value`` clause restricts rows first, so stacked
+    throughput charts can split one event by outcome.
     """
     denied = _frontier_admin_response(request)
     if denied is not None:
@@ -1045,6 +1049,13 @@ def admin_analytics_series(
             status_code=422,
             content=error_body("invalid_request", "start and end go together"),
         )
+    if (filter_prop is None) != (filter_value is None):
+        return JSONResponse(
+            status_code=422,
+            content=error_body(
+                "invalid_request", "filter_prop and filter_value go together"
+            ),
+        )
     store, unavailable = _admin_analytics_store(request)
     if store is None:
         if unavailable is None:
@@ -1057,7 +1068,13 @@ def admin_analytics_series(
         return unavailable
     try:
         points = store.series(
-            name, bucket=bucket, since_days=window, start=start, end=end
+            name,
+            bucket=bucket,
+            since_days=window,
+            start=start,
+            end=end,
+            filter_prop=filter_prop,
+            filter_value=filter_value,
         )
     except ProviderError as exc:
         if exc.code == ProviderError.INVALID_REQUEST:
