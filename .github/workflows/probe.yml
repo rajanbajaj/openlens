@@ -85,6 +85,20 @@ jobs:
                   print(' ', (entry or {}).get('url'), '|', (entry or {}).get('reason'))
           print('failed total:', (failed.get('total') if isinstance(failed, dict) else 'n/a'))
           EOF
+      - name: Seed row and document lookup
+        if: inputs.url != ''
+        working-directory: deploy/local
+        run: |
+          PW="$(docker compose exec -T postgres printenv POSTGRES_PASSWORD | tr -d '\r')"
+          USER="$(docker compose exec -T postgres printenv POSTGRES_USER | tr -d '\r')"
+          DB="$(docker compose exec -T postgres printenv POSTGRES_DB | tr -d '\r')"
+          export PGPASSWORD="$PW"
+          echo '--- frontier row in ANY status ---'
+          docker compose exec -T postgres psql -U "$USER" -d "$DB" -c \
+            "SELECT url, status, priority, attempts, left(coalesce(last_error,''),120) AS err FROM public.frontier_queue WHERE url ILIKE '%developer.mozilla.org%/array/array%';"
+          echo '--- documents matching the seed ---'
+          docker compose exec -T postgres psql -U "$USER" -d "$DB" -c \
+            "SELECT left(url,120) AS url, left(title,80) AS title FROM public.documents WHERE url ILIKE '%developer.mozilla.org%/array/array%' LIMIT 5;"
           echo '--- index check: is the seed page searchable? ---'
           curl -fsS -X POST http://localhost:8000/api/v1/search \
             -H 'Content-Type: application/json' \
