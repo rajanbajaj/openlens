@@ -2443,6 +2443,48 @@ async def frontier_live(websocket: WebSocket) -> None:
         pass
 
 
+#: Analytics reason for seeds refused by the intake cap: refused seeds
+#: never touch the store, so without an explicit event the Analytics
+#: tab would undercount skipped intake (sibling of the eviction
+#: ``evicted: queue cap exceeded`` reason, which marks a different
+#: cause — queued-then-shed vs never-queued).
+_SEED_CAP_SKIP_REASON = "enqueue cap exceeded"
+
+
+def _publish_seed_cap_skipped(request: Request, urls: list[str]) -> None:
+    """Best-effort ``crawl.page`` skipped events for cap-refused seeds.
+
+    Same fire-and-forget contract as :func:`_publish_search_served`:
+    a sick broker degrades to dropped events, never a failed paste.
+    One event per refused URL, matching the per-page granularity of
+    worker emissions so reason rollups stay comparable.
+    """
+    if not urls:
+        return
+    try:
+        queue = _analytics_queue(request)
+    except Exception:
+        return
+    if queue is None:
+        return
+    try:
+        from urllib.parse import urlsplit
+
+        from openlens.analytics.events import crawl_page_event
+    except Exception:
+        return
+    for url in urls:
+        with suppress(Exception):
+            queue.publish_event(
+                crawl_page_event(
+                    url,
+                    "skipped",
+                    _SEED_CAP_SKIP_REASON,
+                    urlsplit(url).hostname or None,
+                )
+            )
+
+
 def _store_save_settings(app_config: Any, settings: Mapping[str, Any]) -> bool:
     """Mirror dashboard settings into the persistent frontier settings row.
 
@@ -2819,6 +2861,7 @@ def frontier_enqueue_seeds(
     # than wedging intake. Depth is a best-effort snapshot — crawlers
     # draining mid-paste can only make room, never overflow.
     skipped_over_cap = 0
+    skipped_urls: list[str] = []
     cap = _effective_max_queued_urls(app_config)
     if seeds and cap is not None:
         try:
@@ -2843,10 +2886,16 @@ def frontier_enqueue_seeds(
                             attempt.append(s)
                         else:
                             skipped_over_cap += 1
+                            skipped_urls.append(s)
                     seeds = attempt
         except Exception as exc:
             logger.warning("frontier seeds: cap check failed, uncapped: %s", exc)
             skipped_over_cap = 0
+            skipped_urls = []
+    if skipped_urls:
+        # Refused seeds never touch the store: report them as skipped
+        # intake so analytics reason rollups stay complete.
+        _publish_seed_cap_skipped(request, skipped_urls)
     # Durably accepted count, not input count: `_publish_seeds` reports
     # what Kafka/the store fallback took, and the insert below covers a
     # seed the consumer has not claimed yet (or a Kafka outage the

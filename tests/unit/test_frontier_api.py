@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -907,6 +909,46 @@ def test_enqueue_seeds_honors_max_queued_urls(
     )
     assert third.status_code == 200
     assert third.json() == {"enqueued": 1, "skipped_over_cap": 0}
+
+
+def test_enqueue_seeds_cap_skip_emits_skipped_analytics(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Cap-refused seeds are visible in analytics as skipped intake.
+
+    Regression: ``skipped_over_cap`` lived only in the API response —
+    refused seeds never touched the store and emitted no ``crawl.page``
+    event, so the Analytics tab undercounted skipped URLs.
+    """
+    from openlens.api import routes as routes_mod
+
+    _file_store(monkeypatch, tmp_path)
+    settings = client.get("/api/v1/frontier/settings").json()["settings"]
+    settings["max_queued_urls"] = 1
+    assert client.put("/api/v1/frontier/settings", json=settings).status_code == 200
+    kept = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/kept"]}
+    )
+    assert kept.json() == {"enqueued": 1, "skipped_over_cap": 0}
+    published: list[Any] = []
+
+    class _FakeQueue:
+        def publish_event(self, event: Any) -> None:
+            published.append(event)
+
+    monkeypatch.setattr(routes_mod, "_analytics_queue", lambda request: _FakeQueue())
+    resp = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/dropped"]}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"enqueued": 0, "skipped_over_cap": 1}
+    assert len(published) == 1
+    event = published[0]
+    assert event.name == "crawl.page"
+    assert event.props["outcome"] == "skipped"
+    assert event.props["reason"] == "enqueue cap exceeded"
+    assert event.props["url"] == "https://example.com/dropped"
+    assert event.props["domain"] == "example.com"
 
 
 def test_enqueue_seeds_503_when_nothing_accepted(
