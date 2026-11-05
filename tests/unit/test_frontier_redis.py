@@ -992,11 +992,31 @@ def test_backfill_cap_leaves_remainder_unsealed() -> None:
         flusher = FrontierMirrorFlusher(hot, mirror, 5.0)
         assert flusher.backfill_once(batch_size=100, max_urls=2) == 2
         assert hot.backfill_done() is False
-        # Lock expiry lets a later boot resume the remainder.
+        # Lock expiry lets a later boot resume the remainder; the two
+        # already-replayed rows dedupe instead of double-counting.
         hot.release_backfill_lock()
-        assert flusher.backfill_once(batch_size=100, max_urls=100) == 5
+        assert flusher.backfill_once(batch_size=100, max_urls=100) == 3
         assert hot.backfill_done() is True
         assert len({url for url, _, _, _ in hot.enqueued}) == 5
+    finally:
+        mirror.close()
+
+
+def test_backfill_pages_past_first_batch() -> None:
+    """Offset paging must drain the whole backlog, not the first page.
+
+    Regression: offset-0 repaging re-read the same first page, so a
+    62k-row mirror sealed after 1000 URLs with the rest stranded.
+    """
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    mirror = _queued_mirror([(f"https://example.com/{i}", i % 3, 0) for i in range(7)])
+    try:
+        hot = _StubHotStore()
+        flusher = FrontierMirrorFlusher(hot, mirror, 5.0)
+        assert flusher.backfill_once(batch_size=2) == 7
+        assert hot.backfill_done() is True
+        assert len({url for url, _, _, _ in hot.enqueued}) == 7
     finally:
         mirror.close()
 

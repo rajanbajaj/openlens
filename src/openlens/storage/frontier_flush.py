@@ -234,54 +234,84 @@ class FrontierMirrorFlusher:
         moved = 0
         capped = False
         seen: set[str] = set()
-        try:
-            # Always page from offset 0: replayed rows stay queued in the
-            # mirror until terminal flushes move them, so the local seen
-            # set (not the offset) is what guarantees termination.
-            while True:
-                rows = mirror.pending(limit=batch)
-                if not rows:
-                    break
-                progressed = False
-                for entry in rows:
-                    url = str(getattr(entry, "url", "") or "")
-                    if not url.strip():
-                        continue
-                    try:
-                        norm = normalize_frontier_url(url)
-                    except (AttributeError, ValueError):
-                        continue
-                    if norm in seen:
-                        continue
-                    seen.add(norm)
-                    try:
-                        depth = int(getattr(entry, "depth", 0) or 0)
-                    except (TypeError, ValueError):
-                        depth = 0
-                    try:
-                        prio = getattr(entry, "priority", 0)
-                        priority = int(prio) if prio is not None else None
-                    except (TypeError, ValueError):
-                        priority = None
-                    parent = getattr(entry, "parent_url", None)
-                    try:
+
+        def _replay(rows: list) -> bool:
+            """Enqueue unseen rows; True if the cap tripped mid-page."""
+            nonlocal moved
+            tripped = False
+            for entry in rows:
+                url = str(getattr(entry, "url", "") or "")
+                if not url.strip():
+                    continue
+                try:
+                    norm = normalize_frontier_url(url)
+                except (AttributeError, ValueError):
+                    continue
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                try:
+                    depth = int(getattr(entry, "depth", 0) or 0)
+                except (TypeError, ValueError):
+                    depth = 0
+                try:
+                    prio = getattr(entry, "priority", 0)
+                    priority = int(prio) if prio is not None else None
+                except (TypeError, ValueError):
+                    priority = None
+                parent = getattr(entry, "parent_url", None)
+                try:
+                    added = bool(
                         source.enqueue(
                             url,
                             depth,
                             parent_url=parent if isinstance(parent, str) else None,
                             priority=priority,
                         )
-                    except Exception:  # noqa: S112 - one junk URL skips silently
-                        continue
-                    moved += 1
-                    progressed = True
-                    if 0 < cap <= moved:
-                        capped = True
+                    )
+                except Exception:  # noqa: S112 - one junk URL skips silently
+                    continue
+                if not added:
+                    continue
+                moved += 1
+                if 0 < cap <= moved:
+                    tripped = True
+                    break
+            return tripped
+
+        try:
+            # Phase 1: offset pages through the backlog.
+            offset = 0
+            while True:
+                rows = mirror.pending(limit=batch, offset=offset)
+                if not rows:
+                    break
+                if _replay(rows):
+                    capped = True
+                    break
+                offset += len(rows)
+                if len(rows) < batch:
+                    break
+            # Phase 2: bounded verification sweeps for rows that
+            # concurrent terminal flushes shifted past the offset
+            # cursor mid-pass (flushes only remove rows from pending,
+            # so the unseen set converges).
+            if not capped:
+                for _ in range(3):
+                    before = moved
+                    sweep_offset = 0
+                    while True:
+                        rows = mirror.pending(limit=batch, offset=sweep_offset)
+                        if not rows:
+                            break
+                        if _replay(rows):
+                            capped = True
+                            break
+                        sweep_offset += len(rows)
+                        if len(rows) < batch:
+                            break
+                    if capped or moved == before:
                         break
-                if capped:
-                    break
-                if not progressed:
-                    break
             # A capped pass leaves a remainder behind: only seal the
             # migration when the mirror drained, so a later boot (after
             # the claim lock expires) resumes where this one stopped.
