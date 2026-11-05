@@ -1,6 +1,13 @@
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { createAdminQueryClient } from '../api/queryClient.tsx';
+import { QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { fetchAnalyticsCounts, fetchAnalyticsSeries, fetchAnalyticsTop } from '../api/client.ts';
+import { FeedbackCard } from './analytics/FeedbackCard.tsx';
+import { capBuckets, ThroughputTable } from './analytics/ThroughputTable.tsx';
+import type { StackedPoint } from './analytics/ThroughputTable.tsx';
+import { Button } from './ui/Button.tsx';
+import { FieldError } from './ui/FieldError.tsx';
+import { Skeleton } from './ui/Skeleton.tsx';
 
 interface AnalyticsPanelProps {
   /** Admin token for the admin-only analytics reads. */
@@ -10,6 +17,8 @@ interface AnalyticsPanelProps {
 const WINDOW_OPTIONS = [7, 30, 90];
 
 const TOP_DOMAINS_LIMIT = 10;
+
+type ListSort = 'count-desc' | 'count-asc' | 'value-asc' | 'value-desc';
 
 /** One row of the top-domains breakdown. */
 interface DomainRow {
@@ -26,6 +35,21 @@ function readTopRows(top: { top?: DomainRow[] } | null | undefined): DomainRow[]
       typeof entry.value === 'string' &&
       typeof entry.count === 'number',
   );
+}
+
+function sortRows(rows: DomainRow[], sort: ListSort): DomainRow[] {
+  const copy = [...rows];
+  switch (sort) {
+    case 'count-asc':
+      return copy.sort((a, b) => a.count - b.count);
+    case 'value-asc':
+      return copy.sort((a, b) => a.value.localeCompare(b.value));
+    case 'value-desc':
+      return copy.sort((a, b) => b.value.localeCompare(a.value));
+    case 'count-desc':
+    default:
+      return copy.sort((a, b) => b.count - a.count);
+  }
 }
 
 /** Shift a ``YYYY-MM-DD`` date by whole days, returning ``YYYY-MM-DD``. */
@@ -76,41 +100,64 @@ const DELTA_TONE_CLASS: Record<DeltaTone, string> = {
   flat: 'text-ol-ink-soft',
 };
 
+const DELTA_MARKER: Record<DeltaTone, string> = {
+  good: '▲',
+  bad: '▼',
+  flat: '—',
+};
+
+const DELTA_DIRECTION: Record<DeltaTone, string> = {
+  good: 'up',
+  bad: 'down',
+  flat: 'flat',
+};
+
 /** One KPI card: label, headline value, and prior-period delta. */
 function KpiCard({
   label,
   value,
   delta,
   testId,
+  loading,
 }: {
   label: string;
   value: string;
   delta: Delta;
   testId: string;
+  loading: boolean;
 }) {
   return (
     <div
       data-testid={testId}
-      className="bg-white border border-ol-line rounded-ol-m px-ol-m py-ol-s"
+      className="bg-white border border-ol-line rounded-ol-m px-ol-m py-ol-m"
     >
       <p className="font-semibold">{label}</p>
-      <p className="text-ol-xl font-bold tabular-nums mt-ol-xs">{value}</p>
-      <p className={`mt-ol-xs ${DELTA_TONE_CLASS[delta.tone]}`}>{delta.text}</p>
+      {loading ? (
+        <div aria-live="polite">
+          <Skeleton bars={1} />
+          <p className="mt-ol-xs text-ol-ink-soft">—</p>
+        </div>
+      ) : (
+        <>
+          <p className="text-ol-xl font-bold tabular-nums mt-ol-xs">{value}</p>
+          <p
+            className={`mt-ol-xs ${DELTA_TONE_CLASS[delta.tone]}`}
+            aria-label={`${DELTA_DIRECTION[delta.tone]} ${delta.text}`}
+          >
+            <span aria-hidden="true">{DELTA_MARKER[delta.tone]} </span>
+            {delta.text}
+          </p>
+        </>
+      )}
     </div>
   );
 }
 
-interface StackedPoint {
-  t: string;
-  fetched: number;
-  failed: number;
-  skipped: number;
-}
-
 /**
  * Stacked throughput bars (fetched / failed / skipped) rendered as
- * plain divs so no chart dependency is needed. Shows the first,
- * middle, and last bucket labels to stay readable on long windows.
+ * plain divs so no chart dependency is needed. Bars cap at 48 buckets
+ * (see `capBuckets`) and stay keyboard-focusable with per-bucket
+ * labels; a table fallback carries the same data for screen readers.
  */
 function ThroughputChart({ points }: { points: StackedPoint[] }) {
   if (points.length === 0) return <p className="my-ol-s">No throughput yet.</p>;
@@ -127,7 +174,12 @@ function ThroughputChart({ points }: { points: StackedPoint[] }) {
     const t = points[index].t;
     return t.length > 10 ? t.slice(5, 13) : t.slice(5);
   };
-  const axis = points.length === 1 ? [0] : [0, Math.floor(points.length / 2), points.length - 1];
+  const axis =
+    points.length <= 5
+      ? points.map((_, index) => index)
+      : [0, 1, 2, 3, 4].map((slot) =>
+          Math.min(points.length - 1, Math.round((slot * (points.length - 1)) / 4)),
+        );
   return (
     <div data-testid="analytics-throughput">
       <div
@@ -140,8 +192,10 @@ function ThroughputChart({ points }: { points: StackedPoint[] }) {
           return (
             <div
               key={point.t}
+              tabIndex={0}
+              aria-label={`${point.t}: ${total} pages (${point.fetched} fetched, ${point.failed} failed, ${point.skipped} skipped)`}
               title={`${point.t}: ${total} pages (${point.fetched} fetched, ${point.failed} failed, ${point.skipped} skipped)`}
-              className="flex-1 flex flex-col justify-end min-w-0"
+              className="flex-1 flex flex-col justify-end min-w-0 focus-visible:outline-2"
             >
               <div
                 className="bg-ol-error rounded-t-[2px]"
@@ -163,15 +217,24 @@ function ThroughputChart({ points }: { points: StackedPoint[] }) {
       </div>
       <ul className="flex flex-wrap gap-ol-m mt-ol-xs">
         <li>
-          <span className="inline-block w-3 h-3 bg-ol-accent rounded-[2px] mr-ol-xs" />
+          <span
+            className="inline-block w-3 h-3 bg-ol-accent rounded-[2px] mr-ol-xs"
+            aria-hidden="true"
+          />
           Fetched <strong>{totals.fetched}</strong>
         </li>
         <li>
-          <span className="inline-block w-3 h-3 bg-ol-error rounded-[2px] mr-ol-xs" />
+          <span
+            className="inline-block w-3 h-3 bg-ol-error rounded-[2px] mr-ol-xs"
+            aria-hidden="true"
+          />
           Failed <strong>{totals.failed}</strong>
         </li>
         <li>
-          <span className="inline-block w-3 h-3 bg-ol-warn rounded-[2px] mr-ol-xs" />
+          <span
+            className="inline-block w-3 h-3 bg-ol-warn rounded-[2px] mr-ol-xs"
+            aria-hidden="true"
+          />
           Skipped <strong>{totals.skipped}</strong>
         </li>
       </ul>
@@ -192,14 +255,7 @@ function ThroughputChart({ points }: { points: StackedPoint[] }) {
  * panel works wherever it is mounted.
  */
 export function AnalyticsPanel({ adminToken }: AnalyticsPanelProps) {
-  const [client] = useState(
-    () =>
-      new QueryClient({
-        defaultOptions: {
-          queries: { retry: false, refetchOnWindowFocus: false },
-        },
-      }),
-  );
+  const [client] = useState(createAdminQueryClient);
   return (
     <QueryClientProvider client={client}>
       <AnalyticsPanelView adminToken={adminToken} />
@@ -214,12 +270,23 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   const [domainDraft, setDomainDraft] = useState('');
   const [domain, setDomain] = useState('');
   const [domainPage, setDomainPage] = useState(1);
+  const [failingDomainDraft, setFailingDomainDraft] = useState('');
+  const [failingDomain, setFailingDomain] = useState('');
   const [failingDomainPage, setFailingDomainPage] = useState(1);
+  const [failingReasonsPage, setFailingReasonsPage] = useState(1);
+  const [outcomesPage, setOutcomesPage] = useState(1);
+  const [domainsSort, setDomainsSort] = useState<ListSort>('count-desc');
+  const [failingSort, setFailingSort] = useState<ListSort>('count-desc');
+  const [reasonsSort, setReasonsSort] = useState<ListSort>('count-desc');
+  const [outcomesSort, setOutcomesSort] = useState<ListSort>('count-desc');
+  const [throughputView, setThroughputView] = useState<'chart' | 'table'>('chart');
 
   const rangeActive = fromDate !== '' && toDate !== '';
-  const start = rangeActive ? fromDate : undefined;
-  const end = rangeActive ? toDate : undefined;
+  const rangeInvalid = fromDate !== '' && toDate !== '' && fromDate > toDate;
+  const start = rangeActive && !rangeInvalid ? fromDate : undefined;
+  const end = rangeActive && !rangeInvalid ? toDate : undefined;
   const appliedDomain = domain.trim() === '' ? undefined : domain.trim();
+  const appliedFailingDomain = failingDomain.trim() === '' ? undefined : failingDomain.trim();
   const windowLabel = rangeActive ? `${fromDate} → ${toDate}` : `in the last ${days} days`;
   const rangeSpanDays = rangeActive
     ? Math.max(
@@ -294,7 +361,16 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
       ),
   });
   const failingDomainsQuery = useQuery({
-    queryKey: ['admin', 'analytics', 'failing-domains', days, fromDate, toDate, failingDomainPage],
+    queryKey: [
+      'admin',
+      'analytics',
+      'failing-domains',
+      days,
+      fromDate,
+      toDate,
+      appliedFailingDomain,
+      failingDomainPage,
+    ],
     queryFn: () =>
       fetchAnalyticsTop(
         'crawl.page',
@@ -305,13 +381,13 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
         'outcome',
         'failed',
         (failingDomainPage - 1) * TOP_DOMAINS_LIMIT,
-        undefined,
+        appliedFailingDomain,
         start,
         end,
       ),
   });
   const failingReasonsQuery = useQuery({
-    queryKey: ['admin', 'analytics', 'failing-reasons', days, fromDate, toDate],
+    queryKey: ['admin', 'analytics', 'failing-reasons', days, fromDate, toDate, failingReasonsPage],
     queryFn: () =>
       fetchAnalyticsTop(
         'crawl.page',
@@ -321,14 +397,14 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
         adminToken,
         'outcome',
         'failed',
-        undefined,
+        (failingReasonsPage - 1) * 10,
         undefined,
         start,
         end,
       ),
   });
   const outcomesQuery = useQuery({
-    queryKey: ['admin', 'analytics', 'outcomes', days, fromDate, toDate],
+    queryKey: ['admin', 'analytics', 'outcomes', days, fromDate, toDate, outcomesPage],
     queryFn: () =>
       fetchAnalyticsTop(
         'crawl.page',
@@ -338,7 +414,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
         adminToken,
         undefined,
         undefined,
-        undefined,
+        (outcomesPage - 1) * 10,
         undefined,
         start,
         end,
@@ -381,17 +457,19 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   const bucketKeys = Array.from(
     new Set([...fetchedByBucket.keys(), ...failedByBucket.keys(), ...skippedByBucket.keys()]),
   ).sort();
-  const stacked: StackedPoint[] = bucketKeys.map((t) => ({
-    t,
-    fetched: fetchedByBucket.get(t) ?? 0,
-    failed: failedByBucket.get(t) ?? 0,
-    skipped: skippedByBucket.get(t) ?? 0,
-  }));
+  const stacked: StackedPoint[] = capBuckets(
+    bucketKeys.map((t) => ({
+      t,
+      fetched: fetchedByBucket.get(t) ?? 0,
+      failed: failedByBucket.get(t) ?? 0,
+      skipped: skippedByBucket.get(t) ?? 0,
+    })),
+  );
 
-  const domains = readTopRows(crawlDomainsQuery.data);
-  const failingDomains = readTopRows(failingDomainsQuery.data);
-  const failingReasons = readTopRows(failingReasonsQuery.data);
-  const outcomes = readTopRows(outcomesQuery.data);
+  const domains = sortRows(readTopRows(crawlDomainsQuery.data), domainsSort);
+  const failingDomains = sortRows(readTopRows(failingDomainsQuery.data), failingSort);
+  const failingReasons = sortRows(readTopRows(failingReasonsQuery.data), reasonsSort);
+  const outcomes = sortRows(readTopRows(outcomesQuery.data), outcomesSort);
   const anyLoading =
     countsQuery.isLoading ||
     prevCountsQuery.isLoading ||
@@ -402,15 +480,27 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     failingDomainsQuery.isLoading ||
     failingReasonsQuery.isLoading ||
     outcomesQuery.isLoading;
-  const failedQuery =
-    countsQuery.isError ||
-    fetchedSeriesQuery.isError ||
-    failedSeriesQuery.isError ||
-    skippedSeriesQuery.isError ||
-    crawlDomainsQuery.isError ||
-    failingDomainsQuery.isError ||
-    failingReasonsQuery.isError ||
-    outcomesQuery.isError;
+  // The generated client resolves HTTP failures to `null` (fail-open)
+  // instead of throwing, so a settled query with no data failed.
+  function queryFailed(query: { isError: boolean; isPending: boolean; data: unknown }): boolean {
+    return query.isError || (!query.isPending && query.data == null);
+  }
+
+  const anyCountsError = queryFailed(countsQuery);
+  const anySeriesError =
+    queryFailed(fetchedSeriesQuery) &&
+    queryFailed(failedSeriesQuery) &&
+    queryFailed(skippedSeriesQuery);
+  // A global banner only when the headline numbers *and* the throughput
+  // both fail; single-card failures stay on their own card.
+  const failedQuery = anyCountsError && anySeriesError;
+
+  function resetPages() {
+    setDomainPage(1);
+    setFailingDomainPage(1);
+    setFailingReasonsPage(1);
+    setOutcomesPage(1);
+  }
 
   function applyDomainSearch() {
     setDomain(domainDraft.trim());
@@ -423,22 +513,57 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     setDomainPage(1);
   }
 
-  function changeWindow(next: number) {
-    setDays(next);
-    setDomainPage(1);
+  function applyFailingDomainSearch() {
+    setFailingDomain(failingDomainDraft.trim());
     setFailingDomainPage(1);
+  }
+
+  function clearFailingDomainSearch() {
+    setFailingDomainDraft('');
+    setFailingDomain('');
+    setFailingDomainPage(1);
+  }
+
+  function changeWindow(next: string) {
+    if (next === 'custom') return;
+    setDays(Number(next));
+    setFromDate('');
+    setToDate('');
+    resetPages();
   }
 
   function changeFromDate(next: string) {
     setFromDate(next);
-    setDomainPage(1);
-    setFailingDomainPage(1);
+    resetPages();
   }
 
   function changeToDate(next: string) {
     setToDate(next);
-    setDomainPage(1);
-    setFailingDomainPage(1);
+    resetPages();
+  }
+
+  function renderSortControl(
+    testId: string,
+    label: string,
+    value: ListSort,
+    onChange: (next: ListSort) => void,
+  ) {
+    return (
+      <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
+        {label}
+        <select
+          data-testid={testId}
+          value={value}
+          onChange={(event) => onChange(event.target.value as ListSort)}
+          className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+        >
+          <option value="count-desc">Count ↓</option>
+          <option value="count-asc">Count ↑</option>
+          <option value="value-asc">Value A–Z</option>
+          <option value="value-desc">Value Z–A</option>
+        </select>
+      </label>
+    );
   }
 
   /** Ranked rows with a proportional share bar under each value. */
@@ -448,6 +573,9 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     listTestId: string,
     emptyTestId: string | null,
     emptyText: string,
+    sort: ListSort,
+    setSort: (next: ListSort) => void,
+    sortTestId: string,
   ) {
     if (rows.length === 0) {
       return (
@@ -458,22 +586,25 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     }
     const max = Math.max(1, ...rows.map((row) => row.count));
     return (
-      <ul data-testid={listTestId} className="flex flex-col gap-ol-s">
-        {rows.map((entry) => (
-          <li key={entry.value}>
-            <div className="flex justify-between gap-ol-s">
-              <span className="truncate">{entry.value}</span>
-              <strong className="tabular-nums">{entry.count.toLocaleString()}</strong>
-            </div>
-            <div className="h-1 bg-ol-well rounded-ol-s mt-ol-xs" aria-hidden="true">
-              <div
-                className={`h-1 rounded-ol-s ${barClass}`}
-                style={{ width: `${Math.max(2, (entry.count / max) * 100)}%` }}
-              />
-            </div>
-          </li>
-        ))}
-      </ul>
+      <>
+        {renderSortControl(sortTestId, 'Sort', sort, setSort)}
+        <ul data-testid={listTestId} className="flex flex-col gap-ol-s mt-ol-s">
+          {rows.map((entry) => (
+            <li key={entry.value}>
+              <div className="flex justify-between gap-ol-s">
+                <span className="truncate">{entry.value}</span>
+                <strong className="tabular-nums">{entry.count.toLocaleString()}</strong>
+              </div>
+              <div className="h-1 bg-ol-well rounded-ol-s mt-ol-xs" aria-hidden="true">
+                <div
+                  className={`h-1 rounded-ol-s ${barClass}`}
+                  style={{ width: `${Math.max(2, (entry.count / max) * 100)}%` }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </>
     );
   }
 
@@ -540,6 +671,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
 
   return (
     <section aria-label="Analytics" className="flex flex-col gap-ol-m text-ol-s">
+      <h2 className="ol-dash-title">Analytics</h2>
       {failedQuery ? (
         <p role="alert" className="my-ol-s">
           Analytics unavailable right now.
@@ -550,8 +682,8 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
           Window
           <select
             data-testid="analytics-window"
-            value={days}
-            onChange={(event) => changeWindow(Number(event.target.value))}
+            value={rangeActive ? 'custom' : days}
+            onChange={(event) => changeWindow(event.target.value)}
             className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
           >
             {WINDOW_OPTIONS.map((option) => (
@@ -559,6 +691,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
                 Last {option} days
               </option>
             ))}
+            {rangeActive ? <option value="custom">(custom range)</option> : null}
           </select>
         </label>
         <label className="flex flex-col gap-ol-xs font-semibold">
@@ -587,6 +720,9 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
           <p data-testid="analytics-range-note" className="my-ol-xs">
             Showing absolute range; the window preset is ignored.
           </p>
+        ) : null}
+        {rangeInvalid ? (
+          <FieldError id="analytics-range" message="Start must be before end." />
         ) : null}
       </div>
       <div className="flex flex-wrap items-end gap-ol-m">
@@ -623,77 +759,160 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
           </button>
         ) : null}
       </div>
-      {anyLoading ? <p className="my-ol-s">Loading analytics…</p> : null}
       <div>
-        <h4 className="mt-ol-m mb-ol-s text-ol-m">Overview {windowLabel}</h4>
-        <div className="grid gap-ol-m grid-cols-2 lg:grid-cols-3">
+        <h3 className="mt-ol-m mb-ol-s text-ol-m">Overview {windowLabel}</h3>
+        <div className="grid gap-ol-m grid-cols-2 sm:grid-cols-3">
           <KpiCard
             label="Pages fetched"
             value={fetched.toLocaleString()}
             delta={periodDelta(fetched, prevFetched, priorLabel)}
             testId="analytics-kpi-fetched"
+            loading={anyLoading}
           />
           <KpiCard
             label="Success rate"
             value={`${successRate.toFixed(1)}%`}
             delta={periodDelta(successRate, prevSuccessRate, priorLabel, false, 'pp')}
             testId="analytics-kpi-success"
+            loading={anyLoading}
           />
           <KpiCard
             label="Avg pages / day"
             value={avgPerDay.toFixed(1)}
             delta={periodDelta(avgPerDay, prevAvgPerDay, priorLabel)}
             testId="analytics-kpi-pace"
+            loading={anyLoading}
           />
           <KpiCard
             label="Pages failed"
             value={failed.toLocaleString()}
             delta={periodDelta(failed, prevFailed, priorLabel, true)}
             testId="analytics-kpi-failed"
+            loading={anyLoading}
           />
           <KpiCard
             label="Pages skipped"
             value={skipped.toLocaleString()}
             delta={periodDelta(skipped, prevSkipped, priorLabel, true)}
             testId="analytics-kpi-skipped"
+            loading={anyLoading}
           />
           <KpiCard
             label="Feedback helpful"
             value={`${feedbackRate.toFixed(0)}% (${feedbackHelpful}/${feedbackTotal})`}
             delta={periodDelta(feedbackRate, prevFeedbackRate, priorLabel, false, 'pp')}
             testId="analytics-kpi-feedback"
+            loading={anyLoading}
           />
         </div>
+        <p className="mt-ol-xs text-ol-s text-ol-ink-soft">
+          Deltas: pp = percentage points, % = percent change.
+        </p>
       </div>
       <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
-        <h4 className="mb-ol-s text-ol-m">Pages per bucket {windowLabel}</h4>
-        <ThroughputChart points={stacked} />
+        <div className="flex flex-wrap items-center justify-between gap-ol-s mb-ol-s">
+          <h3 className="text-ol-m">Pages per bucket {windowLabel}</h3>
+          <div className="flex gap-ol-xs" role="group" aria-label="Throughput view">
+            <Button
+              variant={throughputView === 'chart' ? 'primary' : 'secondary'}
+              size="sm"
+              data-testid="analytics-view-chart"
+              aria-pressed={throughputView === 'chart'}
+              onClick={() => setThroughputView('chart')}
+            >
+              Chart
+            </Button>
+            <Button
+              variant={throughputView === 'table' ? 'primary' : 'secondary'}
+              size="sm"
+              data-testid="analytics-view-table"
+              aria-pressed={throughputView === 'table'}
+              onClick={() => setThroughputView('table')}
+            >
+              Table
+            </Button>
+          </div>
+        </div>
+        {throughputView === 'chart' ? (
+          <ThroughputChart points={stacked} />
+        ) : (
+          <ThroughputTable points={stacked} />
+        )}
       </div>
       <div className="grid gap-ol-m lg:grid-cols-2">
         <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
-          <h4 className="mb-ol-s text-ol-m" data-testid="analytics-domains">
+          <h3 className="mb-ol-s text-ol-m" data-testid="analytics-domains">
             Top domains {windowLabel}
             {appliedDomain !== undefined ? ` matching “${appliedDomain}”` : ''}
-          </h4>
-          {renderShareRows(
-            domains,
-            'bg-ol-accent',
-            'analytics-domains-list',
-            'analytics-domains-empty',
-            `No domains${domainPage > 1 ? ' on this page' : ''}.`,
+          </h3>
+          {queryFailed(crawlDomainsQuery) ? (
+            <p className="my-ol-s">Top domains unavailable.</p>
+          ) : (
+            renderShareRows(
+              domains,
+              'bg-ol-accent',
+              'analytics-domains-list',
+              'analytics-domains-empty',
+              `No domains${domainPage > 1 ? ' on this page' : ''}.`,
+              domainsSort,
+              setDomainsSort,
+              'analytics-domains-sort',
+            )
           )}
           {renderDomainPager(domainPage, setDomainPage, domains, 'analytics-domains')}
         </div>
         <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
-          <h4 className="mb-ol-s text-ol-m" data-testid="analytics-failing-domains">
+          <h3 className="mb-ol-s text-ol-m" data-testid="analytics-failing-domains">
             Top failing domains {windowLabel}
-          </h4>
-          {renderShareRows(
-            failingDomains,
-            'bg-ol-error',
-            'analytics-failing-domains-list',
-            'analytics-failing-domains-empty',
-            `No failed pages${failingDomainPage > 1 ? ' on this page' : ''}.`,
+            {appliedFailingDomain !== undefined ? ` matching “${appliedFailingDomain}”` : ''}
+          </h3>
+          <div className="flex flex-wrap items-end gap-ol-s mb-ol-s">
+            <label className="flex flex-col gap-ol-xs font-semibold">
+              Domain contains
+              <input
+                data-testid="analytics-failing-domain"
+                type="text"
+                value={failingDomainDraft}
+                onChange={(event) => setFailingDomainDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') applyFailingDomainSearch();
+                }}
+                placeholder="e.g. example"
+                className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-xs py-ol-xs"
+              />
+            </label>
+            <button
+              type="button"
+              data-testid="analytics-failing-domain-search"
+              className="ol-button-ghost"
+              onClick={applyFailingDomainSearch}
+            >
+              Search
+            </button>
+            {appliedFailingDomain !== undefined ? (
+              <button
+                type="button"
+                data-testid="analytics-failing-domain-clear"
+                className="ol-button-ghost"
+                onClick={clearFailingDomainSearch}
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          {queryFailed(failingDomainsQuery) ? (
+            <p className="my-ol-s">Failing domains unavailable.</p>
+          ) : (
+            renderShareRows(
+              failingDomains,
+              'bg-ol-error',
+              'analytics-failing-domains-list',
+              'analytics-failing-domains-empty',
+              `No failed pages${failingDomainPage > 1 ? ' on this page' : ''}.`,
+              failingSort,
+              setFailingSort,
+              'analytics-failing-domains-sort',
+            )
           )}
           {renderDomainPager(
             failingDomainPage,
@@ -703,27 +922,52 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
           )}
         </div>
         <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
-          <h4 className="mb-ol-s text-ol-m" data-testid="analytics-reasons">
+          <h3 className="mb-ol-s text-ol-m" data-testid="analytics-reasons">
             Top failing reasons {windowLabel}
-          </h4>
-          {renderShareRows(
+          </h3>
+          {queryFailed(failingReasonsQuery) ? (
+            <p className="my-ol-s">Failing reasons unavailable.</p>
+          ) : (
+            renderShareRows(
+              failingReasons,
+              'bg-ol-error',
+              'analytics-reasons-list',
+              null,
+              failingReasonsPage > 1 ? 'No rows on this page.' : 'No failed pages.',
+              reasonsSort,
+              setReasonsSort,
+              'analytics-reasons-sort',
+            )
+          )}
+          {renderDomainPager(
+            failingReasonsPage,
+            setFailingReasonsPage,
             failingReasons,
-            'bg-ol-error',
-            'analytics-reasons-list',
-            null,
-            'No failed pages.',
+            'analytics-reasons',
           )}
         </div>
         <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
-          <h4 className="mb-ol-s text-ol-m">Page outcomes {windowLabel}</h4>
-          {renderShareRows(
-            outcomes,
-            'bg-ol-accent',
-            'analytics-outcomes-list',
-            null,
-            'No crawl activity.',
+          <h3 className="mb-ol-s text-ol-m">Page outcomes {windowLabel}</h3>
+          {queryFailed(outcomesQuery) ? (
+            <p className="my-ol-s">Page outcomes unavailable.</p>
+          ) : (
+            renderShareRows(
+              outcomes,
+              'bg-ol-accent',
+              'analytics-outcomes-list',
+              null,
+              outcomesPage > 1 ? 'No rows on this page.' : 'No crawl activity.',
+              outcomesSort,
+              setOutcomesSort,
+              'analytics-outcomes-sort',
+            )
           )}
+          {renderDomainPager(outcomesPage, setOutcomesPage, outcomes, 'analytics-outcomes')}
         </div>
+        <FeedbackCard
+          adminToken={adminToken}
+          fallbackText={`Feedback helpful ${feedbackRate.toFixed(0)}% (${feedbackHelpful}/${feedbackTotal}) from analytics counts.`}
+        />
       </div>
     </section>
   );

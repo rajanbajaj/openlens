@@ -239,4 +239,119 @@ describe('AnalyticsPanel', () => {
     });
     expect(screen.getByTestId('analytics-domains-page')).toHaveTextContent('Page 3');
   });
+
+  it('renders skeletons instead of zeros while loading', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => new Promise(() => {})),
+    );
+    render(<AnalyticsPanel adminToken="" />);
+    const card = screen.getByTestId('analytics-kpi-fetched');
+    expect(card.querySelector('[data-testid="skeleton"]')).toBeInTheDocument();
+    expect(card).toHaveTextContent('—');
+    expect(card).not.toHaveTextContent('0');
+  });
+
+  it('keeps per-card errors local instead of a global banner', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        const text = String(url);
+        let payload: unknown = COUNTS;
+        let status = 200;
+        if (text.includes('/api/v1/admin/analytics/top') && text.includes('prop=domain')) {
+          status = 500;
+          payload = { error: { code: 'unavailable', message: 'store down' } };
+        } else if (text.includes('/api/v1/admin/analytics/series')) {
+          payload = SERIES;
+        } else if (text.includes('/api/v1/admin/analytics/top')) {
+          payload = TOP_OUTCOME;
+        }
+        return Promise.resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify(payload)),
+          json: () => Promise.resolve(payload),
+        });
+      }),
+    );
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-reasons-list')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Top domains unavailable.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('toggles the throughput table fallback', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-throughput')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('analytics-view-table'));
+    expect(screen.getByTestId('analytics-view-table')).toHaveAttribute('aria-pressed', 'true');
+    const table = await screen.findByTestId('analytics-throughput-table');
+    expect(table).toHaveTextContent('2026-10-27');
+    fireEvent.click(screen.getByTestId('analytics-view-chart'));
+    expect(screen.getByTestId('analytics-throughput')).toBeInTheDocument();
+  });
+
+  it('clears the window when a range is picked and vice versa', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('analytics-from'), {
+      target: { value: '2026-10-01' },
+    });
+    fireEvent.change(screen.getByTestId('analytics-to'), {
+      target: { value: '2026-10-10' },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-range-note')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('analytics-window')).toHaveValue('custom');
+    fireEvent.change(screen.getByTestId('analytics-window'), { target: { value: '7' } });
+    await waitFor(() => {
+      expect(screen.queryByTestId('analytics-range-note')).not.toBeInTheDocument();
+    });
+  });
+
+  it('flags an inverted range inline', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('analytics-from'), {
+      target: { value: '2026-10-10' },
+    });
+    fireEvent.change(screen.getByTestId('analytics-to'), {
+      target: { value: '2026-10-01' },
+    });
+    expect(await screen.findByTestId('analytics-range')).toHaveTextContent(
+      'Start must be before end.',
+    );
+  });
+
+  it('sorts ranked lists without refetching', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toHaveTextContent('example0.com');
+    });
+    fireEvent.change(screen.getByTestId('analytics-domains-sort'), {
+      target: { value: 'value-asc' },
+    });
+    await waitFor(() => {
+      const items = screen
+        .getByTestId('analytics-domains-list')
+        .textContent?.match(/example\d+\.com/g);
+      expect(items?.[0]).toBe('example0.com');
+      expect(items?.[1]).toBe('example1.com');
+    });
+  });
 });

@@ -19,6 +19,7 @@ describe('admin shell', () => {
     stubFetchAllFailing();
     render(<App />);
     expect(screen.getByTestId('frontier-admin-token')).toBeInTheDocument();
+    expect(screen.getByRole('tablist', { name: 'Admin sections' })).toBeInTheDocument();
     for (const tab of [
       'frontier',
       'analytics',
@@ -27,9 +28,26 @@ describe('admin shell', () => {
       'ranking',
       'query',
       'plugins',
+      'indexing',
     ]) {
-      expect(screen.getByTestId(`admin-tab-${tab}`)).toBeInTheDocument();
+      const button = screen.getByTestId(`admin-tab-${tab}`);
+      expect(button).toHaveAttribute('role', 'tab');
+      expect(button).toBeInTheDocument();
     }
+  });
+
+  it('marks the active tab selected and moves with arrow keys', () => {
+    stubFetchAllFailing();
+    render(<App />);
+    const frontier = screen.getByTestId('admin-tab-frontier');
+    expect(frontier).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
+    expect(screen.getByTestId('admin-tab-analytics')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('admin-tab-analytics')).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'Home' });
+    expect(screen.getByTestId('admin-tab-frontier')).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'End' });
+    expect(screen.getByTestId('admin-tab-indexing')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('persists the admin token to sessionStorage and forgets it on demand', () => {
@@ -43,11 +61,11 @@ describe('admin shell', () => {
     expect(sessionStorage.getItem('openlens-admin-token')).toBeNull();
   });
 
-  it('shows the frontier dashboard on the default tab', async () => {
+  it('shows an error panel instead of defaults when the frontier snapshot fails', async () => {
     stubFetchAllFailing();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByTestId('frontier-state')).toBeInTheDocument();
+      expect(screen.getByTestId('frontier-snapshot-error')).toBeInTheDocument();
     });
   });
 

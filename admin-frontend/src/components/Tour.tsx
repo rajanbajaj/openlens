@@ -9,16 +9,34 @@ export interface TourProps {
 
 const TARGET_CLASS = 'ol-tour-target';
 const GAP = 12;
+/** Tooltip width cap (22rem) used for viewport clamping. */
+const TOOLTIP_WIDTH = 352;
 
 function targetExists(target: string): boolean {
   return target !== '' && document.querySelector(`[data-testid="${target}"]`) !== null;
+}
+
+/**
+ * Mounted element backing a step: the target itself, or the healthy
+ * fallback when the target is absent (e.g. auto-triage on a fleet with
+ * nothing to triage). Empty when neither is mounted.
+ */
+function resolvedTarget(step: TourStep): string {
+  if (step.target !== '') {
+    if (targetExists(step.target)) return step.target;
+    if (step.healthyFallback && targetExists(step.healthyFallback)) {
+      return step.healthyFallback;
+    }
+    return '';
+  }
+  return '';
 }
 
 function stepAvailable(steps: TourStep[], i: number): boolean {
   const step = steps[i];
   if (!step) return false;
   if (step.target === '') return !step.untilTarget || !targetExists(step.untilTarget);
-  return targetExists(step.target);
+  return resolvedTarget(step) !== '';
 }
 
 /** First step at or after `from` that can show right now. */
@@ -52,8 +70,11 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     above: boolean;
   } | null>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef({ open, index });
   stateRef.current = { open, index };
+  const resolvedRef = useRef<string | null>(null);
+  const [anchorEpoch, setAnchorEpoch] = useState(0);
 
   const stop = useCallback(
     (markDone: boolean) => {
@@ -92,7 +113,7 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     if (!isOpen) return;
     const prev = prevAvailable(steps, current - 1);
     if (prev !== -1) setIndex(prev);
-  }, [steps]);
+  }, [steps, stop]);
 
   // Button-triggered runs.
   useEffect(() => {
@@ -127,7 +148,8 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
         }
         return;
       }
-      if (!targetExists(step.target)) {
+      const resolved = resolvedTarget(step);
+      if (resolved === '') {
         const forward = nextAvailable(steps, current + 1);
         if (forward !== -1) {
           setIndex(forward);
@@ -139,6 +161,11 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
           return;
         }
         stop(true);
+      } else if (resolved !== resolvedRef.current) {
+        // The target resolved (possibly to its healthy fallback) after
+        // a DOM change: re-anchor without moving the step.
+        resolvedRef.current = resolved;
+        setAnchorEpoch((epoch) => epoch + 1);
       }
     });
     observer.observe(document.body, { childList: true, subtree: true });
@@ -168,11 +195,24 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
         stop(true);
         return;
       }
-      setAnchor({ top: Math.max(16, window.innerHeight * 0.25), left: 8, width: 0, above: false });
+      const width = Math.min(TOOLTIP_WIDTH, Math.max(0, window.innerWidth - GAP * 2));
+      setAnchor({
+        top: Math.min(
+          Math.max(GAP, window.innerHeight * 0.25),
+          Math.max(GAP, window.innerHeight - GAP - 80),
+        ),
+        left: Math.min(
+          Math.max(GAP, (window.innerWidth - width) / 2),
+          Math.max(GAP, window.innerWidth - width - GAP),
+        ),
+        width: 0,
+        above: false,
+      });
       nextRef.current?.focus();
       return;
     }
-    if (!targetExists(step.target)) {
+    const resolved = resolvedTarget(step);
+    if (resolved === '') {
       const forward = nextAvailable(steps, index + 1);
       if (forward !== -1) {
         setIndex(forward);
@@ -186,7 +226,8 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
       stop(true);
       return;
     }
-    const el = document.querySelector(`[data-testid="${step.target}"]`);
+    const el = document.querySelector(`[data-testid="${resolved}"]`);
+    resolvedRef.current = resolved;
     document.querySelectorAll(`.${TARGET_CLASS}`).forEach((node) => {
       node.classList.remove(TARGET_CLASS);
     });
@@ -201,16 +242,18 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
         el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
       }
       const rect = el.getBoundingClientRect();
+      const width = Math.min(TOOLTIP_WIDTH, Math.max(0, window.innerWidth - GAP * 2));
       const belowRoom = window.innerHeight - rect.bottom > 200;
+      const top = belowRoom ? rect.bottom + GAP : Math.max(GAP, rect.top - GAP);
       setAnchor({
-        top: belowRoom ? rect.bottom + GAP : Math.max(GAP, rect.top - GAP),
-        left: Math.min(Math.max(GAP, rect.left), Math.max(GAP, window.innerWidth - 340)),
+        top: Math.min(top, Math.max(GAP, window.innerHeight - GAP - 80)),
+        left: Math.min(Math.max(GAP, rect.left), Math.max(GAP, window.innerWidth - width - GAP)),
         width: rect.width,
         above: !belowRoom,
       });
     }
     nextRef.current?.focus();
-  }, [open, index, steps, stop]);
+  }, [open, index, steps, stop, anchorEpoch]);
 
   // Cleanup highlight on unmount.
   useEffect(
@@ -222,11 +265,26 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
     [],
   );
 
-  // Escape exits.
+  // Escape exits; Tab stays trapped inside the tooltip while open.
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') stop(true);
+      if (event.key === 'Escape') {
+        stop(true);
+        return;
+      }
+      if (event.key !== 'Tab' || !tooltipRef.current) return;
+      const focusables = tooltipRef.current.querySelectorAll<HTMLElement>('button:not([disabled])');
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => {
@@ -236,10 +294,17 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
 
   if (!open) return null;
   const step = steps[index];
-  if (!step || (step.target !== '' && !targetExists(step.target))) return null;
+  const resolved = step && step.target !== '' ? resolvedTarget(step) : 'gate';
+  if (!step || resolved === '') return null;
   const last = nextAvailable(steps, index + 1) === -1;
   const backDisabled = prevAvailable(steps, index - 1) === -1;
   const style = anchor ? { top: anchor.top, left: anchor.left } : { top: 16, left: 16 };
+  // Honest progress: count only steps that can show right now.
+  const visibleTotal = steps.filter((_, i) => stepAvailable(steps, i)).length;
+  const visibleIndex = steps
+    .map((entry, i) => ({ entry, i }))
+    .filter(({ i }) => stepAvailable(steps, i))
+    .findIndex(({ i }) => i === index);
 
   return (
     <>
@@ -248,13 +313,14 @@ export function Tour({ steps, runId, storageKey }: TourProps) {
         role="dialog"
         aria-label={step.title}
         data-testid="tour-tooltip"
+        ref={tooltipRef}
         className={`ol-tour-tooltip${anchor?.above ? ' ol-tour-tooltip-above' : ''}`}
         style={{ position: 'fixed', ...style }}
       >
         <p className="ol-tour-title">{step.title}</p>
         <p className="ol-tour-body">{step.body}</p>
         <p className="ol-tour-progress">
-          Step {index + 1} of {steps.length}
+          Step {visibleIndex + 1} of {visibleTotal}
         </p>
         <div className="ol-tour-controls">
           <button

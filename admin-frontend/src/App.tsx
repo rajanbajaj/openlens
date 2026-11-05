@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { AdminConfigName } from './api/types.ts';
+import { CRAWLER_DEFAULTS } from './crawlerDefaults.ts';
 import { AnalyticsPanel } from './components/AnalyticsPanel.tsx';
 import { ConfigEditor } from './components/ConfigEditor.tsx';
 import { FrontierDrawer } from './components/FrontierDrawer.tsx';
@@ -51,9 +52,9 @@ const FILE_DEFAULTS: Record<AdminConfigName, Record<string, unknown>> = {
     timeout_s: 5,
     crawl_delay_s: 0.5,
     max_pages: 100,
-    max_queued_urls: 10000,
+    max_queued_urls: CRAWLER_DEFAULTS.max_queued_urls,
     respect_robots: true,
-    default_max_depth: 2,
+    default_max_depth: CRAWLER_DEFAULTS.default_max_depth,
     deny_url_patterns: [],
   },
 };
@@ -80,6 +81,23 @@ export default function App() {
   const [adminToken, setAdminToken] = useState(() => loadStoredToken());
   const [tab, setTab] = useState<AdminTab>('frontier');
   const [tourRun, setTourRun] = useState(0);
+  const tabsRef = useRef<HTMLElement>(null);
+
+  /** Tablist keyboard support: arrows move + activate, Home/End jump. */
+  function handleTabsKeyDown(event: React.KeyboardEvent): void {
+    const order = TABS.map((entry) => entry.id);
+    const current = order.indexOf(tab);
+    let next: number | null = null;
+    if (event.key === 'ArrowRight') next = (current + 1) % order.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + order.length) % order.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = order.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    const id = order[next];
+    setTab(id);
+    tabsRef.current?.querySelector<HTMLButtonElement>(`[data-testid="admin-tab-${id}"]`)?.focus();
+  }
 
   return (
     <main className="ol-admin">
@@ -102,13 +120,21 @@ export default function App() {
         </div>
       </GlassPanel>
       <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-admin" />
-      <nav aria-label="Admin sections" className="ol-admin-tabs">
+      <nav
+        aria-label="Admin sections"
+        role="tablist"
+        className="ol-admin-tabs"
+        ref={tabsRef}
+        onKeyDown={handleTabsKeyDown}
+      >
         {TABS.map((entry) => (
           <button
             key={entry.id}
             type="button"
+            role="tab"
+            tabIndex={tab === entry.id ? 0 : -1}
             data-testid={`admin-tab-${entry.id}`}
-            aria-pressed={tab === entry.id}
+            aria-selected={tab === entry.id}
             onClick={() => setTab(entry.id)}
             className="ol-admin-tab"
           >

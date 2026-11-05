@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   clearFrontier,
+  decideCrawlRequest,
   fetchAdminConfig,
   fetchAnalyticsCounts,
   fetchAnalyticsSeries,
   fetchAnalyticsTop,
-  fetchFrontierSettings,
-  fetchFrontierStatus,
+  fetchFeedbackSummary,
   fetchFrontierUrlInfo,
-  fetchFrontierWorkers,
   frontierAdminHeaders,
   frontierLiveUrl,
+  listCrawlRequests,
   pauseFrontier,
   enqueueSeeds,
   resumeFrontier,
@@ -269,15 +269,116 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
 });
 
 describe('frontier reads degrade instead of throwing', () => {
-  it('status resolves to null on transport failure', async () => {
-    const failing = (() => Promise.reject(new Error('down'))) as unknown as FetchImpl;
-    await expect(fetchFrontierStatus(failing)).resolves.toBeNull();
+  it('url-info degrades blank input to null', async () => {
+    const { fetchImpl } = captureFetch(null);
+    await expect(fetchFrontierUrlInfo('   ', fetchImpl)).resolves.toBeNull();
+  });
+});
+
+describe('crawl-request review reads', () => {
+  const LIST = {
+    requests: [
+      {
+        id: 7,
+        url: 'https://example.com/user-page',
+        status: 'pending',
+        created_at: '2026-11-01T00:00:00Z',
+        decided_at: null,
+      },
+    ],
+    total: 1,
+  };
+
+  it('listCrawlRequests passes the status filter through', async () => {
+    const seen: string[] = [];
+    const impl = vi.fn().mockImplementation((url: unknown) => {
+      seen.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(JSON.stringify(LIST)),
+        json: () => Promise.resolve(LIST),
+      });
+    });
+    vi.stubGlobal('fetch', impl);
+    try {
+      const list = await listCrawlRequests('secret', 'approved');
+      expect(list?.total).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const url =
+      seen.find((candidate) => candidate.includes('/api/v1/frontier/crawl-requests')) ?? '';
+    expect(url).toContain('status=approved');
   });
 
-  it('settings resolve to null and workers to [] on shape failure', async () => {
-    const { fetchImpl } = captureFetch({ bogus: true });
-    await expect(fetchFrontierSettings(fetchImpl)).resolves.toBeNull();
-    await expect(fetchFrontierWorkers(fetchImpl)).resolves.toEqual([]);
+  it('listCrawlRequests degrades transport failures to null', async () => {
+    const failing = (() => Promise.reject(new Error('down'))) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', failing);
+    try {
+      await expect(listCrawlRequests('secret', 'pending')).resolves.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('decideCrawlRequest approves and surfaces envelopes as SearchApiError', async () => {
+    const decided = {
+      id: 7,
+      url: 'https://example.com/user-page',
+      status: 'approved',
+      created_at: '2026-11-01T00:00:00Z',
+      decided_at: '2026-11-02T00:00:00Z',
+    };
+    const seen: string[] = [];
+    const impl = vi.fn().mockImplementation((url: unknown) => {
+      seen.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(JSON.stringify(decided)),
+        json: () => Promise.resolve(decided),
+      });
+    });
+    vi.stubGlobal('fetch', impl);
+    try {
+      await expect(decideCrawlRequest(7, 'approve', 'secret')).resolves.toMatchObject({
+        status: 'approved',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen.some((url) => url.includes('/api/v1/frontier/crawl-requests/7/approve'))).toBe(
+      true,
+    );
+  });
+
+  it('fetchFeedbackSummary returns totals and degrades failures to null', async () => {
+    const summary = { total: 3, by_action: { helpful: 2 }, by_reason: {}, top_docs: [] };
+    const impl = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(JSON.stringify(summary)),
+        json: () => Promise.resolve(summary),
+      }),
+    );
+    vi.stubGlobal('fetch', impl);
+    try {
+      await expect(fetchFeedbackSummary('secret')).resolves.toMatchObject({ total: 3 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const failing = (() => Promise.reject(new Error('down'))) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', failing);
+    try {
+      await expect(fetchFeedbackSummary('secret')).resolves.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

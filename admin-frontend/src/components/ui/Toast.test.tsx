@@ -49,4 +49,40 @@ describe('Toasts', () => {
     fireEvent.click(screen.getByLabelText('Dismiss notification'));
     expect(screen.queryByTestId('toasts')).not.toBeInTheDocument();
   });
+
+  it('coalesces repeats and caps the queue', () => {
+    function MultiHarness() {
+      const { items, push, dismiss } = useToasts();
+      return (
+        <>
+          <button type="button" onClick={() => push('Saved.', 'success')}>
+            save
+          </button>
+          <button type="button" onClick={() => push(`Note ${Math.random()}`, 'info')}>
+            note
+          </button>
+          <Toasts items={items} onDismiss={dismiss} />
+        </>
+      );
+    }
+    render(<MultiHarness />);
+    fireEvent.click(screen.getByText('save'));
+    fireEvent.click(screen.getByText('save'));
+    fireEvent.click(screen.getByText('save'));
+    expect(screen.getByTestId('toast-success')).toHaveTextContent('Saved. ×3');
+    fireEvent.click(screen.getByText('note'));
+    fireEvent.click(screen.getByText('note'));
+    fireEvent.click(screen.getByText('note'));
+    fireEvent.click(screen.getByText('note'));
+    expect(screen.getAllByTestId('toast-info')).toHaveLength(3);
+  });
+
+  it('uses a single live region with an opaque surface', () => {
+    render(<Harness text="Saved." kind="success" />);
+    fireEvent.click(screen.getByText('push'));
+    const region = screen.getByTestId('toasts');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByTestId('toast-success').className).toContain('bg-[#101828]');
+    expect(screen.getByTestId('toast-success').className).not.toContain('/85');
+  });
 });

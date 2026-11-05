@@ -89,6 +89,12 @@ reasons.
   `filter_prop=`/`filter_value=`), and
   `GET /api/v1/admin/analytics/series?name=&bucket=&days=` (admin-gated,
   503 when the store is unreachable, 422 for unknown names/props).
+- Feedback overview: `GET /api/v1/admin/feedback/summary` returns totals
+  by action plus the noisiest documents. The admin Analytics tab's
+  `FeedbackCard` (`admin-frontend/src/components/analytics/FeedbackCard.tsx`)
+  renders those totals, falling back to the analytics-counts helpful rate
+  (`search.feedback.helpful` / `search.feedback.not_helpful`) when the
+  endpoint is absent (404) or unreachable.
 
 ## Operations
 

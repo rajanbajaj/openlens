@@ -149,87 +149,21 @@ body {
   outline-offset: 2px;
 }
 
-/* ---- App shell ---- */
+/* ---- Admin app shell ---- */
 
-.ol-shell {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  isolation: isolate;
+.ol-admin {
+  max-width: 72rem;
+  margin-inline: auto;
+  padding-inline: 1rem;
 }
 
-.ol-header {
-  border-bottom: 1px solid var(--ol-line);
-  background: var(--ol-paper);
+/* Type scale: hero > h2 section > h3 block > body/hint. */
+.ol-admin h2 {
+  font-size: 1.05rem;
 }
 
-.ol-header-inner {
-  max-width: 64rem;
-  margin: 0 auto;
-  padding: var(--ol-space-m) var(--ol-space-l);
-  display: flex;
-  align-items: baseline;
-  gap: var(--ol-space-m);
-}
-
-.ol-brand {
-  margin: 0;
-  font-size: var(--ol-font-size-xl);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.ol-brand-sub {
-  margin: 0;
-  font-size: var(--ol-font-size-s);
-  color: var(--ol-ink-soft);
-}
-
-/* Google-style landing: nothing but the centered hero (brand + search +
- * mode) until the first search runs, so the page opens like google.com. */
-.ol-landing {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: var(--ol-space-l);
-}
-
-/* ---- Search form ---- */
-
-.ol-search-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ol-space-s);
-  align-items: flex-end;
-}
-
-.ol-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ol-space-xs);
-  font-size: var(--ol-font-size-s);
-  font-weight: 600;
-}
-
-.ol-field-grow {
-  flex: 1 1 16rem;
-}
-
-.ol-input,
-.ol-select {
-  font: inherit;
-  font-weight: 400;
-  color: var(--ol-ink);
-  background: #ffffff;
-  border: 1px solid var(--ol-glass-border);
-  border-radius: var(--ol-radius-m);
-  padding: var(--ol-space-s) var(--ol-space-m);
-}
-
-.ol-input:disabled,
-.ol-select:disabled {
-  background: var(--ol-well);
-  color: var(--ol-ink-soft);
+.ol-admin h3 {
+  font-size: 0.95rem;
 }
 
 .ol-field-error {
@@ -320,12 +254,7 @@ body {
   text-decoration: underline;
 }
 
-/* ---- Results ---- */
-
-.ol-result-count {
-  font-size: var(--ol-font-size-s);
-  color: var(--ol-ink-soft);
-}
+/* ---- Cards ---- */
 
 .ol-card {
   border: 1px solid var(--ol-glass-border);
@@ -345,44 +274,18 @@ body {
   text-decoration: underline;
 }
 
-.ol-result-meta {
-  font-size: var(--ol-font-size-s);
-  color: var(--ol-ink-soft);
-}
+/* ---- Badges ---- */
 
-/* ---- Badges + chips ---- */
-
-.ol-badge,
-.ol-chip {
+.ol-badge {
   display: inline-block;
   font-size: var(--ol-font-size-s);
   font-weight: 600;
   border-radius: var(--ol-radius-s);
   padding: 0 var(--ol-space-s);
   line-height: 1.6;
-}
-
-.ol-badge {
   background: var(--ol-well);
   border: 1px solid var(--ol-glass-border);
   color: var(--ol-ink-soft);
-}
-
-.ol-chip {
-  background: var(--ol-accent-wash);
-  border: 1px solid var(--ol-accent);
-  color: var(--ol-accent-strong);
-  margin-right: var(--ol-space-xs);
-}
-
-.ol-chip button {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  padding: 0 0 0 var(--ol-space-xs);
-  text-decoration: underline;
 }
 
 /* ---- Diagnostics drawer ---- */
@@ -394,19 +297,6 @@ body {
   background: #ffffff;
   box-shadow: var(--ol-glass-shadow);
   padding: var(--ol-space-m) var(--ol-space-l);
-}
-
-.ol-drawer dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--ol-space-xs) var(--ol-space-m);
-  margin: 0;
-}
-
-.ol-drawer pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: var(--ol-font-size-s);
 }
 
 /* ---- Skeleton loading ---- */
@@ -459,30 +349,48 @@ body {
   border: 0;
 }
 
-/* ---- Pagination ---- */
+/* ---- Data tables ---- */
 
-.ol-pagination {
-  display: flex;
-  align-items: center;
-  gap: var(--ol-space-m);
-  margin-top: var(--ol-space-m);
+.ol-table-wrap {
+  overflow-x: auto;
 }
 
-/* ---- Responsive ---- */
+.ol-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ol-font-size-s);
+}
 
-@media (max-width: 48rem) {
-  .ol-landing {
-    padding: var(--ol-space-m);
-  }
+.ol-table th,
+.ol-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid var(--ol-line);
+}
 
-  .ol-header-inner {
-    padding: var(--ol-space-s) var(--ol-space-m);
-  }
+.ol-table thead th {
+  font-weight: 650;
+  white-space: nowrap;
+}
 
-  .ol-search-form {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.ol-table .ol-table-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ol-table .ol-table-id {
+  overflow-wrap: anywhere;
+}
+
+/* Sticky settings footer: dirty indicator plus Save/Revert. */
+.ol-sticky-footer {
+  position: sticky;
+  bottom: 0;
+  background: #ffffff;
+  padding-block: var(--ol-space-s);
+  border-top: 1px solid var(--ol-line);
 }
 
 /* ---- Flat panels (selective weights) ----
@@ -503,86 +411,13 @@ body {
   box-shadow: var(--ol-glass-shadow-l);
 }
 
-.ol-glass-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  border-radius: 0;
-  border-left: 0;
-  border-right: 0;
-  border-top: 0;
-}
-
-.ol-glass-sidebar {
-  border-radius: var(--ol-radius-m);
-  padding: var(--ol-space-m);
-}
-
 .ol-glass-rail {
   border-radius: var(--ol-radius-m);
   padding: var(--ol-space-m) var(--ol-space-l);
   background: var(--ol-glass-fallback-well);
 }
 
-/* ---- Suggestion dropdown readability ----
- * Opaque white so option text stays legible.
- * (Owned by SuggestDropdown via data-testid; no markup change.)
- */
-[data-testid='suggest-dropdown'] {
-  background: #ffffff;
-}
-
-/* ---- Workspace shell grid (sidebar / results / rail) ----
- * Base is the 360px single column; 768px adds the sidebar column and
- * drops the rail below; 1280px opens the full three-column workspace.
- */
-
-.ol-app-shell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    'sidebar'
-    'results'
-    'rail';
-  gap: var(--ol-space-m);
-  align-items: start;
-  width: 100%;
-  max-width: 64rem;
-  margin: 0 auto;
-  padding: var(--ol-space-l);
-}
-
-.ol-shell-sidebar {
-  grid-area: sidebar;
-  min-width: 0;
-}
-
-.ol-shell-results {
-  grid-area: results;
-  min-width: 0;
-}
-
-.ol-shell-rail {
-  grid-area: rail;
-  min-width: 0;
-}
-
-.ol-app-shell-collapsed {
-  grid-template-areas:
-    'results'
-    'rail';
-}
-
-.ol-app-shell-collapsed > .ol-shell-sidebar {
-  display: none;
-}
-
 @media (max-width: 22.5rem) {
-  .ol-app-shell {
-    padding: var(--ol-space-m);
-    gap: var(--ol-space-s);
-  }
-
   .ol-glass-hero {
     padding: var(--ol-space-m);
   }
@@ -592,91 +427,10 @@ body {
   }
 }
 
-@media (min-width: 48rem) {
-  .ol-app-shell {
-    grid-template-columns: 14rem minmax(0, 1fr);
-    grid-template-areas:
-      'sidebar results'
-      'rail rail';
-    max-width: 72rem;
-  }
-
-  .ol-app-shell-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      'results'
-      'rail';
-  }
-}
-
-@media (min-width: 80rem) {
-  .ol-app-shell {
-    grid-template-columns: 15rem minmax(0, 1fr) 19rem;
-    grid-template-areas: 'sidebar results rail';
-    max-width: 80rem;
-  }
-
-  .ol-app-shell-collapsed {
-    grid-template-columns: minmax(0, 1fr) 19rem;
-    grid-template-areas: 'results rail';
-  }
-}
-
-/* ---- Short disclosure transitions ----
- * No transitions by default: reduced-motion users get instant state
- * changes. Only brief fades on disclosure + rail surfaces otherwise.
- */
-
-/* ---- Suggestion dropdown entrance motion ----
- * Token-only entrance: a short fade with a small rise measured in
- * --ol-space-xs. The dropdown mounts under
- * `data-testid="suggest-dropdown"` (owned by SuggestDropdown), so this
- * rule animates it without touching component markup. Gated behind
- * `prefers-reduced-motion: no-preference`: reduced-motion users get an
- * instant dropdown, and the `reduce` block pins that explicitly.
- */
-
-@keyframes ol-suggest-in {
-  from {
-    opacity: 0;
-    transform: translateY(calc(-1 * var(--ol-space-xs)));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  [data-testid='suggest-dropdown'] {
-    animation: ol-suggest-in 150ms ease;
-  }
-
-  .ol-transition-fade {
-    transition: opacity 150ms ease;
-  }
-
-  .ol-transition-panel {
-    transition:
-      opacity 160ms ease,
-      background-color 160ms ease,
-      border-color 160ms ease;
-  }
-
-  .ol-transition-rail {
-    transition: opacity 180ms ease;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-testid='suggest-dropdown'] {
-    animation: none;
-  }
-}
-
 /* ---- Guided onboarding tour ----
- * Dim veil (click-through) plus a fixed tooltip near the highlighted
- * target. Reuses only existing --ol-* tokens; no animation.
+ * Operable veil (background inert via focus trap + pointer capture)
+ * plus a fixed, viewport-clamped tooltip near the highlighted target.
+ * Reuses only existing --ol-* tokens; no animation.
  */
 
 .ol-tour-target {
@@ -691,14 +445,16 @@ body {
   position: fixed;
   inset: 0;
   z-index: 20;
-  pointer-events: none;
+  pointer-events: auto;
   background: rgb(16 24 40 / 0.45);
 }
 
 .ol-tour-tooltip {
   z-index: 40;
   pointer-events: auto;
-  max-width: 20rem;
+  max-width: min(22rem, calc(100vw - 2rem));
+  max-height: 60vh;
+  overflow: auto;
   background: var(--ol-paper);
   color: var(--ol-ink);
   border: 1px solid var(--ol-accent);
@@ -772,15 +528,20 @@ body {
   flex: 1 1 240px;
 }
 
+.ol-admin-hero-controls > button:last-child {
+  flex: none;
+}
+
 .ol-admin-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   width: fit-content;
   max-width: 100%;
   margin: 1rem 0;
   border: 1px solid var(--ol-line);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: auto;
+  white-space: nowrap;
   background: #ffffff;
 }
 
@@ -796,9 +557,10 @@ body {
   border-left: 1px solid var(--ol-line);
 }
 
-.ol-admin-tab[aria-pressed='true'] {
+.ol-admin-tab[aria-selected='true'] {
   background: var(--ol-accent-wash);
   font-weight: 650;
+  box-shadow: inset 0 -2px 0 currentcolor;
 }
 
 /* Dashboard grouping: one visual card per workflow area so the

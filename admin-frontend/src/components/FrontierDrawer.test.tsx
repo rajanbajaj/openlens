@@ -157,19 +157,19 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     expect(screen.getByTestId('frontier-state')).toBeInTheDocument();
   });
 
-  it('pauses and clears the queue behind a confirm', async () => {
+  it('pauses and clears the queue behind a confirm dialog', async () => {
     MockSocket.instances = [];
     stubBackend({ ...STATUS, cleared_queued: 2, kafka_purged: true });
     vi.stubGlobal('WebSocket', MockSocket);
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
     render(<FrontierDrawer adminToken="" />);
     await waitFor(() => {
       expect(screen.getByText('Pause & clear')).toBeInTheDocument();
     });
     fireEvent.click(screen.getByText('Pause & clear'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'Pause crawling and clear the queue?',
+    );
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent(
         'Paused. Cleared 2 queued URL(s). Topic purged.',
@@ -187,22 +187,20 @@ describe('FrontierDrawer live stats and submission feedback', () => {
       return STATUS;
     });
     vi.stubGlobal('WebSocket', MockSocket);
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => false),
-    );
     render(<FrontierDrawer adminToken="" />);
     await waitFor(() => {
       expect(screen.getByText('Pause & clear')).toBeInTheDocument();
     });
     fireEvent.click(screen.getByText('Pause & clear'));
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(clearCalls).toBe(0);
   });
 
   it('confirms a successful seed resume with a seed count', async () => {
     MockSocket.instances = [];
-    stubBackend(STATUS);
+    // Resume arms only while paused; the running fleet keeps it disabled.
+    stubBackend({ ...STATUS, paused: true });
     vi.stubGlobal('WebSocket', MockSocket);
     render(<FrontierDrawer adminToken="" />);
     await waitFor(() => {
@@ -272,6 +270,64 @@ describe('FrontierDrawer live stats and submission feedback', () => {
 });
 
 describe('FrontierDrawer settings form', () => {
+  it('disables Pause while paused and shows the state hint', async () => {
+    MockSocket.instances = [];
+    stubBackend({ ...STATUS, paused: true });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const pause = await screen.findByText('Pause', { selector: 'button' });
+    expect(pause).toBeDisabled();
+    expect(screen.getByText('Resume', { selector: 'button' })).not.toBeDisabled();
+    expect(screen.getByTestId('frontier-pause-hint')).toHaveTextContent(
+      'Paused — queue growth halted',
+    );
+    expect(screen.getByTestId('frontier-state')).toHaveTextContent('Paused');
+  });
+
+  it('shows an error panel with retry instead of defaults when the snapshot fails', async () => {
+    MockSocket.instances = [];
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('backend down')));
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    expect(await screen.findByTestId('frontier-snapshot-error')).toHaveTextContent(
+      'Frontier status unavailable.',
+    );
+    expect(screen.queryByTestId('frontier-settings')).not.toBeInTheDocument();
+  });
+
+  it('reverts dirty settings instead of saving them', async () => {
+    MockSocket.instances = [];
+    stubBackend();
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const input = (await screen.findByTestId('frontier-setting-user-agent')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'OtherBot/2.0 (+https://example.com)' } });
+    expect(screen.getAllByText('Unsaved changes').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('frontier-settings-revert')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('frontier-settings-revert'));
+    expect((screen.getByTestId('frontier-setting-user-agent') as HTMLInputElement).value).toBe(
+      'TestBot/1.0 (+https://example.com)',
+    );
+  });
+
+  it('flags a non-integer seed priority inline instead of toast-only', async () => {
+    MockSocket.instances = [];
+    stubBackend();
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-priority'), { target: { value: '1.5' } });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-priority-error')).toHaveTextContent(
+        'Priority must be a whole number (0 or more).',
+      );
+    });
+    expect(screen.getByTestId('frontier-priority')).toHaveAttribute('aria-invalid', 'true');
+  });
+
   it('shows the loaded User-Agent and saves edits back', async () => {
     MockSocket.instances = [];
     let putBody: unknown = null;
@@ -281,19 +337,19 @@ describe('FrontierDrawer settings form', () => {
         if (url.includes('/api/v1/frontier/settings') && init?.body) {
           putBody = JSON.parse(init.body);
         }
+        // The generated client reads `.text()`: mirror the per-URL
+        // payload there, not just in `.json()`.
+        const payload = url.includes('/api/v1/frontier/settings')
+          ? { settings: SETTINGS }
+          : url.includes('/api/v1/frontier/workers')
+            ? { workers: [], worker_count: 0 }
+            : STATUS;
         return Promise.resolve({
           ok: true,
           status: 200,
           headers: new Headers(),
-          text: () => Promise.resolve(JSON.stringify({ settings: SETTINGS })),
-          json: () =>
-            Promise.resolve(
-              url.includes('/api/v1/frontier/settings')
-                ? { settings: SETTINGS }
-                : url.includes('/api/v1/frontier/workers')
-                  ? { workers: [], worker_count: 0 }
-                  : STATUS,
-            ),
+          text: () => Promise.resolve(JSON.stringify(payload)),
+          json: () => Promise.resolve(payload),
         });
       }),
     );
@@ -303,6 +359,8 @@ describe('FrontierDrawer settings form', () => {
     expect(input.value).toBe('TestBot/1.0 (+https://example.com)');
     fireEvent.change(input, { target: { value: 'OtherBot/2.0 (+https://example.com)' } });
     fireEvent.click(screen.getByText('Save settings'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Push settings to fleet?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
@@ -318,15 +376,19 @@ describe('FrontierDrawer skip domains', () => {
         if (url.includes('/api/v1/frontier/settings') && init?.body) {
           capture.body = JSON.parse(init.body);
         }
+        // The generated client reads `.text()`: mirror the per-URL
+        // payload there, not just in `.json()`.
+        const payload = url.includes('/api/v1/frontier/settings')
+          ? { settings: SETTINGS }
+          : url.includes('/api/v1/frontier/workers')
+            ? { workers: [], worker_count: 0 }
+            : { ...STATUS };
         return Promise.resolve({
           ok: true,
           status: 200,
           headers: new Headers(),
-          text: () => Promise.resolve(JSON.stringify({ settings: SETTINGS })),
-          json: () =>
-            Promise.resolve(
-              url.includes('/api/v1/frontier/settings') ? { settings: SETTINGS } : { ...STATUS },
-            ),
+          text: () => Promise.resolve(JSON.stringify(payload)),
+          json: () => Promise.resolve(payload),
         });
       }),
     );
@@ -357,6 +419,8 @@ describe('FrontierDrawer skip domains', () => {
     fireEvent.change(input, { target: { value: 'tracker.example' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     fireEvent.click(screen.getByText('Save settings'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Push settings to fleet?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
@@ -383,6 +447,8 @@ describe('FrontierDrawer skip domains', () => {
     expect(screen.getByTestId('frontier-deny-list')).toHaveTextContent('ads.example');
 
     fireEvent.click(screen.getByText('Save settings'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Push settings to fleet?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
@@ -408,6 +474,8 @@ describe('FrontierDrawer skip domains', () => {
     );
 
     fireEvent.click(screen.getByText('Save settings'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Push settings to fleet?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
     });
@@ -636,6 +704,8 @@ describe('FrontierDrawer crawl-request review', () => {
       );
     });
     fireEvent.click(screen.getByTestId('crawl-request-approve-7'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Approve 1 request(s)?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent(/Approved/);
     });
@@ -648,6 +718,8 @@ describe('FrontierDrawer crawl-request review', () => {
       expect(screen.getByTestId('crawl-request-decline-7')).toBeInTheDocument();
     });
     fireEvent.click(screen.getByTestId('crawl-request-decline-7'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Decline 1 request(s)?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent(/Declined/);
     });
@@ -706,9 +778,9 @@ describe('FrontierDrawer worker throughput', () => {
       expect(screen.getByTestId('frontier-throughput')).toHaveTextContent('12/min');
     });
     expect(screen.getByTestId('frontier-throughput')).toHaveTextContent('22 pages');
-    // Per-worker line carries rates and cumulative totals; the stat-less
+    // Per-worker row carries rates and cumulative totals; the stat-less
     // worker renders its base row without throughput.
-    expect(screen.getByTestId('frontier-workers')).toHaveTextContent('1100 tokens total');
+    expect(screen.getByTestId('frontier-workers')).toHaveTextContent('22 pages · 1100 tokens');
     expect(screen.getByTestId('frontier-workers')).toHaveTextContent('w-2');
   });
 });
@@ -834,6 +906,32 @@ describe('FrontierDrawer failed domains', () => {
     );
   }
 
+  it('bulk-requeues selected failed domains behind one confirm', async () => {
+    MockSocket.instances = [];
+    const capture = {
+      posts: [] as { url: string; body: unknown }[],
+      puts: [] as { url: string; body: unknown }[],
+    };
+    stubDomainBackend(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="secret" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-failed-domains')).toHaveTextContent('example.com');
+    });
+    fireEvent.click(screen.getByTestId('frontier-failed-domains-select-all'));
+    fireEvent.click(screen.getByTestId('frontier-failed-domains-bulk-requeue'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Requeue 2 domain(s)?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Requeued — example.com, other.example: 12 row(s).',
+      );
+    });
+    expect(JSON.parse(capture.posts[0].body as string)).toMatchObject({
+      domains: ['example.com', 'other.example'],
+    });
+  });
+
   it('renders failed domains with counts and action buttons', async () => {
     MockSocket.instances = [];
     const empty: {
@@ -879,12 +977,10 @@ describe('FrontierDrawer failed domains', () => {
     const capture = { posts: [], puts: [] as { url: string; body: unknown }[] };
     stubDomainBackend(capture);
     vi.stubGlobal('WebSocket', MockSocket);
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
     render(<FrontierDrawer adminToken="secret" />);
     fireEvent.click(await screen.findByTestId('frontier-domain-block-example.com'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Block example.com?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent(
         'Blocked — example.com added to deny_domains.',
@@ -910,12 +1006,10 @@ describe('FrontierDrawer failed domains', () => {
     };
     stubDomainBackend(capture);
     vi.stubGlobal('WebSocket', MockSocket);
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true),
-    );
     render(<FrontierDrawer adminToken="secret" />);
     fireEvent.click(await screen.findByTestId('frontier-auto-triage'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Auto-triage every failed domain?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
     await waitFor(() => {
       expect(screen.getByTestId('toasts')).toHaveTextContent(
         'Auto-triage done — 2 domain(s): 1 skip+purge, 1 requeue+wait.',

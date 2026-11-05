@@ -1,20 +1,33 @@
 export { Badge } from './Badge.tsx';
 export type { BadgeProps } from './Badge.tsx';
 export { Button } from './Button.tsx';
-export type { ButtonProps, ButtonVariant } from './Button.tsx';
+export type { ButtonProps, ButtonSize, ButtonVariant } from './Button.tsx';
 export { Card } from './Card.tsx';
 export type { CardProps } from './Card.tsx';
-export { Chip } from './Chip.tsx';
-export type { ChipProps } from './Chip.tsx';
+export { ConfirmDialog } from './ConfirmDialog.tsx';
+export type { ConfirmDialogProps } from './ConfirmDialog.tsx';
+export { DataTable } from './DataTable.tsx';
+export type {
+  DataTableColumn,
+  DataTablePagination,
+  DataTableProps,
+  DataTableSearch,
+  DataTableSelection,
+  DataTableSort,
+} from './DataTable.tsx';
 export { Drawer } from './Drawer.tsx';
 export type { DrawerProps } from './Drawer.tsx';
+export { EmptyState } from './EmptyState.tsx';
+export type { EmptyStateProps } from './EmptyState.tsx';
+export { FieldError } from './FieldError.tsx';
+export type { FieldErrorProps } from './FieldError.tsx';
 export { GlassPanel } from './GlassPanel.tsx';
 export type { GlassPanelProps, GlassPanelVariant } from './GlassPanel.tsx';
-export { Select } from './Select.tsx';
-export type { SelectOption, SelectProps } from './Select.tsx';
+export { SearchInput } from './SearchInput.tsx';
+export type { SearchInputProps } from './SearchInput.tsx';
 export { Skeleton } from './Skeleton.tsx';
 export type { SkeletonProps } from './Skeleton.tsx';
-export { TextInput } from './TextInput.tsx';
-export type { TextInputProps } from './TextInput.tsx';
-export { Toasts, TOAST_TTL_MS, useToasts } from './Toast.tsx';
+export { StatusBadge } from './StatusBadge.tsx';
+export type { StatusBadgeProps, StatusTone } from './StatusBadge.tsx';
+export { Toasts, TOAST_MAX_ITEMS, TOAST_TTL_MS, useToasts } from './Toast.tsx';
 export type { ToastItem, ToastKind, ToastsProps } from './Toast.tsx';

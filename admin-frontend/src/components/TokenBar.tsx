@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { Button } from './ui/Button.tsx';
+
 /**
  * Admin token bar: password input kept in tab-scoped sessionStorage.
  * sessionStorage (not localStorage) bounds a stolen-token window to the
@@ -37,34 +40,56 @@ export function storeToken(
 }
 
 export function TokenBar({ adminToken, onChange }: TokenBarProps) {
+  const [visible, setVisible] = useState(false);
+
   return (
     <div className="flex flex-col gap-ol-xs">
-      <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
-        Admin token (required only when the backend sets OPENLENS_FRONTIER_ADMIN_TOKEN)
+      <label
+        htmlFor="frontier-admin-token"
+        className="flex flex-col gap-ol-xs text-ol-s font-semibold"
+      >
+        Admin token
+      </label>
+      <p className="text-ol-s text-ol-ink-soft">
+        (required only when the backend sets OPENLENS_FRONTIER_ADMIN_TOKEN)
+      </p>
+      <span className="flex items-center gap-ol-xs">
         <input
+          id="frontier-admin-token"
           data-testid="frontier-admin-token"
-          type="password"
+          type={visible ? 'text' : 'password'}
           autoComplete="off"
           value={adminToken}
           onChange={(event) => {
             onChange(event.target.value);
             storeToken(event.target.value);
           }}
-          className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+          className="flex-1 font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
         />
-      </label>
-      {adminToken ? (
-        <button
-          type="button"
-          data-testid="frontier-admin-forget"
-          onClick={() => {
-            onChange('');
-            storeToken('');
-          }}
-          className="self-start text-ol-s underline"
+        <Button
+          variant="ghost"
+          size="sm"
+          data-testid="frontier-admin-token-visibility"
+          aria-pressed={visible}
+          onClick={() => setVisible((current) => !current)}
         >
-          Forget token
-        </button>
+          {visible ? 'Hide token' : 'Show token'}
+        </Button>
+      </span>
+      {adminToken ? (
+        <span>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="frontier-admin-forget"
+            onClick={() => {
+              onChange('');
+              storeToken('');
+            }}
+          >
+            Forget token
+          </Button>
+        </span>
       ) : null}
     </div>
   );

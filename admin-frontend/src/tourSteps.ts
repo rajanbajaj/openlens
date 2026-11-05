@@ -7,6 +7,12 @@ export interface TourStep {
    * `untilTarget` mounts, then the tour advances on its own.
    */
   untilTarget?: string;
+  /**
+   * Fallback target used when `target` is not mounted (e.g. the
+   * auto-triage step on a healthy fleet with nothing to triage):
+   * the tour highlights the fallback instead of skipping the stop.
+   */
+  healthyFallback?: string;
 }
 
 export const TOUR_STEPS: TourStep[] = [
@@ -34,6 +40,7 @@ export const TOUR_STEPS: TourStep[] = [
     target: 'frontier-auto-triage',
     title: 'One-click triage',
     body: '429s wait and retry, robots and 404s skip, timeouts join the backoff pool.',
+    healthyFallback: 'frontier-needs-attention',
   },
   {
     target: 'frontier-failed-domains',

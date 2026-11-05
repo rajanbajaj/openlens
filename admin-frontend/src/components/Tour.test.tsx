@@ -29,7 +29,7 @@ describe('Tour guided onboarding', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
     expect(screen.getByRole('dialog', { name: 'First stop' })).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
     expect(document.querySelector('[data-testid="tour-a"]')).toHaveClass('ol-tour-target');
   });
 
@@ -43,11 +43,11 @@ describe('Tour guided onboarding', () => {
     renderTargets();
     const { rerender } = render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
     rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Next'));
     expect(screen.getByRole('dialog', { name: 'Second stop' })).toBeInTheDocument();
-    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 2')).toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(document.querySelector('[data-testid="tour-b"]')).toHaveClass('ol-tour-target');
     expect(document.querySelector('[data-testid="tour-a"]')).not.toHaveClass('ol-tour-target');
@@ -83,7 +83,7 @@ describe('Tour guided onboarding', () => {
     window.history.replaceState(null, '', '/?tour=1');
     render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
     expect(screen.getByRole('dialog', { name: 'First stop' })).toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
   });
 
   it('starts at the first available target when earlier steps are missing', () => {
@@ -93,7 +93,7 @@ describe('Tour guided onboarding', () => {
     const { rerender } = render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
     rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
     expect(screen.getByRole('dialog', { name: 'Second stop' })).toBeInTheDocument();
-    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 1')).toBeInTheDocument();
   });
 
   it('ends the tour with Done on the last available target', () => {
@@ -144,6 +144,49 @@ describe('Tour guided onboarding', () => {
       expect(screen.getByRole('dialog', { name: 'First stop' })).toBeInTheDocument();
     });
     expect(host.querySelector('details')?.open).toBe(true);
+  });
+
+  it('keeps Tab inside the tooltip while open', () => {
+    renderTargets();
+    const { rerender } = render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
+    rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    const dialog = screen.getByRole('dialog', { name: 'First stop' });
+    const buttons = dialog.querySelectorAll('button:not([disabled])');
+    expect(buttons.length).toBeGreaterThan(1);
+    const last = buttons[buttons.length - 1];
+    (last as HTMLElement).focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(buttons[0]);
+  });
+
+  it('falls back to the healthy target when a step is missing', () => {
+    const host = document.createElement('div');
+    host.innerHTML = '<section data-testid="tour-fallback">healthy</section>';
+    document.body.append(host);
+    const steps: TourStep[] = [
+      {
+        target: 'tour-gone',
+        title: 'Gone stop',
+        body: 'Missing.',
+        healthyFallback: 'tour-fallback',
+      },
+    ];
+    const { rerender } = render(<Tour steps={steps} runId={0} storageKey="ol-tour-test" />);
+    rerender(<Tour steps={steps} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.getByRole('dialog', { name: 'Gone stop' })).toBeInTheDocument();
+    expect(document.querySelector('[data-testid="tour-fallback"]')).toHaveClass('ol-tour-target');
+    expect(screen.getByText('Step 1 of 1')).toBeInTheDocument();
+  });
+
+  it('clamps the tooltip inside narrow viewports', () => {
+    renderTargets();
+    Object.defineProperty(window, 'innerWidth', { value: 300, configurable: true });
+    const { rerender } = render(<Tour steps={STEPS} runId={0} storageKey="ol-tour-test" />);
+    rerender(<Tour steps={STEPS} runId={1} storageKey="ol-tour-test" />);
+    const tooltip = screen.getByRole('dialog', { name: 'First stop' });
+    const left = Number.parseFloat(tooltip.style.left);
+    expect(left).toBeGreaterThanOrEqual(12);
+    expect(left).toBeLessThanOrEqual(300 - 12);
   });
 
   it('pauses on a gate step until the awaited view mounts', async () => {
