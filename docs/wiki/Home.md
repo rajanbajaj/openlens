@@ -15,6 +15,7 @@ backends are swappable via config.
 ## Customer pages
 
 - [Getting Started](Getting-Started) — first search in 2 minutes
+- [Search and Admin Guide](Search-and-Admin-Guide) — step-by-step search and admin walkthrough with screenshots
 - [Search Modes](Search-Modes) — default, news, shopping, travel, child-safe
 - [AI Mode](AI-Mode) — plain-language questions with cited answers
 - [Perspectives](Perspectives) — different sides of the same story
