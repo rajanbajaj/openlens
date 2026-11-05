@@ -23,6 +23,7 @@ flowchart TB
     W[Crawler workers xN] <--> K
     W --> PG
     W -->|heartbeats| B
+    RF -.->|write-behind mirror<br/>ops reads stay on PG| PG
     AW[Analytics worker x1] --> K
     AW --> CH
     P[pgAdmin :5050] -.-> PG
@@ -56,20 +57,31 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    SEED[Seeds: resume-with-seeds or crawl-requests] --> ST[(frontier_queue<br/>queued/active/done/failed)]
-    ST --> PUB[Publish URLs to crawl.urls]
-    K[Kafka topic crawl.urls] --> CON[Consume: one URL per live worker]
-    CON --> DR[Store drain: run_index + PoliteCrawler]
-    DR --> POL[Push-time gates: domain/policy/robots/depth]
+    SEED[Seeds: resume-with-seeds or crawl-requests] --> K[Kafka topic crawl.urls]
+    K --> CON[Consume: one URL per live worker]
+    CON --> ENQ[Enqueue: Redis ready queue<br/>ZSET priority/depth + seen set]
+    ENQ --> CLM[Claim: SET NX lease + heartbeat PEXPIRE]
+    CLM --> POL[Push-time gates: domain/policy/robots/depth]
     POL --> FET[Fetch: politeness + conditional + 5s bound]
     FET --> Q[Quality gate: reject skips expansion]
     Q --> IDX[Index documents to Postgres]
     Q --> LINK[Discovered links batch-published to topic]
     LINK --> K
-    IDX --> COM[Commit offset: at-least-once + store dedup]
-    DR --> HB[Heartbeat claimed/stats/discovery to backend]
+    IDX --> TERM[Terminal: mark done/failed/skipped in Redis]
+    TERM --> COM[Commit offset: at-least-once + store dedup]
+    TERM --> FL[Write-behind flusher → Postgres mirror<br/>batches every flush_interval_s]
+    FL --> OPS[Ops reads: failed lists, domains, requeue<br/>served from mirror, lag ≤ 5s]
+    CLM --> HB[Heartbeat claimed/stats/discovery to backend]
     HB --> API[GET /frontier/status + live socket]
 ```
+
+Hot path (`frontier.backend: redis`, default stays `postgres`):
+claims, leases, heartbeats, and the ready queue live in
+redis-frontier instead of per-URL Postgres round-trips; the flusher
+mirrors terminal states, checkpoints, and settings to Postgres, so
+every ops read above is served from the mirror with bounded
+staleness. Rollback is flipping the flag back — leases TTL out and
+Kafka redelivers anything in flight.
 
 ### Analytics path
 
