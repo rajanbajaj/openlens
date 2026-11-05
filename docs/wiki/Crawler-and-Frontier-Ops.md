@@ -100,10 +100,12 @@ malformed host lists:
 - **Auto-triage** (`POST /frontier/failed/domains/auto-triage`,
   admin-only, optional `{"dry_run": true}`) — one pass over every
   failed host: robots/content-type/404/401 → skip+purge, 429 →
-  requeue + volume-scaled politeness wait, fetch timeout →
-  requeue + backoff + priority sink, thin content →
-  skip+block+purge. Unknown reasons and the `(invalid)` bucket stay
-  untouched and are reported. Use dry-run first on a new backlog.
+  requeue + volume-scaled politeness wait + persistent `rate_limit_s`
+  (`5s` per failed row, `30s` max, never loosened on later passes),
+  fetch timeout → requeue + backoff + priority sink + the same
+  persistent `rate_limit_s`, thin content → skip+block+purge.
+  Unknown reasons and the `(invalid)` bucket stay untouched and are
+  reported. Use dry-run first on a new backlog.
 
 ## Scaling crawler throughput
 

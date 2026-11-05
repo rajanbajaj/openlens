@@ -1790,6 +1790,26 @@ _TRIAGE_429_WAIT_CAP_S = 1800.0
 #: Cap for the fetch-timeout retry backoff: ``30s`` per failed row, ``10min`` max.
 _TRIAGE_TIMEOUT_BACKOFF_CAP_S = 600.0
 
+#: Persistent per-hit tuning for transient hosts: ``5s`` per failed row,
+#: ``30s`` max. Unlike the one-time ``reserve_politeness`` wait above, this
+#: rate persists in ``indexing.domain_policies`` so future crawls space out
+#: the host instead of hammering it again after the wait expires. Matches
+#: the manually tuned 5s precedent for 429-prone hosts.
+_TRIAGE_PERSISTENT_RATE_PER_FAIL_S = 5.0
+_TRIAGE_PERSISTENT_RATE_CAP_S = 30.0
+
+
+def _triage_persistent_rate_s(failed_count: Any) -> float:
+    """Persistent ``rate_limit_s`` for a transient host by failure volume."""
+    try:
+        count = max(1, int(failed_count or 0))
+    except (TypeError, ValueError):
+        count = 1
+    return min(
+        _TRIAGE_PERSISTENT_RATE_CAP_S,
+        _TRIAGE_PERSISTENT_RATE_PER_FAIL_S * count,
+    )
+
 
 def _triage_action_for_reason(reason: Any) -> str:
     """Map a failed-domain ``top_reason`` to its automation action.
@@ -1863,6 +1883,72 @@ def _triage_merge_deny_domains(request: Request, targets: list[str]) -> int:
         return 0
 
 
+def _triage_merge_rate_limit(
+    request: Request, domain: str, proposed_rate_s: float
+) -> float:
+    """Persist ``rate_limit_s`` for one transient host (tune step).
+
+    Takes the max of the existing per-host rate and ``proposed_rate_s`` so
+    a later pass with fewer failures never loosens an earlier tuning.
+    Validated with the boot validators and overlaid onto the running app
+    config like the block step. Best effort: failures log and return 0.0,
+    never fail the pass. Returns the applied rate.
+    """
+    try:
+        from openlens.storage.frontier import normalize_skip_domain
+
+        try:
+            proposed = float(proposed_rate_s or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        if proposed <= 0:
+            return 0.0
+        clean = normalize_skip_domain(domain)
+        if clean is None:
+            return 0.0
+        config_store = _admin_config_store(request)
+        prior = try_get_doc(config_store, "indexing")
+        app_config = getattr(request.app.state, "config", None)
+        if prior is not None and isinstance(prior.body, dict):
+            body = dict(prior.body)
+        else:
+            seed = extract_file_doc(
+                app_config if isinstance(app_config, dict) else {}, "indexing"
+            )
+            body = dict(seed) if isinstance(seed, dict) else {}
+        raw_policies = body.get("domain_policies", {})
+        policies = dict(raw_policies) if isinstance(raw_policies, dict) else {}
+        raw_policy = policies.get(clean, {})
+        existing_policy = dict(raw_policy) if isinstance(raw_policy, dict) else {}
+        try:
+            existing_rate = float(existing_policy.get("rate_limit_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            existing_rate = 0.0
+        if isinstance(existing_policy.get("rate_limit_s"), bool):
+            existing_rate = 0.0
+        target = max(existing_rate, proposed)
+        if target <= existing_rate + 1e-9 and "rate_limit_s" in existing_policy:
+            return float(existing_rate)
+        existing_policy["rate_limit_s"] = target
+        policies[clean] = existing_policy
+        body["domain_policies"] = policies
+        try:
+            validate_config_doc("indexing", body)
+        except ConfigError as exc:
+            logger.warning("frontier auto-triage tune validation failed: %s", exc)
+            return 0.0
+        config_store.put("indexing", body)
+        if isinstance(app_config, dict):
+            request.app.state.config = apply_db_config_overlay(
+                {**app_config, "indexing": dict(body)},
+                config_store,
+            )
+        return target
+    except Exception as exc:
+        logger.warning("frontier auto-triage tune merge failed: %s", exc)
+        return 0.0
+
+
 @router.post(
     "/frontier/failed/domains/auto-triage",
     response_model=FrontierTriageResultSchema,
@@ -1877,9 +1963,12 @@ def frontier_failed_domains_auto_triage(
     - robots-disallowed, content-type-skipped, http 404/401 →
       ``skip+purge`` (queued rows skipped + skip-listed, history purged).
     - http 429 → ``requeue+wait`` (rows revived with a per-host
-      politeness wait scaled by failure volume, capped at 30 min).
+      politeness wait scaled by failure volume, capped at 30 min, plus a
+      persistent ``rate_limit_s`` in ``domain_policies`` so future crawls
+      stay spaced out).
     - fetch timeout → ``requeue+backoff`` (rows revived with a smaller
-      backoff wait plus a priority sink so they retry later, not first).
+      backoff wait plus a priority sink so they retry later, not first,
+      plus the same persistent ``rate_limit_s`` tuning).
     - thin content → ``skip+block+purge`` (also merged into
       ``deny_domains`` — the host earns nothing by refetching).
     - anything else (including the ``(invalid)`` host bucket) stays
@@ -1941,6 +2030,9 @@ def frontier_failed_domains_auto_triage(
                             _TRIAGE_429_WAIT_CAP_S, 60.0 * max(1, failed_count)
                         )
                         store.reserve_politeness(domain, wait_s, now=time.time())
+                        _triage_merge_rate_limit(
+                            request, domain, _triage_persistent_rate_s(failed_count)
+                        )
                     elif action == "requeue+backoff":
                         affected += int(store.requeue_failed_domains(targets) or 0)
                         wait_s = min(
@@ -1949,6 +2041,9 @@ def frontier_failed_domains_auto_triage(
                         )
                         store.reserve_politeness(domain, wait_s, now=time.time())
                         store.bump_queued_priority(targets, -1)
+                        _triage_merge_rate_limit(
+                            request, domain, _triage_persistent_rate_s(failed_count)
+                        )
                     elif action == "skip+block+purge":
                         affected += int(store.skip_queued_domains(targets) or 0)
                         _merge_settings_domains(request, "skip_domains", targets)

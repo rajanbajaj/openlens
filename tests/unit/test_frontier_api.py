@@ -577,6 +577,38 @@ def test_auto_triage_dry_run_mutates_nothing(
     assert "thin.example" not in indexing["body"].get("deny_domains", [])
 
 
+def test_auto_triage_persists_rate_limit_for_transient_hosts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """429/timeout triage persists a per-host rate_limit_s for future crawls."""
+    dry = _triage_post(client, monkeypatch, tmp_path, {"dry_run": True})
+    assert dry["body"]["dry_run"] is True
+    (tmp_path / "triage.db").unlink(missing_ok=True)
+    dry_policies = (
+        client.get("/api/v1/admin/config/indexing")
+        .json()
+        .get("body", {})
+        .get("domain_policies", {})
+    )
+    assert "slow.example" not in dry_policies
+    assert "timeout.example" not in dry_policies
+
+    result = _triage_post(client, monkeypatch, tmp_path, {})
+    by_domain = _triage_by_domain(result["body"])
+    assert by_domain["slow.example"]["action"] == "requeue+wait"
+    assert by_domain["timeout.example"]["action"] == "requeue+backoff"
+    policies = (
+        client.get("/api/v1/admin/config/indexing")
+        .json()
+        .get("body", {})
+        .get("domain_policies", {})
+    )
+    assert policies["slow.example"]["rate_limit_s"] == pytest.approx(10.0)
+    assert policies["timeout.example"]["rate_limit_s"] == pytest.approx(10.0)
+    assert "gone.example" not in policies
+    assert "weird.example" not in policies
+
+
 def test_store_overlay_preserves_kafka_enabled() -> None:
     """The store overlay rebuilds the payload; it must not drop the flag.
 
