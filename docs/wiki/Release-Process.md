@@ -3,8 +3,12 @@
 1. Land work on `main` — CI (gates per [Testing and CI](Testing-and-CI)
    plus gitleaks) must be green.
 2. Write or update the plan in `docs/releases/`.
-3. Tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-   Only `v*` tags deploy; `main` pushes never do.
+3. Set `project.version` in `pyproject.toml` to `X.Y.Z` (no `v`
+   prefix) in the release commit, so the tree always names the
+   release it ships.
+4. Tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+   Only `v*` tags deploy; `main` pushes never do. Tags never move:
+   a missed bump is fixed by a follow-up sync commit, never a retag.
 4. The release workflow (self-hosted runner) rebuilds compose,
    waits for `/healthz`, then gates on frontier status, a live
    search, and both frontends. Concurrency is serialized; unused
