@@ -715,3 +715,55 @@ def test_discovered_links_inherit_decayed_priority(
         assert ("https://example.com/child", 1, 4) in published
     finally:
         store.close()
+
+
+def test_malformed_ipv6_seed_fails_terminally_not_fatally() -> None:
+    """An unclosed IPv6 literal seed is an invalid URL, not a dead worker."""
+    crawler = _crawler(respect_robots=False)
+    assert crawler.crawl(["http://[::1"]) == []
+
+
+def test_malformed_ipv6_outlink_is_skipped() -> None:
+    """Discovered hrefs that urlsplit rejects never enter the queue."""
+    from openlens.indexing.crawler import _FetchedPage
+
+    crawler = _crawler(respect_robots=False)
+    prose = "<p>Informative crawlable prose about the topic. </p>" * 12
+    body = (
+        "<html><head><title>T</title></head><body>"
+        + prose
+        + '<a href="http://[::1">bad</a>'
+        + '<a href="https://example.com/ok">ok</a></body></html>'
+    ).encode("utf-8")
+    page = _FetchedPage(
+        status=200,
+        url="https://example.com/",
+        content_type="text/html",
+        body=body,
+        headers={},
+    )
+    assert crawler._extract_links(page) == ["https://example.com/ok"]
+
+
+def test_malformed_ipv6_booking_and_alternate_do_not_kill_document() -> None:
+    """Bad booking/hreflang hrefs drop the attribute, not the document."""
+    from openlens.indexing.crawler import _FetchedPage
+
+    crawler = _crawler(respect_robots=False)
+    prose = "<p>Informative crawlable prose about the topic. </p>" * 12
+    body = (
+        "<html><head><title>T</title>"
+        '<link rel="alternate" hreflang="fr" href="http://[::1/fr">'
+        "</head><body>" + prose + '<a rel="booking" href="http://[::1/book">b</a>'
+        "</body></html>"
+    ).encode("utf-8")
+    page = _FetchedPage(
+        status=200,
+        url="https://example.com/",
+        content_type="text/html",
+        body=body,
+        headers={},
+    )
+    doc = crawler._to_document(page)
+    assert "booking_url" not in doc.metadata
+    assert doc.metadata.get("hreflang") is None

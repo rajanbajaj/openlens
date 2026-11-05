@@ -1754,7 +1754,14 @@ def extract_page_attributes(html_text: str, url: str | None = None) -> dict[str,
         base = url if isinstance(url, str) and url.strip() else ""
         for lang, href in parser.link_alternates:
             if lang not in alternates:
-                alternates[lang] = urllib.parse.urljoin(base, href) if base else href
+                try:
+                    alternates[lang] = (
+                        urllib.parse.urljoin(base, href) if base else href
+                    )
+                except ValueError:
+                    # Malformed alternate hrefs (e.g. unclosed IPv6
+                    # literals) drop the entry, never the document.
+                    continue
         _set("hreflang", alternates or None)
     # Sponsored is a real bool at the extraction boundary: downstream
     # filters branch on ``is True`` / truthiness, never on key presence.
@@ -2265,8 +2272,10 @@ class PoliteCrawler:
                 if normalize_url(raw) in seen:
                     continue
                 seen.add(normalize_url(raw))
-                host = urllib.parse.urlsplit(raw).hostname or ""
-                host = host.lower()
+                # Guarded: a queued URL with an unparseable host (e.g. an
+                # unclosed IPv6 literal) must fail terminally below via
+                # _is_fetchable_url, never kill the crawl with ValueError.
+                host = _host_of(raw)
                 if entry_depth is not None:
                     depth = entry_depth
                     depths[normalize_url(raw)] = depth
@@ -2414,9 +2423,10 @@ class PoliteCrawler:
                             break
                         if normalize_url(link) not in seen:
                             child_depth = depth + 1
-                            child_host = (
-                                urllib.parse.urlsplit(link).hostname or ""
-                            ).lower()
+                            # Guarded like the seed path above: links that
+                            # survived extraction parse cleanly, but a
+                            # hostile href must never kill the crawl.
+                            child_host = _host_of(link)
                             # Push-time gates: disallowed hosts never enter
                             # the queue (pop-side checks stay as the fetch
                             # backstop). No mark_failed here: these rows
@@ -2718,8 +2728,13 @@ class PoliteCrawler:
         patterns = tuple(self.deny_url_patterns)
         links: list[str] = []
         for href, rel, in_chrome in parser.links:
-            absolute = urllib.parse.urljoin(page.url, href)
-            scheme = urllib.parse.urlsplit(absolute).scheme.lower()
+            try:
+                absolute = urllib.parse.urljoin(page.url, href)
+                scheme = urllib.parse.urlsplit(absolute).scheme.lower()
+            except ValueError:
+                # Malformed hrefs (e.g. unclosed IPv6 literals) are junk,
+                # never queue entries and never a dead worker.
+                continue
             if scheme not in ("http", "https"):
                 continue
             if _is_junk_nav_url(
@@ -2788,7 +2803,12 @@ class PoliteCrawler:
         # the trust scorer treats a missing age as neutral.
         booking = metadata.get("booking_url")
         if isinstance(booking, str) and booking and page.url:
-            metadata["booking_url"] = urllib.parse.urljoin(page.url, booking)
+            try:
+                metadata["booking_url"] = urllib.parse.urljoin(page.url, booking)
+            except ValueError:
+                # Malformed booking hrefs (e.g. unclosed IPv6 literals)
+                # drop the attribute, never the document.
+                metadata.pop("booking_url", None)
         content = text
         if page.content_type.startswith("text/html"):
             # Snippets, FTS, and model prompts consume prose, not markup:
