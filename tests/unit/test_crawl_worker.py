@@ -345,11 +345,13 @@ def test_build_worker_sqlite_file_repo_creates_parent(tmp_path) -> None:
 
 
 def test_build_worker_logs_frontier_backend(
-    tmp_path, caplog: pytest.LogCaptureFixture
+    tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Boot logs which frontier backend the crawl path uses."""
-    import logging
+    """Boot prints which frontier backend the crawl path uses.
 
+    print, not logging: the worker process wires no stdlib handlers,
+    so an INFO record would be dropped before reaching the logs.
+    """
     from openlens.indexing.worker import _build_worker
 
     config: dict[str, Any] = {
@@ -365,12 +367,12 @@ def test_build_worker_logs_frontier_backend(
         },
         "indexing": {},
     }
-    with caplog.at_level(logging.INFO, logger="openlens.indexing.worker"):
-        worker, repository, frontier_store, _ = _build_worker(config)
+    worker, repository, frontier_store, _ = _build_worker(config)
     try:
         assert isinstance(frontier_store, SqliteFrontierStore)
-        assert "frontier backend=postgres" in caplog.text
-        assert "store=SqliteFrontierStore" in caplog.text
+        out = capsys.readouterr().out
+        assert "frontier backend=postgres" in out
+        assert "store=SqliteFrontierStore" in out
     finally:
         with contextlib.suppress(Exception):
             frontier_store.close()

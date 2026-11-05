@@ -13,10 +13,11 @@ name: scale
 #   it (ensure-one-running, nothing persisted); replicas=0 and >1
 #   are rejected for those.
 # - Vertical (cpus / memory): applies live to every running
-#   container of the service via `docker update`, no restart.
-#   It does NOT survive a container recreate — the next
-#   `compose up --build` for that service restores the limits
-#   from deploy/local/docker-compose.yml.
+#   container of the service via `docker update`, no restart, AND
+#   persists to the server-side release.env (`<SERVICE>_CPUS` /
+#   `<SERVICE>_MEM`, e.g. `CRAWLER_CPUS`), so the next release
+#   deploy keeps the bounds — same durability contract as
+#   horizontal scaling.
 #
 # Examples:
 #   service=crawler, replicas=6            -> 6 crawl workers
@@ -51,11 +52,11 @@ on:
         required: false
         default: ""
       cpus:
-        description: "Vertical: CPUs per container, e.g. 0.5, 2.0 (empty = leave unchanged)."
+        description: "Vertical: CPUs per container, e.g. 0.5, 2.0 (empty = leave unchanged; applied live AND persisted to release.env)."
         required: false
         default: ""
       memory:
-        description: "Vertical: RAM per container, e.g. 512M, 1G, 4G (empty = leave unchanged)."
+        description: "Vertical: RAM per container, e.g. 512M, 1G, 4G (empty = leave unchanged; applied live AND persisted to release.env)."
         required: false
         default: ""
 
@@ -173,9 +174,36 @@ jobs:
           ARGS=""
           [ -n "${{ inputs.cpus }}" ] && ARGS="$ARGS --cpus ${{ inputs.cpus }}"
           [ -n "${{ inputs.memory }}" ] && ARGS="$ARGS --memory ${{ inputs.memory }}"
+          # Live first: docker update validates the values, so only
+          # persist what the daemon accepted (a bad value must never
+          # poison the next deploy).
           # shellcheck disable=SC2086
           docker update $ARGS "${IDS[@]}"
-          echo "updated ${#IDS[@]} container(s) of $SVC: cpus='${{ inputs.cpus }}' memory='${{ inputs.memory }}'"
+          ENV_FILE="/home/rajan/servers/release.env"
+          test -f "$ENV_FILE" || { echo "missing server env file: $ENV_FILE"; exit 1; }
+          PREFIX="$(printf '%s' "$SVC" | tr 'a-z-' 'A-Z_')"
+          if [ -n "${{ inputs.cpus }}" ]; then
+            VAR="${PREFIX}_CPUS"
+            if grep -q "^${VAR}=" "$ENV_FILE"; then
+              sed -i "s/^${VAR}=.*/${VAR}=${{ inputs.cpus }}/" "$ENV_FILE"
+            else
+              echo "${VAR}=${{ inputs.cpus }}" >> "$ENV_FILE"
+            fi
+          fi
+          if [ -n "${{ inputs.memory }}" ]; then
+            VAR="${PREFIX}_MEM"
+            if grep -q "^${VAR}=" "$ENV_FILE"; then
+              sed -i "s/^${VAR}=.*/${VAR}=${{ inputs.memory }}/" "$ENV_FILE"
+            else
+              echo "${VAR}=${{ inputs.memory }}" >> "$ENV_FILE"
+            fi
+          fi
+          # .env is what compose interpolates; keep it in sync like
+          # the release workflow does so the next redeploy keeps these
+          # bounds (compose reads <SERVICE>_CPUS / <SERVICE>_MEM with
+          # the shipped defaults as fallback).
+          cp "$ENV_FILE" .env
+          echo "updated ${#IDS[@]} container(s) of $SVC: cpus='${{ inputs.cpus }}' memory='${{ inputs.memory }}' (persisted as ${PREFIX}_CPUS/${PREFIX}_MEM)"
 
       - name: Verify and report
         if: always()

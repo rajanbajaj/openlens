@@ -967,12 +967,6 @@ def _build_worker(
         if isinstance(frontier_cfg, dict)
         else "postgres"
     )
-    logger.info(
-        "frontier backend=%s store=%s mirror=%s",
-        backend,
-        type(frontier_store).__name__,
-        "on" if mirror_flusher is not None else "off",
-    )
     crawler = crawler_factory() if crawler_factory is not None else PoliteCrawler()
     if crawler_factory is None:
         crawler.configure(dict(indexing_config))
@@ -985,6 +979,16 @@ def _build_worker(
         indexing_config=dict(indexing_config),
         chunk_size=chunk_size,
         mirror_flusher=mirror_flusher,
+    )
+    # print, not logger.info: the worker process configures no stdlib
+    # handlers (only the search logger is wired), so an INFO record
+    # would be dropped by last-resort and the backend choice would
+    # stay invisible in Dozzle. Same banner style as the kafka path.
+    print(
+        f"[worker {worker.worker_id}] frontier backend={backend} "
+        f"store={type(frontier_store).__name__} "
+        f"mirror={'on' if mirror_flusher is not None else 'off'}",
+        flush=True,
     )
     return worker, repository, frontier_store, dict(indexing_config)
 

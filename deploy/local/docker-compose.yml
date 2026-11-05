@@ -19,8 +19,8 @@ services:
     # socket, search reads): keep headroom above the worker count. The
     # in-container /healthz probe shares this CPU, so starvation shows
     # up as `unhealthy` while external traffic still gets 200s.
-    mem_limit: 4G
-    cpus: 4.0
+    mem_limit: ${BACKEND_MEM:-4G}
+    cpus: ${BACKEND_CPUS:-4.0}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -85,8 +85,8 @@ services:
       args:
         VITE_OPENLENS_API_URL: ${VITE_OPENLENS_API_URL:-}
         VITE_OPENLENS_DEV_MODE: ${VITE_OPENLENS_DEV_MODE:-}
-    mem_limit: 512M
-    cpus: 0.5
+    mem_limit: ${FRONTEND_MEM:-512M}
+    cpus: ${FRONTEND_CPUS:-0.5}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -109,8 +109,8 @@ services:
       dockerfile: deploy/local/Dockerfile.admin-frontend
       args:
         VITE_OPENLENS_API_URL: ${VITE_OPENLENS_API_URL:-}
-    mem_limit: 512M
-    cpus: 0.5
+    mem_limit: ${ADMIN_FRONTEND_MEM:-512M}
+    cpus: ${ADMIN_FRONTEND_CPUS:-0.5}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -151,8 +151,8 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
     command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
-    mem_limit: 1G
-    cpus: 0.25
+    mem_limit: ${CRAWLER_MEM:-1G}
+    cpus: ${CRAWLER_CPUS:-0.25}
     logging: *default-logging
     restart: unless-stopped
     volumes:
@@ -222,8 +222,8 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
     command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue kafka --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
-    mem_limit: 1G
-    cpus: 0.25
+    mem_limit: ${CRAWLER_BACKOFF_MEM:-1G}
+    cpus: ${CRAWLER_BACKOFF_CPUS:-0.25}
     logging: *default-logging
     restart: unless-stopped
     volumes:
@@ -296,8 +296,8 @@ services:
   kafka-1:
     image: apache/kafka:3.9.0
     hostname: kafka-1
-    mem_limit: 4G
-    cpus: 2.0
+    mem_limit: ${KAFKA_1_MEM:-4G}
+    cpus: ${KAFKA_1_CPUS:-2.0}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -338,8 +338,8 @@ services:
   # login, so only do that on a trusted network).
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    mem_limit: 1G
-    cpus: 2.0
+    mem_limit: ${KAFKA_UI_MEM:-1G}
+    cpus: ${KAFKA_UI_CPUS:-2.0}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -367,8 +367,8 @@ services:
   # affecting the UI (see kafka-ui).
   dozzle:
     image: amir20/dozzle:latest
-    mem_limit: 128M
-    cpus: 0.25
+    mem_limit: ${DOZZLE_MEM:-128M}
+    cpus: ${DOZZLE_CPUS:-0.25}
     logging: *default-logging
     restart: unless-stopped
     ports:
@@ -384,8 +384,8 @@ services:
   # .env.example). Same pattern as KAFKA_UI_HOST / PGADMIN_HOST.
   postgres:
     image: postgres:16
-    mem_limit: 4G
-    cpus: 4.0
+    mem_limit: ${POSTGRES_MEM:-4G}
+    cpus: ${POSTGRES_CPUS:-4.0}
     logging: *default-logging
     restart: unless-stopped
     # Connection headroom for crawler scale-out: each backend/crawler
@@ -428,8 +428,8 @@ services:
   # can lag, restart, or be absent without failing searches.
   postgres-replica:
     image: postgres:16
-    mem_limit: 1G
-    cpus: 1.0
+    mem_limit: ${POSTGRES_REPLICA_MEM:-1G}
+    cpus: ${POSTGRES_REPLICA_CPUS:-1.0}
     logging: *default-logging
     restart: unless-stopped
     shm_size: 256mb
@@ -461,8 +461,8 @@ services:
   # public in .env.example).
   pgadmin:
     image: dpage/pgadmin4:8
-    mem_limit: 512M
-    cpus: 0.5
+    mem_limit: ${PGADMIN_MEM:-512M}
+    cpus: ${PGADMIN_CPUS:-0.5}
     logging: *default-logging
     restart: unless-stopped
     environment:
@@ -487,8 +487,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    mem_limit: 512M
-    cpus: 0.5
+    mem_limit: ${REDIS_MEM:-512M}
+    cpus: ${REDIS_CPUS:-0.5}
     logging: *default-logging
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
@@ -514,11 +514,11 @@ services:
   # default), so this holds only live queue/lease state, not history.
   redis-frontier:
     image: redis:7-alpine
-    mem_limit: 1G
-    cpus: 0.5
+    mem_limit: ${REDIS_FRONTIER_MEM:-2G}
+    cpus: ${REDIS_FRONTIER_CPUS:-0.5}
     logging: *default-logging
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "1536mb", "--maxmemory-policy", "noeviction"]
     ports:
       - "127.0.0.1:${REDIS_FRONTIER_PORT:-6380}:6379"
     volumes:
@@ -544,8 +544,8 @@ services:
     image: clickhouse/clickhouse-server:24.12-alpine
     # Analytics store for the events sink; sized for batch flushes +
     # dashboard queries over the retention window.
-    mem_limit: 4G
-    cpus: 2.0
+    mem_limit: ${CLICKHOUSE_MEM:-4G}
+    cpus: ${CLICKHOUSE_CPUS:-2.0}
     logging: *default-logging
     restart: unless-stopped
     # ClickHouse raises its open-file limit at startup; the container needs
@@ -586,8 +586,8 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.backend
     command: ["sh", "-c", "exec python -m openlens.cli analytics-worker --batch-size \"$${OPENLENS_ANALYTICS_BATCH_SIZE:-100}\""]
-    mem_limit: 512M
-    cpus: 0.25
+    mem_limit: ${ANALYTICS_WORKER_MEM:-512M}
+    cpus: ${ANALYTICS_WORKER_CPUS:-0.25}
     # Replica count from the environment (default 1). The worker consumes
     # the analytics.events group, so replicas split partitions.
     deploy:
