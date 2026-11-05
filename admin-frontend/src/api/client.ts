@@ -286,7 +286,8 @@ export async function resumeFrontier(
  * Issue `POST {API_URL}/api/v1/frontier/seeds` with `seeds` to enqueue.
  * Unlike resume this never touches crawl phase or the in-memory queue:
  * running crawlers pick the seeds up through the durable queue without
- * interruption. `priority`, when given, applies to every seed.
+ * interruption. `priority` and `depth`, when given, apply to every seed
+ * (depth defaults to 0, the seed convention, when omitted).
  * Throws {@link SearchApiError} on failure.
  * Pass `adminToken` when the backend sets
  * `OPENLENS_FRONTIER_ADMIN_TOKEN`.
@@ -296,6 +297,7 @@ export async function enqueueSeeds(
   fetchImpl: FetchImpl = fetch,
   adminToken: string = '',
   priority?: number,
+  depth?: number,
 ): Promise<FrontierEnqueueSeedsResponse> {
   let response: Response;
   try {
@@ -305,7 +307,11 @@ export async function enqueueSeeds(
         'Content-Type': 'application/json',
         ...frontierAdminHeaders(adminToken),
       },
-      body: JSON.stringify(priority === undefined ? { seeds } : { seeds, priority }),
+      body: JSON.stringify({
+        seeds,
+        ...(priority === undefined ? {} : { priority }),
+        ...(depth === undefined ? {} : { depth }),
+      }),
     });
   } catch (error) {
     throw new SearchApiError(

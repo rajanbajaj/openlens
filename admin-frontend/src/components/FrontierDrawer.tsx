@@ -127,6 +127,8 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const [seeds, setSeeds] = useState('');
   const [priority, setPriority] = useState('');
   const [priorityError, setPriorityError] = useState<string | null>(null);
+  const [depth, setDepth] = useState('');
+  const [depthError, setDepthError] = useState<string | null>(null);
   const [inspectUrl, setInspectUrl] = useState('');
   const [inspectResult, setInspectResult] = useState<FrontierUrlInfo | null>(null);
   const [inspectBusy, setInspectBusy] = useState(false);
@@ -269,6 +271,16 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
     return { value: parsed, error: null };
   }
 
+  function parseDepth(): { value?: number; error: string | null } {
+    const trimmed = depth.trim();
+    if (trimmed === '') return { value: undefined, error: null };
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return { value: undefined, error: 'Depth must be a whole number (0 or more).' };
+    }
+    return { value: parsed, error: null };
+  }
+
   async function handleResume() {
     const { value: parsed, error } = parsePriority();
     setPriorityError(error);
@@ -293,8 +305,14 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   async function handleEnqueueSeeds() {
     const { value: parsed, error } = parsePriority();
     setPriorityError(error);
+    const { value: parsedDepth, error: depthError } = parseDepth();
+    setDepthError(depthError);
     if (error) {
       pushToast('Priority must be a whole number.', 'error');
+      return;
+    }
+    if (depthError) {
+      pushToast('Depth must be a whole number.', 'error');
       return;
     }
     try {
@@ -306,13 +324,14 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
         pushToast('Add at least one seed URL first.', 'error');
         return;
       }
-      const accepted = await enqueueSeeds(list, fetch, adminToken, parsed);
+      const accepted = await enqueueSeeds(list, fetch, adminToken, parsed, parsedDepth);
       pushToast(
         `Enqueued ${accepted.enqueued} seed(s) — crawlers pick them up without interruption.`,
         'success',
       );
       setSeeds('');
       setPriority('');
+      setDepth('');
       await snapshot.refetch();
     } catch {
       pushToast('Enqueue seeds failed.', 'error');
@@ -710,6 +729,25 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
               {priorityError ? (
                 <FieldError id="frontier-priority-error" message={priorityError} />
               ) : null}
+              <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
+                Depth for these seeds (link-following starts here; blank means 0)
+                <input
+                  data-testid="frontier-depth"
+                  type="number"
+                  step={1}
+                  min={0}
+                  value={depth}
+                  aria-invalid={depthError !== null}
+                  aria-describedby={depthError ? 'frontier-depth-error' : undefined}
+                  onChange={(event) => {
+                    setDepth(event.target.value);
+                    setDepthError(null);
+                  }}
+                  placeholder="0"
+                  className="font-normal text-ol-ink bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+                />
+              </label>
+              {depthError ? <FieldError id="frontier-depth-error" message={depthError} /> : null}
               <div className="mt-ol-s flex flex-wrap gap-ol-s">
                 <Button
                   variant="secondary"

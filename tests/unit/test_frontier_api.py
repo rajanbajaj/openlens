@@ -1328,3 +1328,65 @@ def test_status_snapshot_entry_matching_terminal_store_row_not_shown_as_queued(
     # Terminal store row wins: the stale in-memory seed disappears
     # instead of reshowing as queued.
     assert urls == {}
+
+
+def test_enqueue_seeds_rejects_bad_depth(client: TestClient) -> None:
+    # Note: `True` is not here — pydantic coerces bool to int before
+    # field validators run, so depth=true means 1 (same as priority).
+    for bad in (-1, "deep", 2.5):
+        resp = client.post(
+            "/api/v1/frontier/seeds",
+            json={"seeds": ["https://example.com/a"], "depth": bad},
+        )
+        assert resp.status_code == 422, bad
+
+
+def test_enqueue_seeds_stores_depth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    db_path = _file_store(monkeypatch, tmp_path)
+    resp = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a"], "depth": 2},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"enqueued": 1}
+    probe = SqliteFrontierStore(db_path)
+    try:
+        rows = {
+            row["url"]: (row["status"], row["depth"])
+            for row in probe._conn.execute(
+                "SELECT url, status, depth FROM frontier_queue"
+            ).fetchall()
+        }
+    finally:
+        probe.close()
+    assert rows == {"https://example.com/a": ("queued", 2)}
+
+
+def test_publish_seeds_threads_depth_to_kafka(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Kafka-first path must carry depth, not hardcode 0."""
+    from openlens.api import routes as routes_mod
+
+    seen: list[tuple] = []
+
+    class _Queue:
+        def publish_many(self, items):  # type: ignore[no-untyped-def]
+            seen.extend(items)
+            return len(items)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(routes_mod, "kafka_enabled", lambda config: True)
+    monkeypatch.setattr(routes_mod, "open_kafka_queue", lambda config: _Queue())
+    monkeypatch.setattr(
+        routes_mod, "_enqueue_seeds_to_store", lambda *args, **kwargs: 0
+    )
+    assert (
+        routes_mod._publish_seeds({}, ["https://example.com/a"], priority=1, depth=2)
+        == 1
+    )
+    assert seen == [("https://example.com/a", 2, 1)]

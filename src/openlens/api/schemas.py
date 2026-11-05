@@ -782,6 +782,7 @@ class FrontierSeedsSchema(BaseModel):
 
     seeds: list[str] = Field(default_factory=list)
     priority: int | None = Field(default=None)
+    depth: int | None = Field(default=None)
 
     @field_validator("priority")
     @classmethod
@@ -790,6 +791,15 @@ class FrontierSeedsSchema(BaseModel):
             return None
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("priority must be an integer")
+        return value
+
+    @field_validator("depth")
+    @classmethod
+    def depth_must_be_whole(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("depth must be a whole number (0 or more)")
         return value
 
 

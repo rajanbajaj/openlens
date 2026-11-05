@@ -2530,12 +2530,14 @@ def _store_set_paused(app_config: Any, paused: bool) -> bool:
 
 
 def _enqueue_seeds_to_store(
-    app_config: Any, seeds: list[str], priority: int | None
+    app_config: Any, seeds: list[str], priority: int | None, depth: int = 0
 ) -> int:
     """Best-effort store enqueue for resume seeds (never raises).
 
     Returns how many seeds the store newly queued; failures only log,
     so a sick store never turns a successful Kafka publish into a 500.
+    ``depth`` defaults to 0 (seed convention); callers with an explicit
+    seed depth pass it through.
     """
     accepted = 0
     try:
@@ -2543,7 +2545,7 @@ def _enqueue_seeds_to_store(
         try:
             for seed in seeds:
                 with suppress(Exception):
-                    if store.enqueue(seed, 0, priority=priority):
+                    if store.enqueue(seed, depth, priority=priority):
                         accepted += 1
         finally:
             with suppress(Exception):
@@ -2555,7 +2557,10 @@ def _enqueue_seeds_to_store(
 
 
 def _publish_seeds(
-    app_config: Any, seeds: list[str], priority: int | None = None
+    app_config: Any,
+    seeds: list[str],
+    priority: int | None = None,
+    depth: int = 0,
 ) -> int:
     """Publish seeds to Kafka, else enqueue them into the persistent store.
 
@@ -2569,6 +2574,8 @@ def _publish_seeds(
     behind the whole backlog, while the store copy lets the next
     per-message drain claim it first (``priority DESC``); the later
     Kafka twin then dedups to a no-op.
+    ``depth`` defaults to 0 (seed convention); callers with an explicit
+    seed depth pass it through to both the topic and the store.
     Returns how many seeds a durable queue (Kafka or store) accepted,
     capped at ``len(seeds)``: a priority seed written to both the topic
     and the store still counts once.
@@ -2582,17 +2589,17 @@ def _publish_seeds(
                 if callable(batched):
                     # One broker flush for the whole paste instead of one
                     # round trip per seed.
-                    sent = batched([(seed, 0, priority) for seed in seeds])
+                    sent = batched([(seed, depth, priority) for seed in seeds])
                     accepted += max(0, int(sent or 0))
                 else:
                     for seed in seeds:
-                        if queue.publish(seed, 0, priority=priority):
+                        if queue.publish(seed, depth, priority=priority):
                             accepted += 1
             finally:
                 with suppress(Exception):
                     queue.close()
             if priority is not None:
-                accepted += _enqueue_seeds_to_store(app_config, seeds, priority)
+                accepted += _enqueue_seeds_to_store(app_config, seeds, priority, depth)
             return min(len(seeds), accepted)
         except ProviderError as exc:
             logger.warning(
@@ -2600,7 +2607,7 @@ def _publish_seeds(
             )
     if not seeds:
         return 0
-    return min(len(seeds), _enqueue_seeds_to_store(app_config, seeds, priority))
+    return min(len(seeds), _enqueue_seeds_to_store(app_config, seeds, priority, depth))
 
 
 #: Quiesce budget for POST /frontier/clear: after pausing, in-flight
@@ -2772,13 +2779,14 @@ def frontier_enqueue_seeds(
         return denied
     seeds = [seed.strip() for seed in body.seeds if seed.strip()]
     app_config = getattr(request.app.state, "config", None)
+    depth = body.depth if body.depth is not None else 0
     # Durably accepted count, not input count: `_publish_seeds` reports
     # what Kafka/the store fallback took, and the insert below covers a
     # seed the consumer has not claimed yet (or a Kafka outage the
     # fallback could not reach). `reseed` alone only revives already
     # known URLs, so without the insert a brand-new seed could report
     # success yet land nowhere.
-    accepted = _publish_seeds(app_config, seeds, priority=body.priority)
+    accepted = _publish_seeds(app_config, seeds, priority=body.priority, depth=depth)
     if seeds:
         settled: set[int] = set()
         try:
@@ -2791,7 +2799,7 @@ def frontier_enqueue_seeds(
                     with suppress(Exception):
                         if callable(known) and known(seed):
                             settled.add(index)
-                        elif store.enqueue(seed, 0, priority=body.priority):
+                        elif store.enqueue(seed, depth, priority=body.priority):
                             settled.add(index)
                 pending = [
                     seed for index, seed in enumerate(seeds) if index not in settled

@@ -151,6 +151,25 @@ describe('frontier mutations reuse the single X-Admin-Token gate', () => {
     });
   });
 
+  it('enqueueSeeds posts depth alongside priority', async () => {
+    const { fetchImpl, calls } = captureFetch({ enqueued: 3 });
+    await enqueueSeeds(['https://example.com'], fetchImpl, 'secret', 6, 2);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      seeds: ['https://example.com'],
+      priority: 6,
+      depth: 2,
+    });
+  });
+
+  it('enqueueSeeds omits depth when blank', async () => {
+    const { fetchImpl, calls } = captureFetch({ enqueued: 1 });
+    await enqueueSeeds(['https://example.com/x'], fetchImpl, 'secret', 6);
+    expect(JSON.parse(calls[0][1]?.body as string)).toEqual({
+      seeds: ['https://example.com/x'],
+      priority: 6,
+    });
+  });
+
   it('fetchFrontierUrlInfo returns the crawl story for one URL', async () => {
     const payload = {
       url: 'https://example.com/a',

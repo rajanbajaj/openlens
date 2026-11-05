@@ -1,0 +1,79 @@
+# Interesting seed URLs for growing the index, grouped by enqueue priority
+# (higher dequeues first; the endpoint takes one priority per request).
+#
+# Post each tier to a running backend (token only needed when the admin
+# gate is set):
+#
+#   BASE=http://localhost:8000
+#   T=$(grep '^OPENLENS_FRONTIER_ADMIN_TOKEN=' ~/servers/release.env | cut -d= -f2-)
+#   for tier in high normal low; do
+#     python3 -c "
+#   import json,sys,yaml
+#   doc=yaml.safe_load(open('configs/seeds-interesting.yaml'))
+#   tier=doc['tiers']['$tier']
+#   print(json.dumps({'seeds':tier['urls'],'priority':tier['priority']}))
+#   " | curl -s -X POST "$BASE/api/v1/frontier/seeds" \
+#       -H 'Content-Type: application/json' \
+#       ${T:+-H "X-Admin-Token: $T"} --data @- | python3 -m json.tool
+#   done
+#
+# Start small: enqueue `high` first, watch the queue + failed-domains
+# board, then widen. Everything is deduped by normalized URL, so
+# re-posting is harmless. Known-hostile hosts (persistent 403s,
+# size-abort giants, method-filtered 405s) are deliberately excluded —
+# see the Search and Admin Guide for that list.
+tiers:
+  high:
+    priority: 5
+    urls:
+      # Reference hubs: dense outlinks, polite, rarely blocked.
+      - https://en.wikipedia.org/wiki/Main_Page
+      - https://plato.stanford.edu/contents.html
+      - https://www.gutenberg.org/
+      - https://www.loc.gov/
+      # Tech docs: huge internal link graphs, crawl-friendly.
+      - https://docs.python.org/3/
+      - https://developer.mozilla.org/
+      - https://go.dev/doc/
+      - https://docs.rs/
+      - https://kubernetes.io/docs/
+      - https://wiki.archlinux.org/
+      # Science lists: many outlinks per page.
+      - https://arxiv.org/list/cs/new
+      - https://pubmed.ncbi.nlm.nih.gov/
+      # News wires for story clustering.
+      - https://apnews.com/
+      - https://www.bbc.com/news
+      # Open government (India): crawlable, underserved elsewhere.
+      - https://pib.gov.in/
+      - https://data.gov.in/
+  normal:
+    priority: 1
+    urls:
+      # More reference + docs.
+      - https://www.britannica.com/
+      - https://openlibrary.org/
+      - https://www.nature.com/subjects
+      - https://www.thehindu.com/
+      - https://indianexpress.com/
+      - https://www.reuters.com/
+      - https://prsindia.org/
+      - https://www.india.gov.in/
+      # Developer culture: light HTML, very crawlable.
+      - https://github.com/trending
+      - https://dev.to/
+      - https://lobste.rs/
+      - https://news.ycombinator.com/
+      # Commerce-adjacent, light pages.
+      - https://pypi.org/
+      - https://www.npmjs.com/
+      - https://openlibrary.org/subjects
+  low:
+    priority: 0
+    urls:
+      # JS-heavy or partially walled: enqueue last, verify rendering
+      # quality on a sample before widening.
+      - https://letterboxd.com/
+      - https://www.goodreads.com/list
+      - https://www.imdb.com/chart/top
+      - https://dev.to/top/week

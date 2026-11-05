@@ -247,6 +247,83 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     expect(resumeCalls).toBe(0);
   });
 
+  it('submits seeds with priority and depth', async () => {
+    MockSocket.instances = [];
+    let seedsBody: unknown = null;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: { body?: string }) => {
+        if (url.includes('/api/v1/frontier/seeds') && init?.body) {
+          seedsBody = JSON.parse(init.body);
+        }
+        const payload = url.includes('/api/v1/frontier/seeds')
+          ? { enqueued: 1 }
+          : url.includes('/api/v1/frontier/settings')
+            ? { settings: SETTINGS }
+            : url.includes('/api/v1/frontier/workers')
+              ? { workers: [], worker_count: 0 }
+              : STATUS;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: () => Promise.resolve(JSON.stringify(payload)),
+          json: () => Promise.resolve(payload),
+        });
+      }),
+    );
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-seeds'), {
+      target: { value: 'https://example.com/a\n' },
+    });
+    fireEvent.change(screen.getByTestId('frontier-priority'), {
+      target: { value: '3' },
+    });
+    fireEvent.change(screen.getByTestId('frontier-depth'), {
+      target: { value: '2' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Enqueued 1 seed(s)');
+    });
+    expect(seedsBody).toEqual({
+      seeds: ['https://example.com/a'],
+      priority: 3,
+      depth: 2,
+    });
+  });
+
+  it('refuses a bad seed depth inline', async () => {
+    MockSocket.instances = [];
+    let seedsCalls = 0;
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/seeds')) seedsCalls += 1;
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-seeds'), {
+      target: { value: 'https://example.com/a\n' },
+    });
+    fireEvent.change(screen.getByTestId('frontier-depth'), {
+      target: { value: '-1' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Depth must be a whole number.');
+    });
+    expect(seedsCalls).toBe(0);
+  });
+
   it('refuses to submit with no seeds', async () => {
     MockSocket.instances = [];
     let seedsCalls = 0;
