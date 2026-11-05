@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FrontierDrawer } from './FrontierDrawer.tsx';
 
@@ -295,6 +295,73 @@ describe('FrontierDrawer live stats and submission feedback', () => {
       priority: 3,
       depth: 2,
     });
+  });
+
+  it('refreshes the domain boards on demand', async () => {
+    MockSocket.instances = [];
+    let boardCalls = 0;
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/failed/domains') && !url.includes('/urls')) {
+        boardCalls += 1;
+      }
+      if (url.includes('/api/v1/frontier/failed/urls')) return { urls: [], total: 0 };
+      if (url.includes('/api/v1/frontier/failed/domains')) {
+        return { domains: [{ domain: 'example.com', failed: 1 }], total: 1 };
+      }
+      if (url.includes('/api/v1/frontier/queued/domains')) {
+        return { domains: [], total: 0 };
+      }
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-domains-refresh')).toBeInTheDocument();
+    });
+    expect(boardCalls).toBe(1);
+    fireEvent.click(screen.getByTestId('frontier-domains-refresh'));
+    await waitFor(() => {
+      expect(boardCalls).toBeGreaterThan(1);
+    });
+  });
+
+  it('auto-refreshes the domain boards every minute', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      MockSocket.instances = [];
+      let boardCalls = 0;
+      stubFetch((url: string) => {
+        if (url.includes('/api/v1/frontier/failed/domains') && !url.includes('/urls')) {
+          boardCalls += 1;
+        }
+        if (url.includes('/api/v1/frontier/failed/urls')) return { urls: [], total: 0 };
+        if (url.includes('/api/v1/frontier/failed/domains')) {
+          return { domains: [{ domain: 'example.com', failed: 1 }], total: 1 };
+        }
+        if (url.includes('/api/v1/frontier/queued/domains')) {
+          return { domains: [], total: 0 };
+        }
+        if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+        if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+        return STATUS;
+      });
+      vi.stubGlobal('WebSocket', MockSocket);
+      render(<FrontierDrawer adminToken="" />);
+      await waitFor(() => {
+        expect(screen.getByTestId('frontier-domains-refresh')).toBeInTheDocument();
+      });
+      expect(boardCalls).toBe(1);
+      await act(async () => {
+        vi.advanceTimersByTime(60000);
+      });
+      await waitFor(() => {
+        expect(boardCalls).toBeGreaterThan(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses a bad seed depth inline', async () => {

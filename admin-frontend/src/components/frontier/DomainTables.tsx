@@ -22,6 +22,15 @@ import { Toasts, useToasts } from '../ui/Toast.tsx';
 
 const PAGE_SIZE = 20;
 
+/**
+ * Passive refresh cadence for the domain boards. The lists are
+ * expensive aggregations (full store scan per board), so they poll
+ * minutely instead of riding the 2s live socket — the Queue section
+ * already covers second-level freshness. A Refresh button covers
+ * the gap between ticks.
+ */
+const DOMAIN_TABLES_REFRESH_MS = 60000;
+
 export interface DomainTablesProps {
   /** Single-domain action (requeue/purge/skip); bulk passes many. */
   onDomainAction: (op: FrontierDomainOp, domains: string[]) => Promise<void>;
@@ -84,6 +93,7 @@ export function DomainTables({
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
+    refetchInterval: DOMAIN_TABLES_REFRESH_MS,
   });
   const failedDomainsQuery = useQuery({
     queryKey: ['frontier', 'failed-domains', failedDomainPage],
@@ -91,6 +101,7 @@ export function DomainTables({
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
+    refetchInterval: DOMAIN_TABLES_REFRESH_MS,
   });
   const domainUrlsQuery = useQuery({
     queryKey: ['frontier', 'failed-domain-urls', expandedDomain, domainUrlPage],
@@ -102,6 +113,7 @@ export function DomainTables({
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
+    refetchInterval: DOMAIN_TABLES_REFRESH_MS,
   });
   const queuedDomainsQuery = useQuery({
     queryKey: ['frontier', 'queued-domains', queuedDomainPage],
@@ -109,6 +121,7 @@ export function DomainTables({
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
+    refetchInterval: DOMAIN_TABLES_REFRESH_MS,
   });
   const queuedDomainUrlsQuery = useQuery({
     queryKey: ['frontier', 'queued-domain-urls', expandedQueuedDomain, queuedDomainUrlPage],
@@ -120,6 +133,7 @@ export function DomainTables({
     retry: false,
     refetchOnWindowFocus: false,
     staleTime: Infinity,
+    refetchInterval: DOMAIN_TABLES_REFRESH_MS,
   });
 
   const failedTotal = failedQuery.data?.total ?? 0;
@@ -223,6 +237,17 @@ export function DomainTables({
 
   return (
     <>
+      <div className="flex flex-wrap items-center gap-ol-s" aria-live="polite">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void refreshLists()}
+          data-testid="frontier-domains-refresh"
+        >
+          Refresh lists
+        </Button>
+        <span className="text-ol-s">Boards refresh every minute; the Queue above is live.</span>
+      </div>
       <section aria-label="Failed URLs">
         <h2 className="ol-dash-title">Failed URLs ({failedTotal})</h2>
         {failedQuery.isPending ? (
