@@ -767,3 +767,49 @@ def test_malformed_ipv6_booking_and_alternate_do_not_kill_document() -> None:
     doc = crawler._to_document(page)
     assert "booking_url" not in doc.metadata
     assert doc.metadata.get("hreflang") is None
+
+
+def test_persistent_frontier_len_tracks_queue_depth() -> None:
+    """len() must follow queued+active through the terminal cycle."""
+    from openlens.indexing.crawler import PersistentFrontier
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    store = SqliteFrontierStore(":memory:")
+    try:
+        frontier = PersistentFrontier(store, 100)
+        store.enqueue("https://example.com/a", 0)
+        store.enqueue("https://example.com/b", 0)
+        assert len(frontier) == 2
+        entry = store.dequeue()
+        assert entry is not None
+        assert len(frontier) == 2  # active rows still count
+        store.mark_done(entry.url)
+        assert len(frontier) == 1
+    finally:
+        store.close()
+
+
+def test_persistent_frontier_len_prefers_depth_over_counts() -> None:
+    """len() must take the O(1) depth path, never the full-scan counts."""
+    from openlens.indexing.crawler import PersistentFrontier
+
+    class _DepthOnly:
+        def counts(self) -> dict:
+            raise AssertionError("full scan must not run in len()")
+
+        def queue_depth(self) -> int:
+            return 7
+
+    assert len(PersistentFrontier(_DepthOnly(), 100)) == 7
+
+
+def test_persistent_frontier_len_falls_back_to_counts() -> None:
+    """Stores without a depth fast path keep the old counts math."""
+
+    class _CountsOnly:
+        def counts(self) -> dict:
+            return {"queued": 2, "active": 1}
+
+    from openlens.indexing.crawler import PersistentFrontier
+
+    assert len(PersistentFrontier(_CountsOnly(), 100)) == 3

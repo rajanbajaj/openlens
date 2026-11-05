@@ -1647,6 +1647,21 @@ class RedisFrontierStore(FrontierStore):
                 out["total"] += 1
         return out
 
+    def queue_depth(self) -> int:
+        """URLs still to crawl: two O(1) cardinality lookups, no scan.
+
+        The crawl loop calls this per URL; the inherited
+        counts-based default would re-scan every meta key each time
+        (O(N^2) over a backlog).
+        """
+        with self._lock:
+            try:
+                ready = self._client.zcard(self._ready)
+                active = self._client.zcard(self._active)
+            except Exception as exc:
+                raise self._fail("count frontier URLs", exc) from exc
+            return int(ready) + int(active)
+
     # -- crawl requests -------------------------------------------------
     def submit_crawl_request(self, url: str) -> dict[str, Any]:
         if not isinstance(url, str) or not url.strip():

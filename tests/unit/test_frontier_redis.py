@@ -1043,3 +1043,33 @@ def test_backfill_never_raises_on_unreadable_mirror() -> None:
     flusher = FrontierMirrorFlusher(hot, _BrokenMirror(), 5.0)
     assert flusher.backfill_once() == 0
     assert hot.enqueued == []
+
+
+@needs_redis
+def test_queue_depth_counts_ready_plus_active(
+    store: RedisFrontierStore,
+) -> None:
+    """queue_depth tracks queued+active without the full-scan counts."""
+    assert store.enqueue("https://example.com/a", 0) is True
+    assert store.enqueue("https://example.com/b", 0) is True
+    assert store.enqueue("https://example.com/c", 0) is True
+    assert store.queue_depth() == 3
+    entry = store.dequeue()
+    assert entry is not None
+    assert store.queue_depth() == 3  # active rows still count
+    store.mark_done(entry.url)
+    assert store.queue_depth() == 2
+
+
+@needs_redis
+def test_queue_depth_skips_full_scan(
+    store: RedisFrontierStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """queue_depth must stay O(1) even when counts() is unusable."""
+    assert store.enqueue("https://example.com/a", 0) is True
+
+    def _boom() -> dict:
+        raise AssertionError("full scan must not run in queue_depth")
+
+    monkeypatch.setattr(store, "counts", _boom)
+    assert store.queue_depth() == 1

@@ -542,6 +542,18 @@ class FrontierStore(ABC):
         """Row counts keyed by status plus ``total``."""
         raise NotImplementedError
 
+    def queue_depth(self) -> int:
+        """URLs still to crawl (queued + active) via the cheapest path.
+
+        Hot-loop callers (the crawl loop checks this per URL) must use
+        this, never :meth:`counts`: on the Redis backend ``counts()``
+        scans every meta key while this is two cardinality lookups.
+        The default derives from ``counts()``; backends with a cheaper
+        path override it.
+        """
+        counts = self.counts()
+        return int(counts.get("queued", 0)) + int(counts.get("active", 0))
+
     @abstractmethod
     def save_checkpoint(self, checkpoint: CrawlCheckpoint) -> None:
         """Upsert a crawl checkpoint row."""

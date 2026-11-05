@@ -448,6 +448,9 @@ class PersistentFrontier:
         self.evicted = 0
 
     def __len__(self) -> int:
+        depth = getattr(self._store, "queue_depth", None)
+        if callable(depth):
+            return int(depth())
         counts = self._store.counts()
         return int(counts.get("queued", 0)) + int(counts.get("active", 0))
 
