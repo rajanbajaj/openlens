@@ -90,6 +90,33 @@ export function frontierLiveUrl(): string {
   return `${base.replace(/^http/, 'ws')}/api/v1/frontier/live`;
 }
 
+/** Query params for the live analytics stream (mirrors the panel GETs). */
+export interface AnalyticsLiveParams {
+  days: number;
+  bucket: string;
+  start?: string;
+  end?: string;
+  prevStart?: string;
+  prevEnd?: string;
+}
+
+/**
+ * WebSocket URL for the live analytics stream
+ * (`/api/v1/admin/analytics/live` pushes the same counts/series the
+ * panel GETs). Same host/base mapping as `frontierLiveUrl`.
+ */
+export function analyticsLiveUrl(params: AnalyticsLiveParams): string {
+  const query = new URLSearchParams();
+  query.set('days', String(params.days));
+  query.set('bucket', params.bucket);
+  if (params.start !== undefined) query.set('start', params.start);
+  if (params.end !== undefined) query.set('end', params.end);
+  if (params.prevStart !== undefined) query.set('prev_start', params.prevStart);
+  if (params.prevEnd !== undefined) query.set('prev_end', params.prevEnd);
+  const base = API_BASE_URL || `${window.location.protocol}//${window.location.host}`;
+  return `${base.replace(/^http/, 'ws')}/api/v1/admin/analytics/live?${query.toString()}`;
+}
+
 /** Machine-readable API failure raised by the admin mutations below. */
 export class SearchApiError extends Error {
   code: string;

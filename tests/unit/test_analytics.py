@@ -728,3 +728,74 @@ def test_backend_image_installs_analytics_extra() -> None:
     )
     text = dockerfile.read_text()
     assert "analytics" in text, "Dockerfile.backend must install .[kafka,analytics]"
+
+
+def test_analytics_live_interval_clamps_to_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live-socket cadence is env-tunable but can never flood the store."""
+    from openlens.api import routes as api_routes
+
+    monkeypatch.delenv("OPENLENS_ANALYTICS_LIVE_INTERVAL_S", raising=False)
+    assert (
+        api_routes._analytics_live_interval_s() == api_routes.ANALYTICS_LIVE_INTERVAL_S
+    )
+    monkeypatch.setenv("OPENLENS_ANALYTICS_LIVE_INTERVAL_S", "0.1")
+    assert (
+        api_routes._analytics_live_interval_s()
+        == api_routes.ANALYTICS_LIVE_MIN_INTERVAL_S
+    )
+    monkeypatch.setenv("OPENLENS_ANALYTICS_LIVE_INTERVAL_S", "garbage")
+    assert (
+        api_routes._analytics_live_interval_s() == api_routes.ANALYTICS_LIVE_INTERVAL_S
+    )
+    monkeypatch.setenv("OPENLENS_ANALYTICS_LIVE_INTERVAL_S", "25")
+    assert api_routes._analytics_live_interval_s() == 25.0
+
+
+def test_admin_analytics_live_streams_snapshot(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The live socket pushes the same counts/series the panel GETs."""
+    now = int(time.time())
+    db_path = str(tmp_path / "live.db")
+    seed = AnalyticsStore(db_path)
+    try:
+        assert (
+            seed.insert_many(
+                [
+                    _dated_crawl_page("https://a.example/1", "fetched", "ok", now),
+                    _dated_crawl_page(
+                        "https://b.example/2", "failed", "fetch timeout", now
+                    ),
+                ]
+            )
+            == 2
+        )
+    finally:
+        seed.close()
+    # Reopen per tick like production: the snapshot closes its store
+    # after every frame, so sharing one object would poison tick two.
+    monkeypatch.setattr(
+        "openlens.analytics.store.open_analytics_store",
+        lambda section: AnalyticsStore(db_path),
+    )
+    monkeypatch.setattr("openlens.api.routes.ANALYTICS_LIVE_INTERVAL_S", 0.05)
+    with client.websocket_connect(
+        "/api/v1/admin/analytics/live?days=30&bucket=day"
+    ) as ws:
+        first = ws.receive_json()
+        second = ws.receive_json()
+    for frame in (first, second):
+        assert frame["type"] == "analytics.snapshot"
+        assert frame["interval_s"] == 0.05
+        assert frame["counts"]["total"] == 2
+        assert frame["counts"]["by_name"] == {"crawl.page": 2}
+        assert frame["prev_counts"]["total"] == 0
+        assert (
+            sum(point["count"] for point in frame["series"]["fetched"]["points"]) == 1
+        )
+        assert sum(point["count"] for point in frame["series"]["failed"]["points"]) == 1
+        assert (
+            sum(point["count"] for point in frame["series"]["skipped"]["points"]) == 0
+        )

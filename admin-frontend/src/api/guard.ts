@@ -338,6 +338,38 @@ export function isAnalyticsSeries(value: unknown): value is AnalyticsSeries {
   );
 }
 
+/** Live frame pushed by the `/api/v1/admin/analytics/live` websocket. */
+export interface AnalyticsLiveSnapshot {
+  type: 'analytics.snapshot';
+  counts: AnalyticsCounts;
+  prev_counts: AnalyticsCounts;
+  series: Record<'fetched' | 'failed' | 'skipped', AnalyticsSeries>;
+  interval_s: number;
+}
+
+const LIVE_OUTCOMES = ['fetched', 'failed', 'skipped'] as const;
+
+/** Valid live analytics frame (same counts/series shapes as the GETs). */
+export function isAnalyticsSnapshot(value: unknown): value is AnalyticsLiveSnapshot {
+  if (!isRecord(value)) return false;
+  if (value.type !== 'analytics.snapshot') return false;
+  if (typeof value.interval_s !== 'number') return false;
+  if (!isAnalyticsCounts(value.counts)) return false;
+  if (!isAnalyticsCounts(value.prev_counts)) return false;
+  const series: unknown = value.series;
+  if (!isRecord(series)) return false;
+  return LIVE_OUTCOMES.every((outcome) => isAnalyticsSeries(series[outcome]));
+}
+
+/** Fail-open marker the live socket sends when the store is unreachable. */
+export function isAnalyticsLiveUnavailable(value: unknown): value is {
+  type: 'analytics.snapshot';
+  unavailable: true;
+} {
+  if (!isRecord(value)) return false;
+  return value.type === 'analytics.snapshot' && value.unavailable === true;
+}
+
 /** One per-document feedback rollup. */
 function isFeedbackDocSummary(value: unknown): boolean {
   if (!isRecord(value)) return false;

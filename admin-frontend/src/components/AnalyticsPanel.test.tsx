@@ -1,6 +1,80 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnalyticsPanel } from './AnalyticsPanel.tsx';
+
+/** Scriptable stand-in for the live analytics socket. */
+class MockSocket {
+  static instances: MockSocket[] = [];
+
+  onopen: (() => void) | null = null;
+
+  onmessage: ((event: { data: string }) => void) | null = null;
+
+  onerror: (() => void) | null = null;
+
+  onclose: (() => void) | null = null;
+
+  url = '';
+
+  constructor(url: string, ..._rest: unknown[]) {
+    this.url = url;
+    MockSocket.instances.push(this);
+    void _rest;
+  }
+
+  open(): void {
+    this.onopen?.();
+  }
+
+  push(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+
+  fail(): void {
+    this.onerror?.();
+  }
+
+  drop(): void {
+    this.onclose?.();
+  }
+
+  close(): void {}
+
+  send(): void {}
+}
+
+const LIVE_FRAME = {
+  type: 'analytics.snapshot',
+  at: '2026-11-05T20:00:00+00:00',
+  days: 30,
+  bucket: 'day',
+  interval_s: 10,
+  counts: {
+    days: 30,
+    total: 48,
+    by_name: { 'crawl.fetched': 42, 'crawl.failed': 5, 'crawl.skipped': 1 },
+  },
+  prev_counts: {
+    days: 30,
+    total: 6,
+    by_name: { 'crawl.fetched': 4, 'crawl.failed': 1, 'crawl.skipped': 1 },
+  },
+  series: {
+    fetched: {
+      name: 'crawl.page',
+      bucket: 'day',
+      days: 30,
+      points: [{ t: '2026-11-05', count: 42 }],
+    },
+    failed: {
+      name: 'crawl.page',
+      bucket: 'day',
+      days: 30,
+      points: [{ t: '2026-11-05', count: 5 }],
+    },
+    skipped: { name: 'crawl.page', bucket: 'day', days: 30, points: [] },
+  },
+};
 
 afterEach(() => {
   cleanup();
@@ -393,6 +467,75 @@ describe('AnalyticsPanel', () => {
       expect(items?.[0]).toBe('example0.com');
       expect(items?.[1]).toBe('example1.com');
     });
+  });
+
+  it('applies live socket frames to KPIs and the live badge', async () => {
+    stubBackend();
+    MockSocket.instances = [];
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toBeInTheDocument();
+    });
+    expect(MockSocket.instances).toHaveLength(1);
+    expect(MockSocket.instances[0]?.url).toContain('/api/v1/admin/analytics/live?');
+    expect(MockSocket.instances[0]?.url).toContain('days=30');
+    expect(MockSocket.instances[0]?.url).toContain('bucket=day');
+    expect(MockSocket.instances[0]?.url).toContain('prev_start=');
+    expect(screen.getByTestId('analytics-live')).toHaveTextContent('Live updates paused');
+    MockSocket.instances[0]?.open();
+    MockSocket.instances[0]?.push(LIVE_FRAME);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-live')).toHaveTextContent('Live • every 10s');
+    });
+    // 2 fetched at load, 42 after the live frame — no refetch involved.
+    expect(screen.getByTestId('analytics-kpi-fetched')).toHaveTextContent('42');
+  });
+
+  it('marks the feed paused when the live socket errors', async () => {
+    stubBackend();
+    MockSocket.instances = [];
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-domains-list')).toBeInTheDocument();
+    });
+    MockSocket.instances[0]?.open();
+    MockSocket.instances[0]?.push(LIVE_FRAME);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-live')).toHaveTextContent('Live • every 10s');
+    });
+    MockSocket.instances[0]?.fail();
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-live')).toHaveTextContent('Live updates paused');
+    });
+    // The last good frame stays on screen through the outage.
+    expect(screen.getByTestId('analytics-kpi-fetched')).toHaveTextContent('42');
+  });
+
+  it('reconnects a dropped live socket at most three times', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      stubBackend();
+      MockSocket.instances = [];
+      vi.stubGlobal('WebSocket', MockSocket);
+      render(<AnalyticsPanel adminToken="" />);
+      await waitFor(() => {
+        expect(screen.getByTestId('analytics-domains-list')).toBeInTheDocument();
+      });
+      expect(MockSocket.instances).toHaveLength(1);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        MockSocket.instances[attempt]?.drop();
+        await act(async () => {
+          vi.advanceTimersByTime(5000);
+        });
+      }
+      // One initial socket plus three bounded reconnects — the fourth
+      // drop stays offline instead of retrying forever.
+      expect(MockSocket.instances).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders search traffic: served KPI, no-result KPI, and by-mode list', async () => {

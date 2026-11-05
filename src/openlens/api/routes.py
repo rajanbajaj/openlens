@@ -20,6 +20,7 @@ from contextlib import suppress
 import asyncio
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any, Optional
@@ -879,6 +880,18 @@ def admin_analytics_counts(
     )
 
 
+def _open_analytics_store(app_config: Any) -> Any:
+    """Open the configured analytics store (shared by HTTP and WS reads)."""
+    from openlens.analytics.store import open_analytics_store
+
+    section: dict[str, Any] = {}
+    if isinstance(app_config, dict):
+        raw = app_config.get("analytics", {})
+        if isinstance(raw, Mapping):
+            section = dict(raw.get("store", {}))
+    return open_analytics_store(section)
+
+
 def _admin_analytics_store(
     request: Request,
 ) -> tuple[Any | None, JSONResponse | None]:
@@ -888,15 +901,10 @@ def _admin_analytics_store(
     store is unreachable (fail-open).
     """
     try:
-        from openlens.analytics.store import open_analytics_store
-
-        app_config = getattr(request.app.state, "config", None)
-        section: dict[str, Any] = {}
-        if isinstance(app_config, dict):
-            raw = app_config.get("analytics", {})
-            if isinstance(raw, Mapping):
-                section = dict(raw.get("store", {}))
-        return open_analytics_store(section), None
+        return (
+            _open_analytics_store(getattr(request.app.state, "config", None)),
+            None,
+        )
     except Exception as exc:
         logger.warning("analytics: store unavailable: %s", exc)
         return None, JSONResponse(
@@ -1102,6 +1110,200 @@ def admin_analytics_series(
         days=window,
         points=[AnalyticsSeriesPointSchema(t=t, count=count) for t, count in points],
     )
+
+
+#: Default seconds between pushes on the live analytics socket. Tunable
+#: without a code change via ``OPENLENS_ANALYTICS_LIVE_INTERVAL_S``;
+#: values below ``ANALYTICS_LIVE_MIN_INTERVAL_S`` are clamped so a
+#: misconfigured env cannot turn the admin screen into a self-inflicted
+#: flood. Tests monkeypatch the default (module-global lookup per
+#: connection) instead of waiting out the production cadence.
+ANALYTICS_LIVE_INTERVAL_S = 10.0
+ANALYTICS_LIVE_INTERVAL_ENV = "OPENLENS_ANALYTICS_LIVE_INTERVAL_S"
+ANALYTICS_LIVE_MIN_INTERVAL_S = 2.0
+
+
+def _analytics_live_interval_s() -> float:
+    """Push cadence for the live analytics socket (see constants above)."""
+    raw = os.environ.get(ANALYTICS_LIVE_INTERVAL_ENV, "").strip()
+    if not raw:
+        return ANALYTICS_LIVE_INTERVAL_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return ANALYTICS_LIVE_INTERVAL_S
+    if not value >= ANALYTICS_LIVE_MIN_INTERVAL_S:  # NaN-safe; rejects < min
+        return ANALYTICS_LIVE_MIN_INTERVAL_S
+    return value
+
+
+#: Absolute-range dates accepted on the live socket (same shape as the GETs).
+_ANALYTICS_LIVE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _analytics_live_date(value: Any) -> str | None:
+    """Return ``value`` when it is a calendar date, else ``None`` (fail-open)."""
+    if isinstance(value, str) and _ANALYTICS_LIVE_DATE_RE.match(value):
+        return value
+    return None
+
+
+#: Outcomes split in the live throughput frame (matches the panel chart).
+_ANALYTICS_LIVE_OUTCOMES = ("fetched", "failed", "skipped")
+
+
+def _analytics_live_snapshot(
+    app_config: Any,
+    *,
+    days: int,
+    bucket: str,
+    start: str | None,
+    end: str | None,
+    prev_start: str,
+    prev_end: str,
+    interval_s: float,
+) -> dict[str, Any]:
+    """Build one live frame: current + prior counts plus throughput series.
+
+    Fail-open like the GET endpoints: a dead store yields an
+    ``unavailable`` frame so the panel keeps its last data and flips
+    its badge instead of dropping the socket.
+    """
+    from datetime import datetime, timezone
+
+    base: dict[str, Any] = {
+        "type": "analytics.snapshot",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "days": days,
+        "bucket": bucket,
+        "interval_s": interval_s,
+    }
+    try:
+        store = _open_analytics_store(app_config)
+    except Exception as exc:
+        logger.warning("analytics live: store unavailable: %s", exc)
+        return {**base, "unavailable": True}
+    try:
+        counts = store.counts_by_name(days, start=start, end=end) or {}
+        prev_counts = store.counts_by_name(days, start=prev_start, end=prev_end) or {}
+        series: dict[str, Any] = {}
+        for outcome in _ANALYTICS_LIVE_OUTCOMES:
+            points = store.series(
+                "crawl.page",
+                bucket=bucket,
+                since_days=days,
+                start=start,
+                end=end,
+                filter_prop="outcome",
+                filter_value=outcome,
+            )
+            series[outcome] = {
+                "name": "crawl.page",
+                "bucket": bucket,
+                "days": days,
+                "points": [{"t": t, "count": n} for t, n in points],
+            }
+    except Exception as exc:
+        logger.warning("analytics live: read failed: %s", exc)
+        return {**base, "unavailable": True}
+    finally:
+        with suppress(Exception):
+            store.close()
+    return {
+        **base,
+        "counts": {"days": days, "total": sum(counts.values()), "by_name": counts},
+        "prev_counts": {
+            "days": days,
+            "total": sum(prev_counts.values()),
+            "by_name": prev_counts,
+        },
+        "series": series,
+    }
+
+
+@router.websocket("/admin/analytics/live")
+async def admin_analytics_live(websocket: WebSocket) -> None:
+    """Stream live analytics snapshots until the client disconnects.
+
+    Pushes the same ``counts`` / ``prev_counts`` / throughput ``series``
+    the panel GETs, immediately on connect and every
+    ``_analytics_live_interval_s()`` after (env-tunable, floored so the
+    socket can never flood the store). Query params mirror the GETs:
+    ``days``, ``bucket`` (``day``/``hour``), the absolute window
+    (``start``/``end``) and its prior (``prev_start``/``prev_end``);
+    garbage falls back to the trailing-30d day view, never 422s. Same
+    admin gate as the mutating endpoints (``X-Admin-Token`` header or
+    subprotocol), same ``ws`` rate-limit bucket as the frontier socket.
+    """
+    limiter = getattr(websocket.app.state, "rate_limiter", None)
+    if limiter is not None:
+        peer = websocket.client.host if websocket.client else None
+        if limiter.check("ws", client_ip(dict(websocket.headers), peer)) is not None:
+            await websocket.close(code=1008)
+            return
+    if _ws_admin_denied(websocket):
+        await websocket.close(code=1008)
+        return
+    params = websocket.query_params
+    try:
+        window = int(params.get("days", "30"))
+    except ValueError:
+        window = 30
+    if window < 1:
+        window = 30
+    window = min(window, 365)
+    bucket = params.get("bucket", "")
+    if bucket not in ("day", "hour"):
+        bucket = "hour" if window <= 7 else "day"
+    start = _analytics_live_date(params.get("start"))
+    end = _analytics_live_date(params.get("end"))
+    if start is None or end is None:
+        start = end = None
+    prior_start = _analytics_live_date(params.get("prev_start"))
+    prior_end = _analytics_live_date(params.get("prev_end"))
+    if prior_start is None or prior_end is None:
+        from datetime import date as _date
+        from datetime import timedelta as _timedelta
+
+        if start is not None and end is not None:
+            span = (_date.fromisoformat(end) - _date.fromisoformat(start)).days + 1
+            prior_end_date = _date.fromisoformat(start) - _timedelta(days=1)
+            prior_start_date = prior_end_date - _timedelta(days=span - 1)
+        else:
+            today = _date.today()
+            prior_end_date = today - _timedelta(days=window)
+            prior_start_date = prior_end_date - _timedelta(days=window - 1)
+        prior_start, prior_end = (
+            prior_start_date.isoformat(),
+            prior_end_date.isoformat(),
+        )
+    interval = _analytics_live_interval_s()
+    app_config = getattr(websocket.app.state, "config", None)
+    await websocket.accept()
+    try:
+        while True:
+            frame = _analytics_live_snapshot(
+                app_config,
+                days=window,
+                bucket=bucket,
+                start=start,
+                end=end,
+                prev_start=prior_start,
+                prev_end=prior_end,
+                interval_s=interval,
+            )
+            try:
+                await websocket.send_json(frame)
+            except (WebSocketDisconnect, RuntimeError):
+                break
+            try:
+                await asyncio.wait_for(websocket.receive(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except (WebSocketDisconnect, RuntimeError):
+                break
+    except (WebSocketDisconnect, RuntimeError):
+        pass
 
 
 class SavedPrefsSchema(BaseModel):

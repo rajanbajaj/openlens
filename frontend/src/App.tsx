@@ -65,9 +65,9 @@ function prefsActive(prefs: ProviderPrefs): boolean {
 }
 
 /**
- * Root search experience, Google-style: a centered hero glass panel
+ * Root search experience, Google-style: a centered hero card
  * (brand + `SearchForm` + `ModeSelector`, the only thing rendered) until
- * the first search runs, then a compact sticky frosted header plus the
+ * the first search runs, then a compact sticky header plus the
  * `.ol-app-shell` grid — collapsible filter sidebar (chips, toggle,
  * panel, provider prefs, applied filters), results column (announcer,
  * loading/error branches, suggestion chip, results, pagination), and
@@ -323,18 +323,20 @@ export default function App() {
       ) : (
         <>
           <GlassPanel variant="header" role="banner" data-testid="search-header">
-            <div className="ol-header-inner mx-auto flex w-full max-w-4xl items-baseline gap-4 px-6 py-4">
+            <div className="ol-header-inner mx-auto flex w-full max-w-4xl items-center gap-4 px-6 py-4">
               <h1 className="ol-brand-heading">
                 <Logo size="header" />
               </h1>
-              <SearchForm
-                value={query}
-                onChange={setQuery}
-                onSubmit={submitFirstPage}
-                onSuggestSelect={handleSuggestSelect}
-                disabled={loading}
-              />
-              <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+              <div className="ol-header-search">
+                <SearchForm
+                  value={query}
+                  onChange={setQuery}
+                  onSubmit={submitFirstPage}
+                  onSuggestSelect={handleSuggestSelect}
+                  disabled={loading}
+                />
+                <ModeSelector mode={mode} onChange={handleModeChange} disabled={loading} />
+              </div>
               {viewNav()}
               <Button variant="ghost" onClick={() => setTourRun((n) => n + 1)}>
                 Take a tour

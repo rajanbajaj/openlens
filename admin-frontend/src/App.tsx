@@ -7,6 +7,7 @@ import { FrontierDrawer } from './components/FrontierDrawer.tsx';
 import { Logo } from './components/Logo.tsx';
 import { TokenBar, loadStoredToken } from './components/TokenBar.tsx';
 import { Tour } from './components/Tour.tsx';
+import { Button } from './components/ui/Button.tsx';
 import { GlassPanel } from './components/ui/GlassPanel.tsx';
 import { TOUR_STEPS } from './tourSteps.ts';
 
@@ -108,15 +109,13 @@ export default function App() {
         </h1>
         <div className="ol-admin-hero-controls">
           <TokenBar adminToken={adminToken} onChange={setAdminToken} />
-          <button
-            type="button"
-            className="ol-button ol-button-secondary"
+          <Button
             onClick={() => {
               setTourRun((n) => n + 1);
             }}
           >
             Take a tour
-          </button>
+          </Button>
         </div>
       </GlassPanel>
       <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-admin" />

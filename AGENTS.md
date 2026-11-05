@@ -56,6 +56,17 @@
 - Mirror wire types from backend schemas; regen via orval rather than hand-diverging (`frontend/src/api/types.ts`, `frontend/orval.config.ts`).
 - Reuse shared utils before hand-rolling helpers; no barrel imports or global singletons.
 
+### UI/UX (frontends)
+
+- Theme contract first: use the `ol-*` utilities (`--color-ol-*`, `--spacing-ol-*`, `--text-ol-*`, `--radius-ol-*`, `--shadow-ol-*` in `admin-frontend/src/index.css`); never add hardcoded hex for a color the palette already covers. Single light theme: no `dark:` variants exist, do not introduce them.
+- Check `<app>/src/components/ui/` before building anything (e.g. `Button`, `DataTable`, `SearchInput`, `StatusBadge`, `ConfirmDialog`, `Toast`); reuse primitives rather than raw HTML/CSS wrappers, and mirror neighboring composition.
+- Motion stays minimal: short fades only, per the `index.css` header. No jarring transitions.
+- Responsiveness: design mobile-first with Tailwind breakpoints (`grid-cols-2 sm:grid-cols-3`, `lg:grid-cols-2` as in `AnalyticsPanel.tsx`); narrow widths must stack or scroll, never clip or overlap. Verify at phone and desktop widths before calling a UI change done.
+- Human eyes gate: a UI change is not done until the rendered result has been seen — a screenshot you inspected or an explicit human look. Tests alone never close a visual task.
+- Honest UX claims: never state conformance numbers, ratios, or criteria from memory — the colocated axe smoke test is the authority. Label what you verified versus what you assumed, and never claim user validation that did not happen. Honor `prefers-reduced-motion` (existing pattern in `admin-frontend/src/components/Tour.tsx`).
+- Accessibility: keyboard-reachable controls with visible focus states and explicit `aria-` labels where text is missing; extend the colocated axe smoke coverage (`admin-frontend/src/components/ui/a11y.test.tsx`) for every new primitive.
+- Done means: no broken layout at the widths the surface supports, no raw unstyled controls, and the owning app's gates green (`lint`, `format:check`, `tsc` build, `vitest run` per `admin-frontend/package.json`).
+
 ## 7. Security and secrets
 
 - Treat model, MCP, and external output as untrusted; redact at every boundary.

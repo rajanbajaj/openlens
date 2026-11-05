@@ -1,13 +1,20 @@
 import { createAdminQueryClient } from '../api/queryClient.tsx';
-import { QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
-import { fetchAnalyticsCounts, fetchAnalyticsSeries, fetchAnalyticsTop } from '../api/client.ts';
+import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import {
+  analyticsLiveUrl,
+  fetchAnalyticsCounts,
+  fetchAnalyticsSeries,
+  fetchAnalyticsTop,
+} from '../api/client.ts';
+import { isAnalyticsLiveUnavailable, isAnalyticsSnapshot } from '../api/guard.ts';
 import { FeedbackCard } from './analytics/FeedbackCard.tsx';
 import { capBuckets, ThroughputTable } from './analytics/ThroughputTable.tsx';
 import type { StackedPoint } from './analytics/ThroughputTable.tsx';
 import { Button } from './ui/Button.tsx';
 import { FieldError } from './ui/FieldError.tsx';
 import { Skeleton } from './ui/Skeleton.tsx';
+import { StatusBadge } from './ui/StatusBadge.tsx';
 
 interface AnalyticsPanelProps {
   /** Admin token for the admin-only analytics reads. */
@@ -336,6 +343,122 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   const fetchedSeriesQuery = useQuery(seriesFor('fetched'));
   const failedSeriesQuery = useQuery(seriesFor('failed'));
   const skippedSeriesQuery = useQuery(seriesFor('skipped'));
+
+  const queryClient = useQueryClient();
+  const [liveEnabled, setLiveEnabled] = useState(true);
+  const [live, setLive] = useState(false);
+  const [liveInterval, setLiveInterval] = useState<number | null>(null);
+  const [tabVisible, setTabVisible] = useState(
+    () => typeof document === 'undefined' || !document.hidden,
+  );
+  const [retrySeq, setRetrySeq] = useState(0);
+  const attemptsRef = useRef(0);
+  const urlRef = useRef('');
+
+  // Pause the socket while the tab is hidden: no hidden-tab flood.
+  useEffect(() => {
+    const onVisibility = () => setTabVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  // Live analytics: the backend pushes the same counts/series the
+  // panel GETs, so frames write straight into the query cache — no
+  // refetch storm, and every existing render/error path is reused.
+  // Any socket or frame failure degrades to the last GET data with
+  // the badge flipped to paused, plus bounded reconnects.
+  useEffect(() => {
+    if (!liveEnabled || !tabVisible) {
+      setLive(false);
+      return;
+    }
+    const url = analyticsLiveUrl({ days, bucket, start, end, prevStart, prevEnd });
+    if (urlRef.current !== url) {
+      urlRef.current = url;
+      attemptsRef.current = 0;
+    }
+    let socket: WebSocket | null = null;
+    let closed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      // Browsers cannot set WS headers, so the token travels as a
+      // subprotocol the backend gate accepts (see `_ws_admin_denied`).
+      const protocols = adminToken.trim() ? ['x-admin-token', adminToken.trim()] : [];
+      socket = new WebSocket(url, protocols);
+    } catch {
+      setLive(false);
+      return;
+    }
+    socket.onopen = () => {
+      if (!closed) {
+        attemptsRef.current = 0;
+        setLive(true);
+      }
+    };
+    socket.onmessage = (event: MessageEvent) => {
+      if (closed) return;
+      try {
+        const data: unknown = JSON.parse(String(event.data));
+        if (isAnalyticsSnapshot(data)) {
+          queryClient.setQueryData(
+            ['admin', 'analytics', 'counts', days, fromDate, toDate],
+            data.counts,
+          );
+          queryClient.setQueryData(
+            ['admin', 'analytics', 'counts-prev', days, prevStart, prevEnd],
+            data.prev_counts,
+          );
+          for (const outcome of ['fetched', 'failed', 'skipped'] as const) {
+            queryClient.setQueryData(
+              ['admin', 'analytics', 'series', outcome, days, fromDate, toDate],
+              data.series[outcome],
+            );
+          }
+          setLiveInterval(data.interval_s);
+          setLive(true);
+        } else if (isAnalyticsLiveUnavailable(data)) {
+          setLive(false);
+        }
+      } catch {
+        /* malformed frames never break the panel */
+      }
+    };
+    const scheduleRetry = () => {
+      if (closed || attemptsRef.current >= 3) return;
+      attemptsRef.current += 1;
+      retryTimer = setTimeout(() => {
+        if (!closed) setRetrySeq((n) => n + 1);
+      }, 5000);
+    };
+    socket.onerror = () => {
+      if (!closed) setLive(false);
+    };
+    socket.onclose = () => {
+      if (!closed) {
+        setLive(false);
+        scheduleRetry();
+      }
+    };
+    return () => {
+      closed = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [
+    adminToken,
+    liveEnabled,
+    tabVisible,
+    retrySeq,
+    days,
+    fromDate,
+    toDate,
+    bucket,
+    start,
+    end,
+    prevStart,
+    prevEnd,
+    queryClient,
+  ]);
   const crawlDomainsQuery = useQuery({
     queryKey: [
       'admin',
@@ -787,6 +910,22 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
         {rangeInvalid ? (
           <FieldError id="analytics-range" message="Start must be before end." />
         ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-ol-s" aria-live="polite">
+        <StatusBadge tone={live ? 'live' : 'paused'} icon="dot">
+          <span data-testid="analytics-live">
+            {live ? `Live • every ${liveInterval ?? '?'}s` : 'Live updates paused'}
+          </span>
+        </StatusBadge>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setLiveEnabled((current) => !current)}
+          data-testid="analytics-live-toggle"
+          aria-pressed={liveEnabled}
+        >
+          {liveEnabled ? 'Pause live' : 'Resume live'}
+        </Button>
       </div>
       <div className="flex flex-wrap items-end gap-ol-m">
         <label className="flex flex-col gap-ol-xs font-semibold">

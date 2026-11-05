@@ -171,6 +171,23 @@ body {
   gap: var(--ol-space-m);
 }
 
+/* Search zone: the form + mode select grow as one unit, so the brand,
+ * the query, and the view tabs keep a deliberate order instead of
+ * wrapping wherever flex feels like it. */
+.ol-header-search {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ol-space-s) var(--ol-space-m);
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.ol-header-search .ol-search-form {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
 /* Flex hygiene: the query input must shrink instead of forcing the
  * sticky header wider than the viewport on narrow screens. */
 .ol-search-form .ol-field {
@@ -198,12 +215,15 @@ body {
 }
 
 /* Google-style landing: nothing but the centered hero (brand + search +
- * mode) until the first search runs, so the page opens like google.com. */
+ * mode) until the first search runs, so the page opens like google.com.
+ * The wash backdrop + solid hero card give the brand lockup presence
+ * without gradients, blobs, or hero chrome. */
 .ol-landing {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: var(--ol-space-l);
+  background: var(--ol-well);
 }
 
 .ol-landing .ol-brand {
@@ -676,6 +696,13 @@ body {
     row-gap: var(--ol-space-s);
   }
 
+  /* The search zone takes its own full row under the brand on phones:
+   * the query + mode stay thumb-usable instead of squeezing beside
+   * the logo, while the view tabs keep the top row. */
+  .ol-header-search {
+    flex: 1 1 100%;
+  }
+
   /* Landing hero stacks full-width; the sticky results header keeps the
    * query + button on one row (brand beside it) while the mode select
    * and Search/AI-chat tabs wrap onto a second row. */
@@ -716,9 +743,12 @@ body {
 
 .ol-glass-hero {
   border-radius: var(--ol-radius-l);
-  padding: var(--ol-space-l) var(--ol-space-xl);
-  background: transparent;
-  border-color: transparent;
+  padding: var(--ol-space-xl);
+  background: var(--ol-paper);
+  border: 1px solid var(--ol-line);
+  box-shadow: var(--ol-shadow);
+  width: 100%;
+  max-width: 44rem;
 }
 
 .ol-glass-header {
@@ -786,16 +816,6 @@ body {
   min-width: 0;
 }
 
-.ol-app-shell-collapsed {
-  grid-template-areas:
-    'results'
-    'rail';
-}
-
-.ol-app-shell-collapsed > .ol-shell-sidebar {
-  display: none;
-}
-
 @media (max-width: 22.5rem) {
   .ol-app-shell {
     padding: var(--ol-space-m);
@@ -819,13 +839,6 @@ body {
       'rail rail';
     max-width: 72rem;
   }
-
-  .ol-app-shell-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      'results'
-      'rail';
-  }
 }
 
 @media (min-width: 80rem) {
@@ -833,11 +846,6 @@ body {
     grid-template-columns: 15rem minmax(0, 1fr) 19rem;
     grid-template-areas: 'sidebar results rail';
     max-width: 80rem;
-  }
-
-  .ol-app-shell-collapsed {
-    grid-template-columns: minmax(0, 1fr) 19rem;
-    grid-template-areas: 'results rail';
   }
 }
 
