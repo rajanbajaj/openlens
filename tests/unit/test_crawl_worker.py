@@ -344,6 +344,40 @@ def test_build_worker_sqlite_file_repo_creates_parent(tmp_path) -> None:
             repository.close()
 
 
+def test_build_worker_logs_frontier_backend(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Boot logs which frontier backend the crawl path uses."""
+    import logging
+
+    from openlens.indexing.worker import _build_worker
+
+    config: dict[str, Any] = {
+        "storage": {
+            "backend": "sqlite",
+            "sqlite": {"db_path": str(tmp_path / "frontier.db")},
+        },
+        "providers": {
+            "custom_index": {
+                "enabled": True,
+                "db_path": str(tmp_path / "crawl.db"),
+            }
+        },
+        "indexing": {},
+    }
+    with caplog.at_level(logging.INFO, logger="openlens.indexing.worker"):
+        worker, repository, frontier_store, _ = _build_worker(config)
+    try:
+        assert isinstance(frontier_store, SqliteFrontierStore)
+        assert "frontier backend=postgres" in caplog.text
+        assert "store=SqliteFrontierStore" in caplog.text
+    finally:
+        with contextlib.suppress(Exception):
+            frontier_store.close()
+        with contextlib.suppress(Exception):
+            repository.close()
+
+
 def test_build_worker_postgres_repo(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Postgres backend crawls into the searched PG index (not sqlite)."""
     from openlens.indexing.worker import _build_worker

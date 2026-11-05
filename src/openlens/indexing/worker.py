@@ -961,6 +961,18 @@ def _build_worker(
                         break
     frontier_store = open_frontier_store_for_crawl(app_config)
     mirror_flusher = _maybe_start_mirror_flusher(app_config, frontier_store)
+    frontier_cfg = app_config.get("frontier", {})
+    backend = (
+        frontier_cfg.get("backend", "postgres")
+        if isinstance(frontier_cfg, dict)
+        else "postgres"
+    )
+    logger.info(
+        "frontier backend=%s store=%s mirror=%s",
+        backend,
+        type(frontier_store).__name__,
+        "on" if mirror_flusher is not None else "off",
+    )
     crawler = crawler_factory() if crawler_factory is not None else PoliteCrawler()
     if crawler_factory is None:
         crawler.configure(dict(indexing_config))
