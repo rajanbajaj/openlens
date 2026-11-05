@@ -3,6 +3,7 @@
 - [Home](Home)
 - Customer
   - [Getting Started](Getting-Started)
+  - [Search and Admin Guide](Search-and-Admin-Guide)
   - [Search Modes](Search-Modes)
   - [AI Mode](AI-Mode)
   - [Perspectives](Perspectives)

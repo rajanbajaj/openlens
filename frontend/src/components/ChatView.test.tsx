@@ -58,6 +58,28 @@ async function sendMessage(message: string) {
 }
 
 describe('ChatView send/render flow', () => {
+  it('sends the tour example question exactly once', async () => {
+    const fetchStub = stubChat(CHAT_OK);
+    const onExampleConsumed = vi.fn();
+    render(
+      <ChatView
+        exampleQuestion="Give me an overview of what is in this index."
+        onExampleConsumed={onExampleConsumed}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('chat-message-user')).toHaveTextContent(
+      'Give me an overview of what is in this index.',
+    );
+    expect(onExampleConsumed).toHaveBeenCalledTimes(1);
+    const chatCalls = fetchStub.mock.calls.filter((call) =>
+      String(call[0]).includes('/api/v1/agent/chat'),
+    );
+    expect(chatCalls).toHaveLength(1);
+  });
+
   it('posts the contract body and renders the answer with trace', async () => {
     vi.stubEnv('VITE_OPENLENS_DEV_MODE', 'true');
     const fetchStub = stubChat(CHAT_OK);

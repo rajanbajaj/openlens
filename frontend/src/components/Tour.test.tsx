@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Tour from './Tour.tsx';
 import type { TourStep } from '../tourSteps.ts';
 
@@ -139,6 +139,78 @@ describe('Tour', () => {
       expect(screen.getByText('Alpha title')).toBeInTheDocument();
     });
     expect(host.querySelector('details')?.open).toBe(true);
+  });
+
+  it('runs the search example through onExampleSearch', () => {
+    mountTargets();
+    const onExampleSearch = vi.fn();
+    const exampleSteps: TourStep[] = [
+      {
+        target: 'alpha',
+        title: 'Alpha title',
+        body: 'Alpha body',
+        example: { label: 'Try it', search: 'dating advice' },
+      },
+    ];
+    render(
+      <Tour
+        steps={exampleSteps}
+        runId={1}
+        storageKey="ol-tour-test"
+        onExampleSearch={onExampleSearch}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    expect(onExampleSearch).toHaveBeenCalledWith('dating advice');
+  });
+
+  it('opens chat and asks through the matching example callbacks', () => {
+    mountTargets();
+    const onExampleOpenChat = vi.fn();
+    const onExampleChat = vi.fn();
+    const exampleSteps: TourStep[] = [
+      {
+        target: '',
+        untilTarget: 'missing',
+        title: 'Gate title',
+        body: 'Gate body',
+        example: { label: 'Open it', openChat: true },
+      },
+      {
+        target: 'alpha',
+        title: 'Alpha title',
+        body: 'Alpha body',
+        example: { label: 'Ask it', chat: 'hello?' },
+      },
+    ];
+    render(
+      <Tour
+        steps={exampleSteps}
+        runId={1}
+        storageKey="ol-tour-test"
+        onExampleOpenChat={onExampleOpenChat}
+        onExampleChat={onExampleChat}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open it' }));
+    expect(onExampleOpenChat).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ask it' }));
+    expect(onExampleChat).toHaveBeenCalledWith('hello?');
+  });
+
+  it('hides the example button when its callback is missing', () => {
+    mountTargets();
+    const exampleSteps: TourStep[] = [
+      {
+        target: 'alpha',
+        title: 'Alpha title',
+        body: 'Alpha body',
+        example: { label: 'Try it', search: 'dating advice' },
+      },
+    ];
+    render(<Tour steps={exampleSteps} runId={1} storageKey="ol-tour-test" />);
+    expect(screen.queryByRole('button', { name: 'Try it' })).toBeNull();
   });
 
   it('pauses on a gate step until the awaited view mounts', async () => {

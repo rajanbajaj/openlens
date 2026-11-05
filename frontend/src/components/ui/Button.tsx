@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost';
 
@@ -6,6 +6,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Visual weight. Defaults to `"secondary"`. */
   variant?: ButtonVariant;
   children: ReactNode;
+  /** Focus target (the tour moves keyboard focus per step). */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 const VARIANT_UTILITIES: Record<ButtonVariant, string> = {
@@ -18,9 +20,16 @@ const VARIANT_UTILITIES: Record<ButtonVariant, string> = {
 };
 
 /** Design-system button: primary action, bordered secondary, or inline ghost. */
-export function Button({ variant = 'secondary', type = 'button', children, ...rest }: ButtonProps) {
+export function Button({
+  variant = 'secondary',
+  type = 'button',
+  children,
+  ref,
+  ...rest
+}: ButtonProps) {
   return (
     <button
+      ref={ref}
       type={type}
       className={`ol-button ol-button-${variant} text-ol-s font-semibold rounded-ol-s border border-transparent px-ol-s py-ol-s cursor-pointer ${VARIANT_UTILITIES[variant]}`}
       {...rest}

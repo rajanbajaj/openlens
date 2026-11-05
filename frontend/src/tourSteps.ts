@@ -1,3 +1,14 @@
+export interface TourExample {
+  /** Button label rendered in the tooltip for this step. */
+  label: string;
+  /** Run this query as a real search when the user picks the example. */
+  search?: string;
+  /** Switch to AI chat when the user picks the example. */
+  openChat?: boolean;
+  /** Send this question in AI chat when the user picks the example. */
+  chat?: string;
+}
+
 export interface TourStep {
   target: string;
   title: string;
@@ -9,6 +20,13 @@ export interface TourStep {
    * silently skipping every step that needs it.
    */
   untilTarget?: string;
+  /**
+   * Hands-on demo for this step: the tooltip offers the example as a
+   * button that performs the action (search, open chat, ask) instead
+   * of describing it. Needs the matching `onExample*` callback on
+   * the Tour to do anything.
+   */
+  example?: TourExample;
 }
 
 export const TOUR_STEPS: TourStep[] = [
@@ -21,7 +39,8 @@ export const TOUR_STEPS: TourStep[] = [
     target: '',
     untilTarget: 'results-rail',
     title: 'Your turn: run a search',
-    body: 'Type "dating advice" and hit Enter. The tour picks up on the results page by itself — every stop from here needs real results.',
+    body: 'Press "Run an example search" — or type your own query and hit Enter. The tour picks up on the results page by itself — every stop from here needs real results.',
+    example: { label: 'Run an example search', search: 'dating advice' },
   },
   {
     target: 'search-header',
@@ -87,12 +106,17 @@ export const TOUR_STEPS: TourStep[] = [
     target: '',
     untilTarget: 'chat-view',
     title: 'Your turn: open AI chat',
-    body: 'Click the AI chat tab. The tour continues there on its own — the trace breakdown needs a live answer.',
+    body: 'Press "Open AI chat for me" — or click the AI chat tab yourself. The tour continues there on its own — the trace breakdown needs a live answer.',
+    example: { label: 'Open AI chat for me', openChat: true },
   },
   {
     target: 'chat-view',
     title: 'Cited answers, live',
-    body: 'Ask in plain language — the model searches your index through budgeted tools and answers with citations.',
+    body: 'Ask in plain language — the model searches your index through budgeted tools and answers with citations. Press "Ask an example question" and the tour follows the live answer.',
+    example: {
+      label: 'Ask an example question',
+      chat: 'Give me an overview of what is in this index.',
+    },
   },
   {
     target: 'chat-citations',

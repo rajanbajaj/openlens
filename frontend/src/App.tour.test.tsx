@@ -72,6 +72,79 @@ describe('App guided tour wiring', () => {
     expect(screen.getByText('Same box, sticky')).toBeInTheDocument();
   });
 
+  it('runs the example search and chat from the tour itself', async () => {
+    const stub = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/api/v1/suggest')) {
+        return { ok: true, json: () => Promise.resolve({ q: 'dating', suggestions: [] }) };
+      }
+      if (url.includes('/api/v1/agent/chat')) {
+        return {
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              answer: 'This index covers relationships [1].',
+              citations: [
+                {
+                  ref: 1,
+                  title: 'Relationship Advice for Couples',
+                  url: 'https://example.com/love',
+                },
+              ],
+              results: SEARCH_ENVELOPE.results,
+              trace: {
+                rewritten_query: 'dating advice',
+                filters: {},
+                steps: [{ kind: 'retrieve', detail: 'queried mock' }],
+                fallbacks: [],
+                model_calls: 1,
+              },
+              notice: null,
+            }),
+        };
+      }
+      return { ok: true, json: () => Promise.resolve(SEARCH_ENVELOPE) };
+    });
+    vi.stubGlobal('fetch', stub);
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));
+    // Landing step, then the search gate.
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Your turn: run a search')).toBeInTheDocument();
+    // The tour runs the search itself; the gate hands off to results.
+    fireEvent.click(screen.getByRole('button', { name: 'Run an example search' }));
+    await waitFor(() => {
+      expect(screen.getByText('Relationship Advice for Couples')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Same box, sticky')).toBeInTheDocument();
+    });
+    // Walk forward to the chat gate (missing-target steps skip by).
+    for (let i = 0; i < 12; i += 1) {
+      if (screen.queryByText('Your turn: open AI chat') !== null) break;
+      const next = screen.queryByRole('button', { name: 'Next' });
+      if (next === null) break;
+      fireEvent.click(next);
+    }
+    expect(screen.getByText('Your turn: open AI chat')).toBeInTheDocument();
+    // The tour opens chat itself and lands on the chat-view step.
+    fireEvent.click(screen.getByRole('button', { name: 'Open AI chat for me' }));
+    await waitFor(() => {
+      expect(screen.getByText('Cited answers, live')).toBeInTheDocument();
+    });
+    // The tour asks the example question itself; the answer renders
+    // (the [1] citation is its own chip, so match the container text).
+    fireEvent.click(screen.getByRole('button', { name: 'Ask an example question' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('chat-answer')).toHaveTextContent('This index covers relationships');
+    const chatCalls = stub.mock.calls.filter((call) =>
+      String(call[0]).includes('/api/v1/agent/chat'),
+    );
+    expect(chatCalls.length).toBeGreaterThan(0);
+  });
+
   it('follows the user into AI chat and tours the chat view', async () => {
     await runDatingSearch();
     fireEvent.click(screen.getByRole('button', { name: 'Take a tour' }));

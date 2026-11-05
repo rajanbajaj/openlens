@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { TourStep } from '../tourSteps.ts';
+import type { TourExample, TourStep } from '../tourSteps.ts';
+import { Button } from './ui/Button.tsx';
 
 export interface TourProps {
   steps: TourStep[];
   runId: number;
   storageKey: string;
+  /** Run the step's example search (App reuses its assisted-search path). */
+  onExampleSearch?: (query: string) => void;
+  /** Switch to AI chat for the step's open-chat example. */
+  onExampleOpenChat?: () => void;
+  /** Send the step's example question in AI chat. */
+  onExampleChat?: (question: string) => void;
 }
 
 function targetExists(target: string): boolean {
@@ -51,7 +58,14 @@ function prefersReducedMotion(): boolean {
   );
 }
 
-export default function Tour({ steps, runId, storageKey }: TourProps) {
+export default function Tour({
+  steps,
+  runId,
+  storageKey,
+  onExampleSearch,
+  onExampleOpenChat,
+  onExampleChat,
+}: TourProps) {
   const [open, setOpen] = useState(false);
   const [index, setIndex] = useState(0);
   const [position, setPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -246,11 +260,26 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
     };
   }, [open, index, steps, rev, exit]);
 
+  function exampleCallback(example: TourExample | undefined): (() => void) | null {
+    if (!example) return null;
+    const search = example.search;
+    if (search !== undefined && onExampleSearch) {
+      return () => onExampleSearch(search);
+    }
+    if (example.openChat && onExampleOpenChat) return () => onExampleOpenChat();
+    const chat = example.chat;
+    if (chat !== undefined && onExampleChat) {
+      return () => onExampleChat(chat);
+    }
+    return null;
+  }
+
   if (!open) return null;
   const step = steps[index];
   if (!step || (step.target !== '' && !targetExists(step.target))) return null;
   const isLast = nextAvailable(steps, index + 1) === -1;
   const backDisabled = prevAvailable(steps, index - 1) === -1;
+  const exampleAction = exampleCallback(step.example);
 
   return (
     <>
@@ -268,25 +297,25 @@ export default function Tour({ steps, runId, storageKey }: TourProps) {
           Step {index + 1} of {steps.length}
         </p>
         <div className="ol-tour-controls">
-          <button
-            type="button"
-            className="ol-button ol-button-secondary"
-            disabled={backDisabled}
-            onClick={goBack}
-          >
+          {exampleAction && step.example ? (
+            <Button
+              type="button"
+              variant="secondary"
+              data-testid="tour-example"
+              onClick={exampleAction}
+            >
+              {step.example.label}
+            </Button>
+          ) : null}
+          <Button type="button" variant="secondary" disabled={backDisabled} onClick={goBack}>
             Back
-          </button>
-          <button
-            type="button"
-            ref={nextRef}
-            className="ol-button ol-button-primary"
-            onClick={goNext}
-          >
+          </Button>
+          <Button type="button" variant="primary" ref={nextRef} onClick={goNext}>
             {isLast ? 'Done' : 'Next'}
-          </button>
-          <button type="button" className="ol-button ol-button-ghost" onClick={() => exit(true)}>
+          </Button>
+          <Button type="button" variant="ghost" onClick={() => exit(true)}>
             Skip tour
-          </button>
+          </Button>
         </div>
       </div>
     </>

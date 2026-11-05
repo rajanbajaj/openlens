@@ -36,6 +36,14 @@ export interface ChatViewProps {
    * the parent runs it as a standard search. Omit to hide fallbacks.
    */
   onFallbackSearch?: (query: string) => void;
+  /**
+   * Tour-driven demo question: sent once when set (then cleared through
+   * `onExampleConsumed` so a replay can ask again). Ignored while a
+   * send is already in flight.
+   */
+  exampleQuestion?: string | null;
+  /** Called after the example question is consumed. */
+  onExampleConsumed?: () => void;
 }
 
 /** Loading stage copy: search first, then source reading. */
@@ -252,7 +260,11 @@ export function ChatTraceView({ trace }: { trace: ChatTrace | null | undefined }
  * fail-closed notice/error rendering with a one-click standard-search
  * fallback. Styling reuses tailwind utilities only — no custom CSS.
  */
-export default function ChatView({ onFallbackSearch }: ChatViewProps) {
+export default function ChatView({
+  onFallbackSearch,
+  exampleQuestion = null,
+  onExampleConsumed,
+}: ChatViewProps) {
   const [transcript, setTranscript] = useState<ChatTranscriptEntry[]>(loadTranscript);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -320,6 +332,27 @@ export default function ChatView({ onFallbackSearch }: ChatViewProps) {
     if (loading) return;
     void send(input);
   }
+
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const consumedExample = useRef<string | null>(null);
+
+  // Tour example: send the demo question exactly once per value — even
+  // under StrictMode's double-effect or a slow parent clear — and hold
+  // it while a send is already in flight instead of dropping it.
+  useEffect(() => {
+    if (
+      exampleQuestion === null ||
+      exampleQuestion === '' ||
+      loading ||
+      consumedExample.current === exampleQuestion
+    ) {
+      return;
+    }
+    consumedExample.current = exampleQuestion;
+    onExampleConsumed?.();
+    void sendRef.current(exampleQuestion);
+  }, [exampleQuestion, loading, onExampleConsumed]);
 
   function startNewChat() {
     if (loading) return;

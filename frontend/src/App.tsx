@@ -90,6 +90,9 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<'search' | 'chat'>('search');
   const [tourRun, setTourRun] = useState(0);
+  // Tour-driven demo question: set by the tour's chat example, consumed
+  // once by ChatView, then cleared so a replay can ask again.
+  const [chatExample, setChatExample] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<string[]>(() =>
     loadSavedResults().map((entry) => entry.id),
   );
@@ -301,7 +304,11 @@ export default function App() {
             <p className="ol-brand-sub text-ol-ink-soft m-0 text-sm">Plug-and-play search</p>
             {viewNav()}
             {view === 'chat' ? (
-              <ChatView onFallbackSearch={handleChatFallbackSearch} />
+              <ChatView
+                onFallbackSearch={handleChatFallbackSearch}
+                exampleQuestion={chatExample}
+                onExampleConsumed={() => setChatExample(null)}
+              />
             ) : (
               <>
                 <SearchForm
@@ -373,7 +380,13 @@ export default function App() {
                 <p aria-live="polite" data-testid="result-announcer" className="ol-sr-only sr-only">
                   {announcement}
                 </p>
-                {view === 'chat' ? <ChatView onFallbackSearch={handleChatFallbackSearch} /> : null}
+                {view === 'chat' ? (
+                  <ChatView
+                    onFallbackSearch={handleChatFallbackSearch}
+                    exampleQuestion={chatExample}
+                    onExampleConsumed={() => setChatExample(null)}
+                  />
+                ) : null}
                 {view === 'search' && loading ? <LoadingState /> : null}
                 {view === 'search' && !loading && error ? (
                   <ErrorState code={error.code} message={error.message} />
@@ -453,7 +466,14 @@ export default function App() {
           </main>
         </>
       )}
-      <Tour steps={TOUR_STEPS} runId={tourRun} storageKey="ol-tour-search" />
+      <Tour
+        steps={TOUR_STEPS}
+        runId={tourRun}
+        storageKey="ol-tour-search"
+        onExampleSearch={handleAssistedSelect}
+        onExampleOpenChat={() => setView('chat')}
+        onExampleChat={setChatExample}
+      />
     </div>
   );
 }
