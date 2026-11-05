@@ -9,7 +9,9 @@ name: scale
 #   release.env (CRAWLER_SCALE / CRAWLER_BACKOFF_SCALE /
 #   ANALYTICS_WORKER_SCALE), so the next release deploy keeps it.
 #   Every other service is a singleton (host ports, single
-#   primary, or single broker); replicas are rejected for those.
+#   primary, or single broker). replicas=1 on a singleton recreates
+#   it (ensure-one-running, nothing persisted); replicas=0 and >1
+#   are rejected for those.
 # - Vertical (cpus / memory): applies live to every running
 #   container of the service via `docker update`, no restart.
 #   It does NOT survive a container recreate — the next
@@ -44,7 +46,7 @@ on:
           - clickhouse
           - dozzle
       replicas:
-        description: "Horizontal: replica count (0-24, worker pools only; empty = leave unchanged)."
+        description: "Horizontal: replica count (0-24; worker pools only, except replicas=1 recreates a singleton; empty = leave unchanged)."
         required: false
         default: ""
       cpus:
@@ -96,10 +98,15 @@ jobs:
             fi
             # Only the stateless Kafka-consumer pools can run >1:
             # the rest bind host ports or are single-primary stores.
+            # replicas=1 on a singleton is an ensure-one-running
+            # recreate (nothing persisted); 0 and >1 stay rejected.
             case "$SVC" in
               crawler|crawler-backoff|analytics-worker) ;;
               *)
-                echo "replicas not supported for singleton service: $SVC (allowed: crawler, crawler-backoff, analytics-worker)"; exit 1
+                if [ "$REPLICAS" != "1" ]; then
+                  echo "replicas=$REPLICAS not supported for singleton service: $SVC (allowed: crawler, crawler-backoff, analytics-worker). Use replicas=1 to recreate it, the release workflow (selective deploy) to restart it, or cpus/memory for live tuning."; exit 1
+                fi
+                echo "singleton service $SVC: replicas=1 recreates it (no scale value persisted)"
                 ;;
             esac
             case "$SVC" in
@@ -135,16 +142,22 @@ jobs:
           VAR="${{ steps.validate.outputs.scale_var }}"
           ENV_FILE="/home/rajan/servers/release.env"
           test -f "$ENV_FILE" || { echo "missing server env file: $ENV_FILE"; exit 1; }
-          if grep -q "^${VAR}=" "$ENV_FILE"; then
-            sed -i "s/^${VAR}=.*/${VAR}=${{ inputs.replicas }}/" "$ENV_FILE"
-          else
-            echo "${VAR}=${{ inputs.replicas }}" >> "$ENV_FILE"
+          if [ -n "$VAR" ]; then
+            if grep -q "^${VAR}=" "$ENV_FILE"; then
+              sed -i "s/^${VAR}=.*/${VAR}=${{ inputs.replicas }}/" "$ENV_FILE"
+            else
+              echo "${VAR}=${{ inputs.replicas }}" >> "$ENV_FILE"
+            fi
+            # .env is what compose interpolates; keep it in sync like
+            # the release workflow does so `deploy.replicas` reconciles.
+            cp "$ENV_FILE" .env
           fi
-          # .env is what compose interpolates; keep it in sync like
-          # the release workflow does so `deploy.replicas` reconciles.
-          cp "$ENV_FILE" .env
           docker compose up -d "$SVC"
-          echo "replicas for $SVC now: ${{ inputs.replicas }} (persisted as $VAR)"
+          if [ -n "$VAR" ]; then
+            echo "replicas for $SVC now: ${{ inputs.replicas }} (persisted as $VAR)"
+          else
+            echo "$SVC recreated (singleton replicas=1: one copy ensured, nothing persisted)"
+          fi
 
       - name: Vertical scale (cpus / memory)
         if: inputs.cpus != '' || inputs.memory != ''
