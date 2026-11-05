@@ -1011,6 +1011,16 @@ def _maybe_start_mirror_flusher(
     flusher = open_mirror_flusher(app_config, source=frontier_store)
     if flusher is None:
         return None
+    # Cutover migration first: a fresh Redis backend holds an empty
+    # ready queue while the mirror still carries the pre-cutover
+    # backlog. Without this replay the fleet idles on an empty hot
+    # store while the dashboard shows a frozen queue. First claimant
+    # wins; everyone else (and every later boot) is a no-op.
+    try:
+        backfilled = flusher.backfill_once()
+    except Exception:
+        backfilled = 0
+    print(f"[worker] backfill mirror→redis: {backfilled} urls", flush=True)
     flusher.start()
     return flusher
 

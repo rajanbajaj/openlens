@@ -881,3 +881,145 @@ def test_open_mirror_flusher_none_for_default_backend() -> None:
     assert open_mirror_flusher({"frontier": {"backend": "postgres"}}) is None
     assert open_mirror_flusher({"frontier": {"backend": "sqlite"}}) is None
     assert open_mirror_flusher("bogus") is None  # type: ignore[arg-type]
+
+
+class _StubHotStore:
+    """In-memory stand-in for the Redis hot side of ``backfill_once``.
+
+    Mirrors the real dedup (first enqueue wins) and the claim/done
+    marker contract so the offline tests exercise the replay logic
+    with a real SQLite mirror and no services.
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple] = []
+        self._known: set[str] = set()
+        self._locked = False
+        self._done = False
+
+    def backfill_done(self) -> bool:
+        return self._done
+
+    def try_claim_backfill(self, ttl_s: float = 600.0) -> bool:
+        del ttl_s
+        if self._locked or self._done:
+            return False
+        self._locked = True
+        return True
+
+    def mark_backfill_done(self, ttl_s: float = 30.0 * 86400.0) -> None:
+        del ttl_s
+        self._done = True
+        self._locked = False
+
+    def release_backfill_lock(self) -> None:
+        """Test-only TTL expiry: the claim lapses, done stays unset."""
+
+        self._locked = False
+
+    def enqueue(
+        self,
+        url: str,
+        depth: int = 0,
+        parent_url: str | None = None,
+        priority: int | None = None,
+    ) -> bool:
+        from openlens.storage.frontier import normalize_frontier_url
+
+        norm = normalize_frontier_url(url)
+        if norm in self._known:
+            return False
+        self._known.add(norm)
+        self.enqueued.append((norm, depth, parent_url, priority))
+        return True
+
+
+def _queued_mirror(urls: list[tuple[str, int, int]]) -> SqliteFrontierStore:
+    """SQLite mirror preloaded with queued rows: (url, depth, priority)."""
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    mirror = SqliteFrontierStore(":memory:")
+    for url, depth, priority in urls:
+        assert mirror.enqueue(url, depth, None, priority) is True
+    return mirror
+
+
+def test_backfill_replays_mirror_queued_rows_once() -> None:
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    mirror = _queued_mirror(
+        [
+            ("https://example.com/a", 0, 5),
+            ("https://example.com/b", 2, 3),
+            ("https://example.com/c", 1, 0),
+        ]
+    )
+    try:
+        hot = _StubHotStore()
+        flusher = FrontierMirrorFlusher(hot, mirror, 5.0)
+        assert flusher.backfill_once() == 3
+        by_url = {url: (depth, prio) for url, depth, _, prio in hot.enqueued}
+        assert by_url["https://example.com/a"] == (0, 5)
+        assert by_url["https://example.com/b"] == (2, 3)
+        assert by_url["https://example.com/c"] == (1, 0)
+        # Sealed: a second boot is a no-op.
+        assert flusher.backfill_once() == 0
+        assert len(hot.enqueued) == 3
+    finally:
+        mirror.close()
+
+
+def test_backfill_loser_skips_when_lock_held() -> None:
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    mirror = _queued_mirror([("https://example.com/a", 0, 1)])
+    try:
+        hot = _StubHotStore()
+        assert hot.try_claim_backfill() is True  # another worker owns it
+        flusher = FrontierMirrorFlusher(hot, mirror, 5.0)
+        assert flusher.backfill_once() == 0
+        assert hot.enqueued == []
+    finally:
+        mirror.close()
+
+
+def test_backfill_cap_leaves_remainder_unsealed() -> None:
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    mirror = _queued_mirror([(f"https://example.com/{i}", 0, 0) for i in range(5)])
+    try:
+        hot = _StubHotStore()
+        flusher = FrontierMirrorFlusher(hot, mirror, 5.0)
+        assert flusher.backfill_once(batch_size=100, max_urls=2) == 2
+        assert hot.backfill_done() is False
+        # Lock expiry lets a later boot resume the remainder.
+        hot.release_backfill_lock()
+        assert flusher.backfill_once(batch_size=100, max_urls=100) == 5
+        assert hot.backfill_done() is True
+        assert len({url for url, _, _, _ in hot.enqueued}) == 5
+    finally:
+        mirror.close()
+
+
+def test_backfill_noop_without_source_seam() -> None:
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    mirror = _queued_mirror([("https://example.com/a", 0, 0)])
+    try:
+        flusher = FrontierMirrorFlusher(object(), mirror, 5.0)
+        assert flusher.backfill_once() == 0
+    finally:
+        mirror.close()
+
+
+def test_backfill_never_raises_on_unreadable_mirror() -> None:
+    from openlens.storage.frontier_flush import FrontierMirrorFlusher
+
+    class _BrokenMirror:
+        def pending(self, limit: int = 500, offset: int = 0):  # type: ignore[no-untyped-def]
+            raise RuntimeError("mirror down")
+
+    hot = _StubHotStore()
+    flusher = FrontierMirrorFlusher(hot, _BrokenMirror(), 5.0)
+    assert flusher.backfill_once() == 0
+    assert hot.enqueued == []

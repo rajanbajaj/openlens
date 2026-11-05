@@ -22,7 +22,11 @@ import threading
 import time
 from typing import Any, Mapping
 
-from openlens.storage.frontier import CrawlCheckpoint, FrontierStore
+from openlens.storage.frontier import (
+    CrawlCheckpoint,
+    FrontierStore,
+    normalize_frontier_url,
+)
 
 #: Prometheus-style gauge name for mirror staleness: seconds since the
 #: last successful flush (``now - last_ok``; ``inf`` before the first
@@ -188,6 +192,105 @@ class FrontierMirrorFlusher:
             raise
         self._note_ok()
         return applied
+
+    def backfill_once(self, batch_size: int = 1000, max_urls: int = 500000) -> int:
+        """Replay mirror ``queued`` rows into the hot store (cutover once).
+
+        Runs at worker boot when the Redis backend is fresh: the mirror
+        holds the pre-cutover backlog but the hot ready queue is empty,
+        so without this the fleet idles while the dashboard shows a
+        frozen queue. First claimant via ``SET NX`` wins; losers return
+        0. Skips entirely when a backfill already completed. Mirror
+        ``active`` rows come along too — their pre-cutover owners are
+        gone, so replaying them as queued is recovery, not duplication.
+        Attempts reset to the fresh-enqueue budget (at-least-once may
+        refetch); priorities, depths, and parents carry over. A capped
+        pass does not seal the migration, so a later boot resumes the
+        remainder. Never raises: returns 0 when there is nothing to do
+        or the mirror is unreadable, so boot always proceeds.
+        """
+        source, mirror = self._source, self._mirror
+        for probe in ("backfill_done", "try_claim_backfill", "enqueue"):
+            if not callable(getattr(source, probe, None)):
+                return 0
+        try:
+            if bool(source.backfill_done()):
+                return 0
+        except Exception:
+            return 0
+        try:
+            if not bool(source.try_claim_backfill()):
+                return 0
+        except Exception:
+            return 0
+        try:
+            batch = max(1, int(batch_size or 0))
+        except (TypeError, ValueError):
+            batch = 1000
+        try:
+            cap = max(0, int(max_urls or 0))
+        except (TypeError, ValueError):
+            cap = 0
+        moved = 0
+        capped = False
+        seen: set[str] = set()
+        try:
+            # Always page from offset 0: replayed rows stay queued in the
+            # mirror until terminal flushes move them, so the local seen
+            # set (not the offset) is what guarantees termination.
+            while True:
+                rows = mirror.pending(limit=batch)
+                if not rows:
+                    break
+                progressed = False
+                for entry in rows:
+                    url = str(getattr(entry, "url", "") or "")
+                    if not url.strip():
+                        continue
+                    try:
+                        norm = normalize_frontier_url(url)
+                    except (AttributeError, ValueError):
+                        continue
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    try:
+                        depth = int(getattr(entry, "depth", 0) or 0)
+                    except (TypeError, ValueError):
+                        depth = 0
+                    try:
+                        prio = getattr(entry, "priority", 0)
+                        priority = int(prio) if prio is not None else None
+                    except (TypeError, ValueError):
+                        priority = None
+                    parent = getattr(entry, "parent_url", None)
+                    try:
+                        source.enqueue(
+                            url,
+                            depth,
+                            parent_url=parent if isinstance(parent, str) else None,
+                            priority=priority,
+                        )
+                    except Exception:  # noqa: S112 - one junk URL skips silently
+                        continue
+                    moved += 1
+                    progressed = True
+                    if 0 < cap <= moved:
+                        capped = True
+                        break
+                if capped:
+                    break
+                if not progressed:
+                    break
+            # A capped pass leaves a remainder behind: only seal the
+            # migration when the mirror drained, so a later boot (after
+            # the claim lock expires) resumes where this one stopped.
+            if not capped:
+                with contextlib.suppress(Exception):
+                    source.mark_backfill_done()
+        except Exception:
+            return moved
+        return moved
 
     def run_forever(
         self,

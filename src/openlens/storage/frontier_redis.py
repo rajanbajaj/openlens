@@ -2032,6 +2032,38 @@ class RedisFrontierStore(FrontierStore):
             for record in reversed(list(records)):
                 self._pending.appendleft(record)
 
+    def backfill_done(self) -> bool:
+        """Whether a mirror→Redis cutover backfill already completed."""
+        with self._lock, contextlib.suppress(Exception):
+            return str(self._client.get(self._k("backfill", "done"))) == "1"
+        return False
+
+    def try_claim_backfill(self, ttl_s: float = 600.0) -> bool:
+        """Claim the one-time cutover backfill (first claimant wins).
+
+        ``SET NX`` with a TTL so a crashed claimant's lock expires and
+        a later boot retries; the replay itself is idempotent.
+        """
+        try:
+            ttl = max(1, int(ttl_s or 0))
+        except (TypeError, ValueError):
+            ttl = 600
+        with self._lock, contextlib.suppress(Exception):
+            return bool(
+                self._client.set(self._k("backfill", "lock"), "1", nx=True, ex=ttl)
+            )
+        return False
+
+    def mark_backfill_done(self, ttl_s: float = 30.0 * 86400.0) -> None:
+        """Record backfill completion and release the claim lock."""
+        try:
+            ttl = max(1, int(ttl_s or 0))
+        except (TypeError, ValueError):
+            ttl = 30 * 86400
+        with self._lock, contextlib.suppress(Exception):
+            self._client.set(self._k("backfill", "done"), "1", ex=ttl)
+            self._client.delete(self._k("backfill", "lock"))
+
     def snapshot_stats(self) -> dict[str, int]:
         """Current ``{prefix}:stats:*`` event counters (flusher input)."""
         pipe = self._client.pipeline()

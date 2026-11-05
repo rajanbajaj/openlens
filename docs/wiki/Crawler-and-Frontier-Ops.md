@@ -52,6 +52,14 @@ evicted), while **every ops read stays on Postgres**:
 - Rollback: flip `frontier.backend` back to `postgres` (leases TTL
   out of Redis; Kafka redelivers in-flight URLs, and the Postgres
   seen-set dedupes them).
+- Cutover migration: at boot, the first worker replays the mirror's
+  queued rows into the fresh Redis ready queue
+  (`backfill_once`, one claimant via `SET NX`, sealed with a done
+  marker). Without it the fleet would idle on an empty hot store
+  while the dashboard shows a frozen queue. Attempts reset to the
+  fresh-enqueue budget; priorities, depths, and parents carry over.
+  Capped passes (`max_urls`) leave the migration unsealed so a
+  later boot resumes the remainder.
 
 ## Discovery and freshness
 
