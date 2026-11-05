@@ -9,8 +9,41 @@ afterEach(() => {
 
 const COUNTS = {
   days: 30,
+  total: 9,
+  by_name: { 'crawl.fetched': 2, 'crawl.failed': 1, 'crawl.skipped': 1, 'search.served': 5 },
+};
+
+const TOP_MODES = {
+  name: 'search.served',
+  prop: 'mode',
+  days: 30,
+  total: 5,
+  top: [
+    { value: 'default', count: 3 },
+    { value: 'news', count: 2 },
+  ],
+};
+
+const TOP_RESULT_COUNTS = {
+  name: 'search.served',
+  prop: 'result_count',
+  days: 30,
+  total: 5,
+  top: [
+    { value: '8', count: 3 },
+    { value: '0', count: 2 },
+  ],
+};
+
+const PREV_TOP_RESULT_COUNTS = {
+  name: 'search.served',
+  prop: 'result_count',
+  days: 30,
   total: 4,
-  by_name: { 'crawl.fetched': 2, 'crawl.failed': 1, 'crawl.skipped': 1 },
+  top: [
+    { value: '8', count: 3 },
+    { value: '0', count: 1 },
+  ],
 };
 
 const SERIES = {
@@ -37,8 +70,8 @@ const TOP_OUTCOME = {
 
 const PREV_COUNTS = {
   days: 30,
-  total: 2,
-  by_name: { 'crawl.fetched': 1, 'crawl.failed': 1, 'crawl.skipped': 0 },
+  total: 6,
+  by_name: { 'crawl.fetched': 1, 'crawl.failed': 1, 'crawl.skipped': 0, 'search.served': 4 },
 };
 
 const FAILED_SERIES = {
@@ -84,6 +117,13 @@ function stubBackend(): void {
       } else if (text.includes('/api/v1/admin/analytics/top')) {
         payload = TOP_OUTCOME;
         if (text.includes('prop=reason')) payload = TOP_REASON;
+        if (text.includes('name=search.served') && text.includes('prop=mode')) {
+          payload = TOP_MODES;
+        }
+        if (text.includes('name=search.served') && text.includes('prop=result_count')) {
+          payload = TOP_RESULT_COUNTS;
+          if (text.includes('start=')) payload = PREV_TOP_RESULT_COUNTS;
+        }
         if (text.includes('prop=domain') && text.includes('filter_value=failed')) {
           payload = {
             name: 'crawl.page',
@@ -352,6 +392,31 @@ describe('AnalyticsPanel', () => {
         .textContent?.match(/example\d+\.com/g);
       expect(items?.[0]).toBe('example0.com');
       expect(items?.[1]).toBe('example1.com');
+    });
+  });
+
+  it('renders search traffic: served KPI, no-result KPI, and by-mode list', async () => {
+    stubBackend();
+    render(<AnalyticsPanel adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('analytics-search-modes-list')).toHaveTextContent('default');
+    });
+    // 5 served now vs 4 prior => +25.0%.
+    expect(screen.getByTestId('analytics-kpi-searches')).toHaveTextContent('5');
+    expect(screen.getByTestId('analytics-kpi-searches')).toHaveTextContent('+25.0%');
+    // 2 no-result now vs 1 prior => +100.0%, flagged bad (up is bad).
+    expect(screen.getByTestId('analytics-kpi-noresults')).toHaveTextContent('2');
+    expect(screen.getByTestId('analytics-kpi-noresults')).toHaveTextContent('+100.0%');
+    expect(screen.getByTestId('analytics-search-modes-list')).toHaveTextContent('news');
+    fireEvent.change(screen.getByTestId('analytics-search-modes-sort'), {
+      target: { value: 'value-asc' },
+    });
+    await waitFor(() => {
+      const items = screen
+        .getByTestId('analytics-search-modes-list')
+        .textContent?.match(/default|news/g);
+      expect(items?.[0]).toBe('default');
+      expect(items?.[1]).toBe('news');
     });
   });
 });

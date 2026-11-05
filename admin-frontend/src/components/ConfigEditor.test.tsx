@@ -104,4 +104,28 @@ describe('ConfigEditor', () => {
     });
     expect(screen.getByTestId('config-editor-models-key-count')).toHaveTextContent('1 of 2 keys');
   });
+
+  it('shows document text through a transparent textarea (never a blank editor)', async () => {
+    stubGet(DOC);
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('config-editor-models-text')).not.toBeDisabled();
+    });
+    // The overlay mirror carries the visible glyphs: the textarea text
+    // itself is transparent, so an opaque textarea background would
+    // blank the whole document.
+    expect(screen.getByTestId('config-editor-models-text')).toHaveClass('bg-transparent');
+    expect(screen.getByTestId('config-editor-models-preview')).toHaveTextContent(
+      '"primary": "fake"',
+    );
+  });
+
+  it('renders the per-doc field guide', async () => {
+    stubGet(DOC);
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('config-guide-models')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('config-guide-models')).toHaveTextContent('enabled');
+  });
 });

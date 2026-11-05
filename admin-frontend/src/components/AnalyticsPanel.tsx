@@ -244,12 +244,13 @@ function ThroughputChart({ points }: { points: StackedPoint[] }) {
 
 /**
  * Enterprise crawl-health dashboard: KPI cards with prior-period
- * deltas, a stacked fetched/failed/skipped throughput chart, and
- * ranked breakdown lists — searchable by date range and domain, with
- * jump paging on the long domain lists. The window select covers
- * trailing presets; the From/To inputs replace it with an absolute
- * ``YYYY-MM-DD`` range. Reads degrade to notices on store trouble
- * (fail-open).
+ * deltas, a stacked fetched/failed/skipped throughput chart,
+ * ranked breakdown lists, and a search-traffic section (searches
+ * served, no-result share, searches by mode) — searchable by date
+ * range and domain, with jump paging on the long domain lists. The
+ * window select covers trailing presets; the From/To inputs replace
+ * it with an absolute ``YYYY-MM-DD`` range. Reads degrade to
+ * notices on store trouble (fail-open).
  *
  * Owns its query client (same pattern as ``FrontierDrawer``) so the
  * panel works wherever it is mounted.
@@ -279,6 +280,7 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   const [failingSort, setFailingSort] = useState<ListSort>('count-desc');
   const [reasonsSort, setReasonsSort] = useState<ListSort>('count-desc');
   const [outcomesSort, setOutcomesSort] = useState<ListSort>('count-desc');
+  const [modesSort, setModesSort] = useState<ListSort>('count-desc');
   const [throughputView, setThroughputView] = useState<'chart' | 'table'>('chart');
 
   const rangeActive = fromDate !== '' && toDate !== '';
@@ -420,6 +422,57 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
         end,
       ),
   });
+  const searchModesQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'search-modes', days, fromDate, toDate],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'search.served',
+        'mode',
+        days,
+        10,
+        adminToken,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        start,
+        end,
+      ),
+  });
+  const zeroResultQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'zero-result', days, fromDate, toDate],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'search.served',
+        'result_count',
+        days,
+        100,
+        adminToken,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        start,
+        end,
+      ),
+  });
+  const prevZeroResultQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'zero-result-prev', days, prevStart, prevEnd],
+    queryFn: () =>
+      fetchAnalyticsTop(
+        'search.served',
+        'result_count',
+        days,
+        100,
+        adminToken,
+        undefined,
+        undefined,
+        0,
+        undefined,
+        prevStart,
+        prevEnd,
+      ),
+  });
 
   const counts = countsQuery.data ?? null;
   const prevTotals = prevCountsQuery.data?.by_name ?? {};
@@ -470,6 +523,13 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
   const failingDomains = sortRows(readTopRows(failingDomainsQuery.data), failingSort);
   const failingReasons = sortRows(readTopRows(failingReasonsQuery.data), reasonsSort);
   const outcomes = sortRows(readTopRows(outcomesQuery.data), outcomesSort);
+  const searchModes = sortRows(readTopRows(searchModesQuery.data), modesSort);
+  const searchesServed = totals['search.served'] ?? 0;
+  const prevSearchesServed = prevTotals['search.served'] ?? 0;
+  const zeroResultCount =
+    readTopRows(zeroResultQuery.data).find((row) => row.value === '0')?.count ?? 0;
+  const prevZeroResultCount =
+    readTopRows(prevZeroResultQuery.data).find((row) => row.value === '0')?.count ?? 0;
   const anyLoading =
     countsQuery.isLoading ||
     prevCountsQuery.isLoading ||
@@ -479,7 +539,10 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
     crawlDomainsQuery.isLoading ||
     failingDomainsQuery.isLoading ||
     failingReasonsQuery.isLoading ||
-    outcomesQuery.isLoading;
+    outcomesQuery.isLoading ||
+    searchModesQuery.isLoading ||
+    zeroResultQuery.isLoading ||
+    prevZeroResultQuery.isLoading;
   // The generated client resolves HTTP failures to `null` (fail-open)
   // instead of throwing, so a settled query with no data failed.
   function queryFailed(query: { isError: boolean; isPending: boolean; data: unknown }): boolean {
@@ -804,6 +867,20 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             testId="analytics-kpi-feedback"
             loading={anyLoading}
           />
+          <KpiCard
+            label="Searches served"
+            value={searchesServed.toLocaleString()}
+            delta={periodDelta(searchesServed, prevSearchesServed, priorLabel)}
+            testId="analytics-kpi-searches"
+            loading={anyLoading}
+          />
+          <KpiCard
+            label="No-result searches"
+            value={zeroResultCount.toLocaleString()}
+            delta={periodDelta(zeroResultCount, prevZeroResultCount, priorLabel, true)}
+            testId="analytics-kpi-noresults"
+            loading={anyLoading}
+          />
         </div>
         <p className="mt-ol-xs text-ol-s text-ol-ink-soft">
           Deltas: pp = percentage points, % = percent change.
@@ -963,6 +1040,25 @@ function AnalyticsPanelView({ adminToken }: AnalyticsPanelProps) {
             )
           )}
           {renderDomainPager(outcomesPage, setOutcomesPage, outcomes, 'analytics-outcomes')}
+        </div>
+        <div className="bg-white border border-ol-line rounded-ol-m p-ol-m">
+          <h3 className="mb-ol-s text-ol-m" data-testid="analytics-search-modes">
+            Searches by mode {windowLabel}
+          </h3>
+          {queryFailed(searchModesQuery) ? (
+            <p className="my-ol-s">Search modes unavailable.</p>
+          ) : (
+            renderShareRows(
+              searchModes,
+              'bg-ol-accent',
+              'analytics-search-modes-list',
+              'analytics-search-modes-empty',
+              'No searches.',
+              modesSort,
+              setModesSort,
+              'analytics-search-modes-sort',
+            )
+          )}
         </div>
         <FeedbackCard
           adminToken={adminToken}

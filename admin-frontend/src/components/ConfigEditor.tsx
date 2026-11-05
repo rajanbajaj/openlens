@@ -4,6 +4,7 @@ import type { AdminConfigDoc, AdminConfigName } from '../api/types.ts';
 import { Badge } from './ui/Badge.tsx';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
+import { ConfigGuide } from './ConfigGuide.tsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.tsx';
 import { FieldError } from './ui/FieldError.tsx';
 import { SearchInput } from './ui/SearchInput.tsx';
@@ -195,6 +196,7 @@ export function ConfigEditor({
           <Skeleton bars={6} />
         </div>
       ) : null}
+      <ConfigGuide name={name} />
       <div className="my-ol-s">
         <SearchInput
           value={keyFilter}
@@ -252,7 +254,7 @@ export function ConfigEditor({
             readOnly={readOnly}
             aria-invalid={jsonError !== null}
             aria-describedby={jsonError ? `config-editor-${name}-json-error` : undefined}
-            className="relative w-full font-mono font-normal bg-white border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
+            className="relative w-full font-mono font-normal bg-transparent border border-ol-glass-border rounded-ol-m px-ol-s py-ol-m"
             style={{ color: 'transparent', caretColor: 'var(--ol-ink)' }}
           />
         </span>
