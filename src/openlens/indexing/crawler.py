@@ -2392,6 +2392,15 @@ class PoliteCrawler:
                     _notify(raw, "skipped", "content-type skipped")
                     continue
                 stats.fetched += 1
+                # Live-apply dashboard queue-cap edits: the worker sync
+                # mutates crawler.max_queued_urls mid-crawl, but both
+                # frontier bounds are fixed at construction — refresh per
+                # page so tuning bites without restarting the crawl.
+                # Same-module classes, so the private bound is in reach;
+                # failures keep the previous bound, never fail the page.
+                with contextlib.suppress(Exception):
+                    bound = max(1, int(self.max_queued_urls))
+                    frontier._maxsize = bound
                 doc = self._to_document(page)
                 with contextlib.suppress(Exception):
                     stats.words_indexed += len(doc.content.split())

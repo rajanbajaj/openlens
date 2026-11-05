@@ -1098,6 +1098,18 @@ class _MemoryPipeline:
         self._cmds.append(("incr", args, kwargs))
         return self
 
+    def zrem(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("zrem", args, kwargs))
+        return self
+
+    def srem(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("srem", args, kwargs))
+        return self
+
+    def delete(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("delete", args, kwargs))
+        return self
+
     def execute(self) -> list[object]:
         return [
             getattr(self._client, name)(*args, **kwargs)
@@ -1119,6 +1131,9 @@ class _MemoryRedis:
         self.strings: dict[str, int] = {}
         self.hashes: dict[str, dict[str, str]] = {}
         self.zsets: dict[str, dict[str, float]] = {}
+
+    def sscan_iter(self, key: str, count: int = 500) -> object:
+        return iter(list(self.sets.get(key, set())))
 
     def sadd(self, key: str, *members: str) -> int:
         values = self.sets.setdefault(key, set())
@@ -1173,6 +1188,33 @@ class _MemoryRedis:
     def zcard(self, key: str) -> int:
         return len(self.zsets.get(key, {}))
 
+    def zrem(self, key: str, *members: str) -> int:
+        zset = self.zsets.get(key, {})
+        removed = 0
+        for member in members:
+            if member in zset:
+                del zset[member]
+                removed += 1
+        return removed
+
+    def srem(self, key: str, *members: str) -> int:
+        values = self.sets.get(key, set())
+        removed = 0
+        for member in members:
+            if member in values:
+                values.discard(member)
+                removed += 1
+        return removed
+
+    def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            for store in (self.sets, self.strings, self.hashes, self.zsets):
+                if key in store:
+                    del store[key]
+                    removed += 1
+        return removed
+
     def pipeline(self) -> _MemoryPipeline:
         return _MemoryPipeline(self)
 
@@ -1204,6 +1246,38 @@ def test_pending_shows_drain_head_not_tail() -> None:
     head = store.pending(limit=5)
     assert len(head) == 5
     assert head[0].url.endswith("/urgent")
+
+
+def test_push_evicts_past_maxsize_on_redis_store() -> None:
+    """Discovery must not grow the Redis queue past max_queued_urls.
+
+    Regression (prod: 136k queued vs 100k cap): RedisFrontierStore had
+    no evict_oldest, so PersistentFrontier.push's best-effort eviction
+    silently no-opped and every discovered link stayed queued.
+    """
+    from openlens.indexing.crawler import PersistentFrontier
+
+    store = _memory_store()
+    frontier = PersistentFrontier(store, 3)
+    for i in range(5):
+        frontier.push(f"https://example.com/{i}")
+    assert store.queue_depth() == 3
+    assert frontier.evicted == 2
+    # Overflow sheds lowest-score first (lowest priority, then deepest,
+    # then newest): the first-discovered rows survive.
+    remaining = {entry.url for entry in store.pending(limit=10)}
+    assert remaining == {
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+    }
+    # Shed rows are skipped history, not requeueable ghosts.
+    assert store.status_of("https://example.com/3") == "skipped"
+    assert store.status_of("https://example.com/4") == "skipped"
+    assert store.counts().get("skipped", 0) == 2
+    # Rediscovery of a shed URL stays shed (seen-set still knows it).
+    assert store.enqueue("https://example.com/3") is False
+    assert store.queue_depth() == 3
 
 
 @needs_redis

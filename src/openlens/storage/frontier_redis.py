@@ -1673,6 +1673,54 @@ class RedisFrontierStore(FrontierStore):
                 raise self._fail("count frontier URLs", exc) from exc
             return int(ready) + int(active)
 
+    def evict_oldest(self, limit: int) -> int:
+        """Shed queued rows past ``limit`` (lowest-score-first eviction).
+
+        Same outcome contract as the SQL backends (exactly the overflow
+        leaves the queue, victims land ``skipped`` with
+        ``evicted: queue cap exceeded`` so rediscovery stays shed), but
+        the victim order differs by necessity: the SQL backends evict
+        globally-oldest by ``discovered_at``, while here victims are the
+        lowest-score members — lowest priority, then deepest, then
+        newest — i.e. the rows the crawler (``ZPOPMAX``) would pop last.
+        Reading every meta HASH to recover discovery order would turn
+        the per-push eviction check into a full-queue scan; the score
+        order needs one ``ZRANGE`` plus per-victim cleanup only.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise self._fail(
+                "evict queued frontier URLs",
+                ValueError(f"limit must be an integer, got {type(limit).__name__}"),
+            )
+        cap = max(0, limit)
+        with self._lock:
+            try:
+                total = int(self._client.zcard(self._ready) or 0)
+            except Exception as exc:
+                raise self._fail("evict queued frontier URLs", exc) from exc
+            overflow = total - cap
+            if overflow <= 0:
+                return 0
+            try:
+                members = self._client.zrange(self._ready, 0, overflow - 1)
+                victims = [str(m) for m in members]
+            except Exception as exc:
+                raise self._fail("evict queued frontier URLs", exc) from exc
+            evicted = 0
+            for norm in victims:
+                meta = self._read_meta(norm)
+                if not meta:
+                    self._drop_stale_member(norm)
+                    continue
+                self._finish(
+                    norm,
+                    meta,
+                    STATUS_SKIPPED,
+                    last_error="evicted: queue cap exceeded",
+                )
+                evicted += 1
+            return evicted
+
     # -- crawl requests -------------------------------------------------
     def submit_crawl_request(self, url: str) -> dict[str, Any]:
         if not isinstance(url, str) or not url.strip():
