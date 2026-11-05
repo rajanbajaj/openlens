@@ -26,6 +26,33 @@ stateDiagram-v2
     failed --> [*]: purge domain history
 ```
 
+## Redis hot path: staleness SLA (developers)
+
+With `frontier.backend=redis` (default stays `postgres`), crawlers
+claim/complete URLs against the `redis-frontier` compose service
+(leases/queues, AOF `everysec`, `noeviction` — leases must never be
+evicted), while **every ops read stays on Postgres**:
+
+- `/frontier/failed*`, `/frontier/queued/domains`, `/frontier/status`,
+  and auto-triage serve the Postgres **mirror**, never the hot path.
+  No route changes: the API read store is already the
+  `storage:`-keyed store.
+- A write-behind flusher (`FrontierMirrorFlusher`, one per worker)
+  drains buffered terminal transitions + discovery inserts to the
+  mirror every `frontier.redis.flush_interval_s` (default **5 s**),
+  plus a final drain on worker shutdown. **Staleness bound: every ops
+  read lags the hot path by at most `flush_interval_s`.**
+- Observe it with the `frontier_mirror_lag_seconds` gauge
+  (`now − last successful flush`); alert when it exceeds
+  `flush_interval_s`. A failed pass retries at-least-once, so the
+  gauge — not error logs — is the divergence signal.
+- Requeue/purge/skip mutations land on the mirror directly and
+  converge on the next flush cycle; terminal states replay in order
+  (enqueue first), so attempt counts match exactly.
+- Rollback: flip `frontier.backend` back to `postgres` (leases TTL
+  out of Redis; Kafka redelivers in-flight URLs, and the Postgres
+  seen-set dedupes them).
+
 ## Discovery and freshness
 
 - Sitemap/RSS discovery feeds per domain config, run on an

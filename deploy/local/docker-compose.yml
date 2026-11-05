@@ -34,6 +34,7 @@ services:
       OPENLENS_PG_REPLICA_HOST: ${OPENLENS_PG_REPLICA_HOST:-postgres-replica}
       OPENLENS_PG_REPLICA_PORT: ${OPENLENS_PG_REPLICA_PORT:-5432}
       OPENLENS_REDIS_URL: redis://redis:6379/0
+      OPENLENS_FRONTIER_REDIS_URL: redis://redis-frontier:6379/0
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
       OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092}
       OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
@@ -64,6 +65,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-frontier:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
@@ -166,6 +169,7 @@ services:
       OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092}
       OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_TOPIC:-crawl.urls}
       OPENLENS_KAFKA_GROUP_ID: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}
+      OPENLENS_FRONTIER_REDIS_URL: redis://redis-frontier:6379/0
       OPENLENS_CRAWL_ID: ${OPENLENS_CRAWL_ID:-default}
       OPENLENS_WORKER_ID: ${OPENLENS_WORKER_ID:-}
       OPENLENS_HEARTBEAT_INTERVAL_S: ${OPENLENS_HEARTBEAT_INTERVAL_S:-40}
@@ -180,6 +184,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-frontier:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
@@ -231,6 +237,7 @@ services:
       OPENLENS_REDIS_URL: redis://redis:6379/0
       OPENLENS_KAFKA_ENABLED: ${OPENLENS_KAFKA_ENABLED:-true}
       OPENLENS_KAFKA_BOOTSTRAP_SERVERS: ${OPENLENS_KAFKA_BOOTSTRAP_SERVERS:-kafka-1:19092}
+      OPENLENS_FRONTIER_REDIS_URL: redis://redis-frontier:6379/0
       OPENLENS_KAFKA_TOPIC: ${OPENLENS_KAFKA_BACKOFF_TOPIC:-crawl.backoff}
       OPENLENS_KAFKA_GROUP_ID: ${OPENLENS_KAFKA_GROUP_ID:-crawlers}-backoff
       OPENLENS_KAFKA_BACKOFF_TOPIC: ${OPENLENS_KAFKA_BACKOFF_TOPIC:-crawl.backoff}
@@ -252,6 +259,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-frontier:
         condition: service_healthy
       kafka-1:
         condition: service_healthy
@@ -493,6 +502,33 @@ services:
     networks:
       - openlens
 
+  # Frontier hot-path Redis (leases/queues for the shared-queue crawl
+  # path when `frontier.backend=redis`). Separate service on purpose:
+  # the cache `redis` above evicts (`allkeys-lru`) but frontier leases
+  # must never be evicted (`noeviction`), and the frontier needs its
+  # own DB index + AOF-everysec durability. Sized from the frontier
+  # queue row count x ~500 B/key; the write-behind flusher drains
+  # terminal transitions to Postgres every `flush_interval_s` (5 s
+  # default), so this holds only live queue/lease state, not history.
+  redis-frontier:
+    image: redis:7-alpine
+    mem_limit: 1G
+    cpus: 0.5
+    logging: *default-logging
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_FRONTIER_PORT:-6380}:6379"
+    volumes:
+      - redis-frontier-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - openlens
+
   # ClickHouse analytics database. Separate store on purpose: analytics
   # append volume must never contend with search reads or frontier writes
   # (the v0.4.33-v0.4.35 incident chain). Native TTL owns retention, so
@@ -592,6 +628,7 @@ volumes:
   replica-data:
   pgadmin-data:
   redis-data:
+  redis-frontier-data:
   clickhouse-data:
   kafka1-data:
   dozzle-data:

@@ -13,9 +13,11 @@ flowchart TB
     B --> PG[(Postgres primary :5432<br/>documents + frontier + settings)]
     B --> PGR[(Postgres replica :5433<br/>search reads)]
     B --> R[(Redis :6379<br/>result cache)]
+    B --> RF[(redis-frontier :6380<br/>frontier leases/queues)]
     B --> K[Kafka KRaft, single broker<br/>crawl.urls x24 + crawl.backoff + analytics.events]
     B --> CH[(ClickHouse :8123<br/>openlens_analytics)]
     W[Crawler fleet: 4 main + 3 backoff] <--> K
+    W <--> RF
     W --> PG
     W -->|heartbeats| B
     AW[Analytics workers x4] --> K
@@ -46,7 +48,10 @@ flowchart TB
 - Distributed crawling: Postgres frontier + Kafka topic with
   multi-worker consumer groups, heartbeat leases, per-domain
   politeness and page budgets; 4xx fails terminally, only 429/5xx
-  and timeouts retry (see below).
+  and timeouts retry (see below). `frontier.backend: redis` moves
+  the per-URL coordination hot path to redis-frontier (leases,
+  queues, heartbeats) with Postgres kept as a write-behind mirror
+  for ops reads; default stays Postgres.
 
 ## Install
 
@@ -262,7 +267,12 @@ rows. Per-domain politeness (`domain_politeness`) and worker liveness
 (`crawl_workers`) are shared rows in the same Postgres schema; on
 SQLite (offline/tests) coordination is process-local — multi-process
 crawls require Postgres. Identity resolves from `OPENLENS_WORKER_ID`
-or `{hostname}-{pid}-{rand}`.
+or `{hostname}-{pid}-{rand}`. With `frontier.backend: redis`, claims,
+leases, heartbeats, and the ready queue live in redis-frontier
+instead of per-URL Postgres round-trips; a write-behind flusher
+mirrors terminal states to Postgres every `flush_interval_s`
+(5s default), so ops reads lag the live crawl by at most that —
+see [Crawler-and-Frontier-Ops](docs/wiki/Crawler-and-Frontier-Ops.md).
 
 Kafka URL queue (distributed mode): with `kafka.enabled`, frontier
 seeds and discovered links flow through the `crawl.urls` topic

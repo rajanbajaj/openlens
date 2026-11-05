@@ -294,6 +294,17 @@ frontier:
   lease_ttl_s: "${OPENLENS_LEASE_TTL_S:-120}"
   heartbeat_interval_s: "${OPENLENS_HEARTBEAT_INTERVAL_S:-40}"
   reaper_interval_s: "${OPENLENS_REAPER_INTERVAL_S:-30}"
+  # Queue backend switch (`sqlite` | `postgres` | `redis`; anything else
+  # fails boot with ConfigError). Non-`redis` values fall through to the
+  # existing `storage:`-keyed store; `redis` builds RedisFrontierStore
+  # from `frontier.redis` (hot path) while ops reads stay on Postgres.
+  backend: ${OPENLENS_FRONTIER_BACKEND:-postgres}
+  redis:
+    url: ${OPENLENS_FRONTIER_REDIS_URL:-redis://localhost:6379/1}
+    key_prefix: ${OPENLENS_FRONTIER_REDIS_PREFIX:-fw}
+    flush_interval_s: ${OPENLENS_FRONTIER_FLUSH_S:-5}
+    lease_ttl_s: ${OPENLENS_FRONTIER_LEASE_TTL_S:-120}
+    heartbeat_interval_s: ${OPENLENS_HEARTBEAT_INTERVAL_S:-40}
 
 # Kafka-backed URL queue for distributed crawling (kafka plan).
 # `kafka.enabled` switches seed/URL distribution to the `crawl.urls`

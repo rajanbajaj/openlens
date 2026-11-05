@@ -16,6 +16,8 @@ flowchart TB
     B --> PG[(Postgres primary :5432<br/>documents + frontier + settings)]
     B --> PGR[(Postgres replica :5433<br/>search reads)]
     B --> R[(Redis :6379<br/>result cache)]
+    B --> RF[(redis-frontier :6380<br/>frontier leases/queues)]
+    W <--> RF
     B --> K[Kafka KRaft x3<br/>crawl.urls x12 + analytics.events]
     B --> CH[(ClickHouse :8123/:9000<br/>openlens_analytics)]
     W[Crawler workers xN] <--> K
@@ -89,6 +91,7 @@ flowchart LR
 | `postgres` | documents, frontier, checkpoints, settings | 5432 | `pgdata` |
 | `postgres-replica` | async search reads, primary fallback | 5433 | `replica-data` |
 | `redis` | SearchEngine result cache (120 s TTL) | 6379 | ephemeral |
+| `redis-frontier` | Frontier hot path (leases/queues, `noeviction`, AOF); ops reads stay on Postgres (mirror lag ≤ `flush_interval_s`) | 6380 | `redis-frontier-data` |
 | `kafka-1/2/3` | KRaft brokers, `crawl.urls` x12, `analytics.events` | 9092/9094/9095, internal 19092 | `kafka-data-*` |
 | `crawler` xN | drain + fetch + index + heartbeat | — | store-backed resume |
 | `analytics-worker` | topic-to-ClickHouse batch sink | — | offsets in Kafka |

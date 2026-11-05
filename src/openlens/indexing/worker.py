@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from openlens.core.interfaces import ProviderError
+from openlens.storage.frontier_flush import stop_and_flush_mirror
 from openlens.storage.frontier import (
     DEFAULT_CRAWL_ID,
     DEFAULT_HEARTBEAT_INTERVAL_S,
@@ -465,6 +466,10 @@ class CrawlerWorker:
     cumulative_pages: int = 0
     cumulative_tokens: int = 0
     cumulative_errors: int = 0
+    #: Write-behind mirror flusher (Redis backend only; None otherwise).
+    #: Started by :func:`_build_worker`, stopped + drained on shutdown so
+    #: the Postgres mirror converges even when the loop exits uncleanly.
+    mirror_flusher: Any = None
 
     def __post_init__(self) -> None:
         if not self.worker_id:
@@ -919,7 +924,7 @@ def _build_worker(
 ) -> tuple[CrawlerWorker, Any, Any, dict[str, Any]]:
     """Shared construction for the standalone and Kafka worker loops."""
     from openlens.indexing.crawler import PoliteCrawler
-    from openlens.storage.frontier import open_frontier_store
+    from openlens.storage.frontier_redis import open_frontier_store_for_crawl
     from openlens.storage.repository import DocumentRepository
 
     indexing_config = app_config.get("indexing", {})
@@ -954,7 +959,8 @@ def _build_worker(
                                     os.makedirs(parent, exist_ok=True)
                         repository = DocumentRepository(candidate)
                         break
-    frontier_store = open_frontier_store(app_config)
+    frontier_store = open_frontier_store_for_crawl(app_config)
+    mirror_flusher = _maybe_start_mirror_flusher(app_config, frontier_store)
     crawler = crawler_factory() if crawler_factory is not None else PoliteCrawler()
     if crawler_factory is None:
         crawler.configure(dict(indexing_config))
@@ -966,8 +972,31 @@ def _build_worker(
         crawl_id=crawl_id,
         indexing_config=dict(indexing_config),
         chunk_size=chunk_size,
+        mirror_flusher=mirror_flusher,
     )
     return worker, repository, frontier_store, dict(indexing_config)
+
+
+def _maybe_start_mirror_flusher(
+    app_config: dict[str, Any], frontier_store: Any
+) -> Any | None:
+    """Start the write-behind mirror flusher for Redis-backed crawls.
+
+    Returns None (shipped behavior unchanged) unless the crawl path runs
+    on ``RedisFrontierStore``. Fail-loud like the hot-path store itself:
+    an explicit Redis deployment with no reachable mirror is
+    misconfigured, so boot raises instead of silently diverging.
+    """
+    from openlens.storage.frontier_flush import open_mirror_flusher
+    from openlens.storage.frontier_redis import RedisFrontierStore
+
+    if not isinstance(frontier_store, RedisFrontierStore):
+        return None
+    flusher = open_mirror_flusher(app_config, source=frontier_store)
+    if flusher is None:
+        return None
+    flusher.start()
+    return flusher
 
 
 def run_standalone_worker(
@@ -996,6 +1025,8 @@ def run_standalone_worker(
     try:
         return worker.run(list(seed_urls))
     finally:
+        with contextlib.suppress(Exception):
+            stop_and_flush_mirror(getattr(worker, "mirror_flusher", None))
         with contextlib.suppress(Exception):
             frontier_store.close()
         with contextlib.suppress(Exception):
@@ -1483,6 +1514,8 @@ def run_kafka_worker(
             if extra is not None and extra is not kafka:
                 with contextlib.suppress(Exception):
                     extra.close()
+        with contextlib.suppress(Exception):
+            stop_and_flush_mirror(getattr(worker, "mirror_flusher", None))
         with contextlib.suppress(Exception):
             frontier_store.close()
         with contextlib.suppress(Exception):
