@@ -807,6 +807,15 @@ class FrontierEnqueueSeedsResponse(BaseModel):
     """POST /api/v1/frontier/seeds response: seeds accepted to the queue."""
 
     enqueued: int
+    skipped_over_cap: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Genuinely new seeds refused because the queue already sits at "
+            "max_queued_urls. Re-pastes of known URLs still count as "
+            "enqueued; only growth past the cap is reported here."
+        ),
+    )
 
 
 class FrontierUrlInspectorFrontierSchema(BaseModel):

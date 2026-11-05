@@ -2481,6 +2481,37 @@ def _store_row_terminal(store: Any, url: str) -> bool:
     return status is not None and status not in ("queued", "active")
 
 
+def _effective_max_queued_urls(app_config: Any) -> int | None:
+    """Queue-growth cap for seed intake; None means uncapable (fail-open).
+
+    Stored dashboard settings win, then the in-memory snapshot (config
+    seeded, which carries the schema default in practice). Anything
+    unreadable, missing, or invalid disables the cap instead of blocking
+    intake: a corrupt settings row must never wedge seeding. Mirrors
+    the worker's live-limit semantics
+    (:func:`worker._live_crawl_limits`), which likewise ignore invalid
+    values instead of zeroing out the crawl.
+    """
+    raw: Any = None
+    try:
+        stored = _store_get_settings(app_config)
+        if isinstance(stored, dict):
+            raw = stored.get("max_queued_urls")
+    except Exception:
+        raw = None
+    if raw is None:
+        try:
+            snap = frontier_state.snapshot()
+            settings = snap.get("settings")
+            if isinstance(settings, dict):
+                raw = settings.get("max_queued_urls")
+        except Exception:
+            raw = None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return None
+    return raw
+
+
 def _store_get_settings(app_config: Any) -> dict[str, Any]:
     """Best-effort read of the persistent frontier settings row."""
     try:
@@ -2780,6 +2811,42 @@ def frontier_enqueue_seeds(
     seeds = [seed.strip() for seed in body.seeds if seed.strip()]
     app_config = getattr(request.app.state, "config", None)
     depth = body.depth if body.depth is not None else 0
+    # Honor the dashboard's max_queued_urls: genuinely new seeds past
+    # the cap are refused up front (Kafka publish included), before a
+    # single row is written. Re-pastes of known URLs never grow the
+    # queue, so they bypass the cap and keep their idempotent 200. Any
+    # settings/store read failure disables the cap (fail-open) rather
+    # than wedging intake. Depth is a best-effort snapshot — crawlers
+    # draining mid-paste can only make room, never overflow.
+    skipped_over_cap = 0
+    cap = _effective_max_queued_urls(app_config)
+    if seeds and cap is not None:
+        try:
+            depth_store = _frontier_read_store(request)
+            if depth_store is not None:
+                known = getattr(depth_store, "is_known", None)
+                try:
+                    current_depth = int(depth_store.queue_depth() or 0)
+                except Exception:
+                    current_depth = None
+                if current_depth is not None and callable(known):
+                    room = max(0, cap - max(0, current_depth))
+                    attempt: list[str] = []
+                    admitted: set[str] = set()
+                    for s in seeds:
+                        if known(s):
+                            attempt.append(s)  # idempotent re-paste: no growth
+                        elif s in admitted:
+                            attempt.append(s)  # paste-internal dup: no growth
+                        elif len(admitted) < room:
+                            admitted.add(s)
+                            attempt.append(s)
+                        else:
+                            skipped_over_cap += 1
+                    seeds = attempt
+        except Exception as exc:
+            logger.warning("frontier seeds: cap check failed, uncapped: %s", exc)
+            skipped_over_cap = 0
     # Durably accepted count, not input count: `_publish_seeds` reports
     # what Kafka/the store fallback took, and the insert below covers a
     # seed the consumer has not claimed yet (or a Kafka outage the
@@ -2820,7 +2887,7 @@ def frontier_enqueue_seeds(
         except Exception as exc:
             logger.warning("frontier seeds: store reseed failed: %s", exc)
         accepted = min(len(seeds), accepted + len(settled))
-        if accepted == 0:
+        if accepted == 0 and skipped_over_cap == 0:
             return JSONResponse(
                 status_code=503,
                 content=error_body(
@@ -2829,7 +2896,9 @@ def frontier_enqueue_seeds(
                     "both refused the seeds; check backend logs and retry",
                 ),
             )
-    return FrontierEnqueueSeedsResponse(enqueued=accepted)
+    return FrontierEnqueueSeedsResponse(
+        enqueued=accepted, skipped_over_cap=skipped_over_cap
+    )
 
 
 @router.get("/frontier/url-info", response_model=FrontierUrlInfoSchema)

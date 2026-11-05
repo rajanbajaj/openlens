@@ -832,7 +832,7 @@ def test_enqueue_seeds_accepts_without_touching_phase(
         json={"seeds": ["https://example.com/a", "  "], "priority": 3},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"enqueued": 1}
+    assert resp.json() == {"enqueued": 1, "skipped_over_cap": 0}
     # The count is real: the row lands queued with the given priority.
     probe = SqliteFrontierStore(db_path)
     try:
@@ -859,14 +859,54 @@ def test_enqueue_seeds_repeat_paste_counts_known_url(
         "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
     )
     assert first.status_code == 200
-    assert first.json() == {"enqueued": 1}
+    assert first.json() == {"enqueued": 1, "skipped_over_cap": 0}
     # A re-paste of an already-queued seed stays a 200: the queue is
     # healthy, there is just nothing new to do.
     second = client.post(
         "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
     )
     assert second.status_code == 200
-    assert second.json() == {"enqueued": 1}
+    assert second.json() == {"enqueued": 1, "skipped_over_cap": 0}
+
+
+def test_enqueue_seeds_honors_max_queued_urls(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Pastes larger than the dashboard cap queue only up to the cap.
+
+    Regression: ``POST /frontier/seeds`` ignored ``max_queued_urls`` and
+    queued every pasted seed, so the setting only ever bit later as
+    crawl-time eviction.
+    """
+    _file_store(monkeypatch, tmp_path)
+    settings = client.get("/api/v1/frontier/settings").json()["settings"]
+    settings["max_queued_urls"] = 2
+    put = client.put("/api/v1/frontier/settings", json=settings)
+    assert put.status_code == 200
+    first = client.post(
+        "/api/v1/frontier/seeds",
+        json={
+            "seeds": [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.com/c",
+            ]
+        },
+    )
+    assert first.status_code == 200
+    assert first.json() == {"enqueued": 2, "skipped_over_cap": 1}
+    # At the cap, a fresh seed is refused (200, nothing new) — not queued.
+    second = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/d"]}
+    )
+    assert second.status_code == 200
+    assert second.json() == {"enqueued": 0, "skipped_over_cap": 1}
+    # Re-pasting a known URL stays idempotent without growing the queue.
+    third = client.post(
+        "/api/v1/frontier/seeds", json={"seeds": ["https://example.com/a"]}
+    )
+    assert third.status_code == 200
+    assert third.json() == {"enqueued": 1, "skipped_over_cap": 0}
 
 
 def test_enqueue_seeds_503_when_nothing_accepted(
@@ -971,7 +1011,7 @@ def test_enqueue_seeds_validates_priority(client: TestClient) -> None:
     assert resp.status_code == 422
     empty = client.post("/api/v1/frontier/seeds", json={"seeds": []})
     assert empty.status_code == 200
-    assert empty.json() == {"enqueued": 0}
+    assert empty.json() == {"enqueued": 0, "skipped_over_cap": 0}
 
 
 def test_resume_with_seeds_replaces_queue(client: TestClient) -> None:
@@ -1350,7 +1390,7 @@ def test_enqueue_seeds_stores_depth(
         json={"seeds": ["https://example.com/a"], "depth": 2},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"enqueued": 1}
+    assert resp.json() == {"enqueued": 1, "skipped_over_cap": 0}
     probe = SqliteFrontierStore(db_path)
     try:
         rows = {

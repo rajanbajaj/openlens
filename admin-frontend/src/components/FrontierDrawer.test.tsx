@@ -247,6 +247,32 @@ describe('FrontierDrawer live stats and submission feedback', () => {
     expect(resumeCalls).toBe(0);
   });
 
+  it('shows how many seeds the queue cap skipped', async () => {
+    MockSocket.instances = [];
+    stubFetch((url: string) => {
+      if (url.includes('/api/v1/frontier/seeds')) {
+        return { enqueued: 1, skipped_over_cap: 2 };
+      }
+      if (url.includes('/api/v1/frontier/settings')) return { settings: SETTINGS };
+      if (url.includes('/api/v1/frontier/workers')) return { workers: [], worker_count: 0 };
+      return STATUS;
+    });
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('frontier-seeds-submit')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('frontier-seeds'), {
+      target: { value: 'https://example.com/a\nhttps://example.com/b\nhttps://example.com/c\n' },
+    });
+    fireEvent.click(screen.getByTestId('frontier-seeds-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent(
+        'Enqueued 1 seed(s) — crawlers pick them up without interruption. 2 skipped: queue is at the Max queued URLs cap.',
+      );
+    });
+  });
+
   it('submits seeds with priority and depth', async () => {
     MockSocket.instances = [];
     let seedsBody: unknown = null;

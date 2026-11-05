@@ -1030,7 +1030,7 @@
           "search"
         ],
         "summary": "Frontier Failed Domains Auto Triage",
-        "description": "Automatically disposition every failed host by its top reason.\n\nAdmin-only. One pass over the full failed-domains rollup:\n\n- robots-disallowed, content-type-skipped, http 404/401 \u2192\n  ``skip+purge`` (queued rows skipped + skip-listed, history purged).\n- http 429 \u2192 ``requeue+wait`` (rows revived with a per-host\n  politeness wait scaled by failure volume, capped at 30 min).\n- fetch timeout \u2192 ``requeue+backoff`` (rows revived with a smaller\n  backoff wait plus a priority sink so they retry later, not first).\n- thin content \u2192 ``skip+block+purge`` (also merged into\n  ``deny_domains`` \u2014 the host earns nothing by refetching).\n- anything else (including the ``(invalid)`` host bucket) stays\n  ``unhandled`` and is reported, never mutated.\n\n``dry_run`` classifies without mutating (``affected`` stays 0, but\n``wait_s`` still shows the planned wait). ``affected`` counts queue\nrows moved or deleted; the accompanying skip-list/block-list policy\nupdates are implied by the action name.",
+        "description": "Automatically disposition every failed host by its top reason.\n\nAdmin-only. One pass over the full failed-domains rollup:\n\n- robots-disallowed, content-type-skipped, http 404/401 \u2192\n  ``skip+purge`` (queued rows skipped + skip-listed, history purged).\n- http 429 \u2192 ``requeue+wait`` (rows revived with a per-host\n  politeness wait scaled by failure volume, capped at 30 min, plus a\n  persistent ``rate_limit_s`` in ``domain_policies`` so future crawls\n  stay spaced out).\n- fetch timeout \u2192 ``requeue+backoff`` (rows revived with a smaller\n  backoff wait plus a priority sink so they retry later, not first,\n  plus the same persistent ``rate_limit_s`` tuning).\n- thin content \u2192 ``skip+block+purge`` (also merged into\n  ``deny_domains`` \u2014 the host earns nothing by refetching).\n- anything else (including the ``(invalid)`` host bucket) stays\n  ``unhandled`` and is reported, never mutated.\n\n``dry_run`` classifies without mutating (``affected`` stays 0, but\n``wait_s`` still shows the planned wait). ``affected`` counts queue\nrows moved or deleted; the accompanying skip-list/block-list policy\nupdates are implied by the action name.",
         "operationId": "frontier_failed_domains_auto_triage_api_v1_frontier_failed_domains_auto_triage_post",
         "requestBody": {
           "content": {
@@ -2924,6 +2924,13 @@
           "enqueued": {
             "type": "integer",
             "title": "Enqueued"
+          },
+          "skipped_over_cap": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Skipped Over Cap",
+            "description": "Genuinely new seeds refused because the queue already sits at max_queued_urls. Re-pastes of known URLs still count as enqueued; only growth past the cap is reported here.",
+            "default": 0
           }
         },
         "type": "object",
@@ -3198,6 +3205,17 @@
               }
             ],
             "title": "Priority"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
           }
         },
         "additionalProperties": false,

@@ -10,4 +10,9 @@
  */
 export interface FrontierEnqueueSeedsResponse {
   enqueued: number;
+  /**
+   * Genuinely new seeds refused because the queue already sits at max_queued_urls. Re-pastes of known URLs still count as enqueued; only growth past the cap is reported here.
+   * @minimum 0
+   */
+  skipped_over_cap?: number;
 }

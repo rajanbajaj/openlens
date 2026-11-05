@@ -111,6 +111,8 @@ export interface FrontierStatus {
 /** POST /api/v1/frontier/seeds response body. */
 export interface FrontierEnqueueSeedsResponse {
   enqueued: number;
+  /** New seeds refused because the queue sits at max_queued_urls. */
+  skipped_over_cap?: number;
 }
 
 /** Queue row inside GET /api/v1/frontier/url-info (null when never seen). */

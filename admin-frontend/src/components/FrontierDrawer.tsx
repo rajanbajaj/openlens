@@ -325,8 +325,10 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
         return;
       }
       const accepted = await enqueueSeeds(list, fetch, adminToken, parsed, parsedDepth);
+      const skipped = accepted.skipped_over_cap ?? 0;
       pushToast(
-        `Enqueued ${accepted.enqueued} seed(s) — crawlers pick them up without interruption.`,
+        `Enqueued ${accepted.enqueued} seed(s) — crawlers pick them up without interruption.` +
+          (skipped > 0 ? ` ${skipped} skipped: queue is at the Max queued URLs cap.` : ''),
         'success',
       );
       setSeeds('');

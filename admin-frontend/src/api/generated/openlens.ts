@@ -1268,9 +1268,12 @@ export const getFrontierFailedDomainsAutoTriageApiV1FrontierFailedDomainsAutoTri
  * - robots-disallowed, content-type-skipped, http 404/401 →
  *   ``skip+purge`` (queued rows skipped + skip-listed, history purged).
  * - http 429 → ``requeue+wait`` (rows revived with a per-host
- *   politeness wait scaled by failure volume, capped at 30 min).
+ *   politeness wait scaled by failure volume, capped at 30 min, plus a
+ *   persistent ``rate_limit_s`` in ``domain_policies`` so future crawls
+ *   stay spaced out).
  * - fetch timeout → ``requeue+backoff`` (rows revived with a smaller
- *   backoff wait plus a priority sink so they retry later, not first).
+ *   backoff wait plus a priority sink so they retry later, not first,
+ *   plus the same persistent ``rate_limit_s`` tuning).
  * - thin content → ``skip+block+purge`` (also merged into
  *   ``deny_domains`` — the host earns nothing by refetching).
  * - anything else (including the ``(invalid)`` host bucket) stays

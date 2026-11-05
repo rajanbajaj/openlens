@@ -214,7 +214,7 @@
           "search"
         ],
         "summary": "Admin Analytics Counts",
-        "description": "Admin-only durable analytics counts (same gate as config mutations).\n\nReads the separate analytics database over the trailing ``days``\nwindow. Fail-closed auth, fail-open store: an unreachable analytics\ndatabase reports 503 instead of breaking the admin screen.",
+        "description": "Admin-only durable analytics counts (same gate as config mutations).\n\nReads the separate analytics database over the trailing ``days``\nwindow, or over the absolute ``start``..``end`` range (``YYYY-MM-DD``,\nboth required together) when given. Fail-closed auth, fail-open\nstore: an unreachable analytics database reports 503 instead of\nbreaking the admin screen.",
         "operationId": "admin_analytics_counts_api_v1_admin_analytics_counts_get",
         "parameters": [
           {
@@ -225,6 +225,40 @@
               "type": "integer",
               "default": 30,
               "title": "Days"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
             }
           }
         ],
@@ -258,7 +292,7 @@
           "search"
         ],
         "summary": "Admin Analytics Top",
-        "description": "Admin-only top-values breakdown for one analytics event prop.\n\nSame gate as the counts endpoint; fail-open store (503 when\nunreachable). ``name`` must be a known event and ``prop`` (plus the\noptional ``filter_prop``) a plain identifier; ``filter_value`` is\ncharset-restricted (fail-closed, 422 otherwise) so no user input\nreaches the aggregation query raw. The optional\n``filter_prop=filter_value`` clause restricts rows first \u2014 e.g.\ntop domains among failed pages only.",
+        "description": "Admin-only top-values breakdown for one analytics event prop.\n\nSame gate as the counts endpoint; fail-open store (503 when\nunreachable). ``name`` must be a known event and ``prop`` (plus the\noptional ``filter_prop``) a plain identifier; ``filter_value`` is\ncharset-restricted (fail-closed, 422 otherwise) so no user input\nreaches the aggregation query raw. The optional\n``filter_prop=filter_value`` clause restricts rows first \u2014 e.g.\ntop domains among failed pages only. ``offset`` pages through the\nranking, ``match`` keeps only values containing the substring, and\n``start``/``end`` (``YYYY-MM-DD``, both required together) select\nan absolute range instead of the trailing ``days`` window.",
         "operationId": "admin_analytics_top_api_v1_admin_analytics_top_get",
         "parameters": [
           {
@@ -335,6 +369,67 @@
               ],
               "title": "Filter Value"
             }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "match",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Match"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
           }
         ],
         "responses": {
@@ -367,7 +462,7 @@
           "search"
         ],
         "summary": "Admin Analytics Series",
-        "description": "Admin-only per-bucket event counts (throughput) over a window.\n\nSame gate and fail-open store as the counts endpoint. ``bucket`` is\n``hour`` or ``day``; points come back oldest-first.",
+        "description": "Admin-only per-bucket event counts (throughput) over a window.\n\nSame gate and fail-open store as the counts endpoint. ``bucket`` is\n``hour`` or ``day``; points come back oldest-first. ``start``/``end``\n(``YYYY-MM-DD``, both required together) select an absolute range\ninstead of the trailing ``days`` window. The optional\n``filter_prop=filter_value`` clause restricts rows first, so stacked\nthroughput charts can split one event by outcome.",
         "operationId": "admin_analytics_series_api_v1_admin_analytics_series_get",
         "parameters": [
           {
@@ -399,6 +494,74 @@
               "type": "integer",
               "default": 30,
               "title": "Days"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "name": "filter_prop",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Prop"
+            }
+          },
+          {
+            "name": "filter_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 256
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filter Value"
             }
           }
         ],
@@ -867,7 +1030,7 @@
           "search"
         ],
         "summary": "Frontier Failed Domains Auto Triage",
-        "description": "Automatically disposition every failed host by its top reason.\n\nAdmin-only. One pass over the full failed-domains rollup:\n\n- robots-disallowed, content-type-skipped, http 404/401 \u2192\n  ``skip+purge`` (queued rows skipped + skip-listed, history purged).\n- http 429 \u2192 ``requeue+wait`` (rows revived with a per-host\n  politeness wait scaled by failure volume, capped at 30 min).\n- fetch timeout \u2192 ``requeue+backoff`` (rows revived with a smaller\n  backoff wait plus a priority sink so they retry later, not first).\n- thin content \u2192 ``skip+block+purge`` (also merged into\n  ``deny_domains`` \u2014 the host earns nothing by refetching).\n- anything else (including the ``(invalid)`` host bucket) stays\n  ``unhandled`` and is reported, never mutated.\n\n``dry_run`` classifies without mutating (``affected`` stays 0, but\n``wait_s`` still shows the planned wait). ``affected`` counts queue\nrows moved or deleted; the accompanying skip-list/block-list policy\nupdates are implied by the action name.",
+        "description": "Automatically disposition every failed host by its top reason.\n\nAdmin-only. One pass over the full failed-domains rollup:\n\n- robots-disallowed, content-type-skipped, http 404/401 \u2192\n  ``skip+purge`` (queued rows skipped + skip-listed, history purged).\n- http 429 \u2192 ``requeue+wait`` (rows revived with a per-host\n  politeness wait scaled by failure volume, capped at 30 min, plus a\n  persistent ``rate_limit_s`` in ``domain_policies`` so future crawls\n  stay spaced out).\n- fetch timeout \u2192 ``requeue+backoff`` (rows revived with a smaller\n  backoff wait plus a priority sink so they retry later, not first,\n  plus the same persistent ``rate_limit_s`` tuning).\n- thin content \u2192 ``skip+block+purge`` (also merged into\n  ``deny_domains`` \u2014 the host earns nothing by refetching).\n- anything else (including the ``(invalid)`` host bucket) stays\n  ``unhandled`` and is reported, never mutated.\n\n``dry_run`` classifies without mutating (``affected`` stays 0, but\n``wait_s`` still shows the planned wait). ``affected`` counts queue\nrows moved or deleted; the accompanying skip-list/block-list policy\nupdates are implied by the action name.",
         "operationId": "frontier_failed_domains_auto_triage_api_v1_frontier_failed_domains_auto_triage_post",
         "requestBody": {
           "content": {
@@ -1119,6 +1282,51 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FrontierEnqueueSeedsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/frontier/url-info": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Frontier Url Info",
+        "description": "One URL's crawl story for the admin dashboard (open read).\n\nCombines the frontier queue row (status, priority, attempts, last\nerror), the indexed document (title, size), and the extracted-link\nfan-out (count plus sample) so \"did my seed work?\" needs one call\ninstead of three views. Unknown URLs resolve to null parts, never\n404: absence itself is the answer. Never 500s on store trouble:\nunreadable parts degrade to null, mirroring ``/frontier/status``.",
+        "operationId": "frontier_url_info_api_v1_frontier_url_info_get",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 2048,
+              "default": "",
+              "title": "Url"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrontierUrlInfoSchema"
                 }
               }
             }
@@ -2716,6 +2924,13 @@
           "enqueued": {
             "type": "integer",
             "title": "Enqueued"
+          },
+          "skipped_over_cap": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Skipped Over Cap",
+            "description": "Genuinely new seeds refused because the queue already sits at max_queued_urls. Re-pastes of known URLs still count as enqueued; only growth past the cap is reported here.",
+            "default": 0
           }
         },
         "type": "object",
@@ -2990,6 +3205,17 @@
               }
             ],
             "title": "Priority"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
           }
         },
         "additionalProperties": false,
@@ -3291,6 +3517,114 @@
         "type": "object",
         "title": "FrontierTriageResultSchema",
         "description": "Outcome of a failed-domains auto-triage pass."
+      },
+      "FrontierUrlInfoSchema": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "normalized_url": {
+            "type": "string",
+            "title": "Normalized Url"
+          },
+          "frontier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrontierUrlInspectorFrontierSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FrontierUrlInspectorDocumentSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extracted_links": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Extracted Links",
+            "default": 0
+          },
+          "link_sample": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Link Sample"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "normalized_url"
+        ],
+        "title": "FrontierUrlInfoSchema",
+        "description": "GET /api/v1/frontier/url-info response: one URL's crawl story.\n\nCombines the frontier queue row, the indexed document, and the\nextracted-link fan-out so the admin dashboard can answer \"did my\nseed work?\" without joining three views by hand."
+      },
+      "FrontierUrlInspectorDocumentSchema": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "chars": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Chars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "chars"
+        ],
+        "title": "FrontierUrlInspectorDocumentSchema",
+        "description": "Indexed document for one inspected URL (None when not indexed)."
+      },
+      "FrontierUrlInspectorFrontierSchema": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 0
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Attempts",
+            "default": 0
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "FrontierUrlInspectorFrontierSchema",
+        "description": "Queue row for one inspected URL (None when never seen)."
       },
       "FrontierWorkerHeartbeatSchema": {
         "properties": {

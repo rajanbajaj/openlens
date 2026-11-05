@@ -16,4 +16,5 @@
 export interface FrontierSeedsSchema {
   seeds?: string[];
   priority?: number | null;
+  depth?: number | null;
 }
