@@ -157,9 +157,19 @@ describe('ChatView send/render flow', () => {
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
-  it('shows a generic powered-by line before any answer', () => {
+  it('shows no powered-by line before any answer', () => {
     render(<ChatView />);
-    expect(screen.getByTestId('chat-powered-by')).toHaveTextContent('Powered by AI');
+    expect(screen.queryByTestId('chat-powered-by')).not.toBeInTheDocument();
+  });
+
+  it('shows no powered-by line when no model served the answer', async () => {
+    stubChat({ ...CHAT_OK, notice: 'AI engine is warming up' });
+    render(<ChatView />);
+    await sendMessage('what does it cost?');
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-notice')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('chat-powered-by')).not.toBeInTheDocument();
   });
 
   it('names the serving model once the trace reports it', async () => {

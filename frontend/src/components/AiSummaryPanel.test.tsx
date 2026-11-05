@@ -68,6 +68,17 @@ describe('AiSummaryPanel', () => {
     expect(loadTranscript()).toHaveLength(0);
   });
 
+  it('shows no powered-by line when no model served the summary', async () => {
+    stubChat({ ...CHAT_OK, trace: { ...CHAT_OK.trace, model: '' } });
+    render(<AiSummaryPanel query="headphones" onContinueInChat={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('ai-summary-start'));
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-answer')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('ai-summary-powered-by')).not.toBeInTheDocument();
+  });
+
   it('reports transport failures without throwing', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
     render(<AiSummaryPanel query="headphones" onContinueInChat={() => {}} />);

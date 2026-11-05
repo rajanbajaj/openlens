@@ -515,9 +515,11 @@ export default function ChatView({
           {validationError}
         </p>
       ) : null}
-      <p data-testid="chat-powered-by" className="text-ol-s text-ol-ink-soft m-0">
-        {servingModel ? `Powered by ${servingModel}` : 'Powered by AI'}
-      </p>
+      {servingModel ? (
+        <p data-testid="chat-powered-by" className="text-ol-s text-ol-ink-soft m-0">
+          Powered by {servingModel}
+        </p>
+      ) : null}
     </section>
   );
 }

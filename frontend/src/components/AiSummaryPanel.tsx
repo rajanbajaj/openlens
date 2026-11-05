@@ -97,9 +97,11 @@ export default function AiSummaryPanel({ query, onContinueInChat }: AiSummaryPan
             <AnswerText answer={response.answer} citations={response.citations} messageIndex={0} />
           ) : null}
           <CitationChips citations={response.citations} />
-          <p data-testid="ai-summary-powered-by" className="text-ol-s text-ol-ink-soft m-0">
-            {model ? `Powered by ${model}` : 'Powered by AI'}
-          </p>
+          {model ? (
+            <p data-testid="ai-summary-powered-by" className="text-ol-s text-ol-ink-soft m-0">
+              Powered by {model}
+            </p>
+          ) : null}
           {response.answer ? (
             <p className="my-ol-s">
               <Button
