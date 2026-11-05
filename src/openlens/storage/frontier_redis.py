@@ -1360,10 +1360,21 @@ class RedisFrontierStore(FrontierStore):
             return []
         with self._lock:
             try:
-                queued = [str(m) for m in self._client.zrange(self._ready, 0, want - 1)]
-                active = [
-                    str(m) for m in self._client.zrange(self._active, 0, want - 1)
-                ]
+                # Fetch from the TOP of each set (highest scores): that is
+                # the end workers drain via ZPOPMAX, and therefore what the
+                # queue view must show. Index 0..want is the stagnant tail
+                # on a deep backlog — the admin list froze while the depth
+                # count moved.
+                queued = (
+                    [str(m) for m in self._client.zrange(self._ready, -want, -1)]
+                    if want
+                    else []
+                )
+                active = (
+                    [str(m) for m in self._client.zrange(self._active, -want, -1)]
+                    if want
+                    else []
+                )
             except Exception as exc:
                 raise self._fail("list pending frontier URLs", exc) from exc
             pipe = self._client.pipeline()

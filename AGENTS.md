@@ -81,6 +81,7 @@
 - Never use `--no-verify` except by the documented mechanical-commit bypass trailer.
 - If the change has an issue, link it; check for duplicate or overlapping work first.
 - Update the docs that describe the behavior you changed.
+- Release commits set `project.version` in `pyproject.toml` to the tag (no `v` prefix); tags never move — a missed bump is a follow-up sync commit, never a retag (`docs/wiki/Release-Process.md`).
 
 ## 9. Never do
 

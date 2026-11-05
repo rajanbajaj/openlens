@@ -1073,3 +1073,145 @@ def test_queue_depth_skips_full_scan(
 
     monkeypatch.setattr(store, "counts", _boom)
     assert store.queue_depth() == 1
+
+
+class _MemoryPipeline:
+    """Queue client calls like redis-py, then run them in order."""
+
+    def __init__(self, client: "_MemoryRedis") -> None:
+        self._client = client
+        self._cmds: list[tuple] = []
+
+    def hset(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("hset", args, kwargs))
+        return self
+
+    def hgetall(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("hgetall", args, kwargs))
+        return self
+
+    def zadd(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("zadd", args, kwargs))
+        return self
+
+    def incr(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("incr", args, kwargs))
+        return self
+
+    def execute(self) -> list[object]:
+        return [
+            getattr(self._client, name)(*args, **kwargs)
+            for name, args, kwargs in self._cmds
+        ]
+
+
+class _MemoryRedis:
+    """Minimal client with true sorted-set index semantics.
+
+    ZRANGE orders by (score, member) ascending and counts negative
+    indexes from the tail — the documented server behavior the store
+    relies on, so a fetch-window regression fails here as in prod.
+    Hash values are stored as strings like ``decode_responses=True``.
+    """
+
+    def __init__(self) -> None:
+        self.sets: dict[str, set[str]] = {}
+        self.strings: dict[str, int] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.zsets: dict[str, dict[str, float]] = {}
+
+    def sadd(self, key: str, *members: str) -> int:
+        values = self.sets.setdefault(key, set())
+        added = 0
+        for member in members:
+            if member not in values:
+                values.add(member)
+                added += 1
+        return added
+
+    def incr(self, key: str, amount: int = 1) -> int:
+        self.strings[key] = self.strings.get(key, 0) + amount
+        return self.strings[key]
+
+    def hset(self, key: str, mapping: dict | None = None, **kwargs: object) -> int:
+        fields = self.hashes.setdefault(key, {})
+        items = dict(mapping or {})
+        items.update(kwargs)
+        for field, value in items.items():
+            fields[str(field)] = str(value)
+        return len(items)
+
+    def hgetall(self, key: str) -> dict[str, str]:
+        return dict(self.hashes.get(key, {}))
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> int:
+        zset = self.zsets.setdefault(key, {})
+        added = 0
+        for member, score in mapping.items():
+            if member not in zset:
+                added += 1
+            zset[member] = float(score)
+        return added
+
+    def zrange(self, key: str, start: int, stop: int) -> list[str]:
+        ordered = [
+            member
+            for member, _ in sorted(
+                self.zsets.get(key, {}).items(), key=lambda kv: (kv[1], kv[0])
+            )
+        ]
+        total = len(ordered)
+        if start < 0:
+            start = max(total + start, 0)
+        if stop < 0:
+            stop = total + stop
+        stop = min(stop, total - 1)
+        if start > stop:
+            return []
+        return ordered[start : stop + 1]
+
+    def zcard(self, key: str) -> int:
+        return len(self.zsets.get(key, {}))
+
+    def pipeline(self) -> _MemoryPipeline:
+        return _MemoryPipeline(self)
+
+
+def _memory_store() -> RedisFrontierStore:
+    """Store wired to the in-memory client (no server needed)."""
+    from collections import deque
+
+    store = RedisFrontierStore.__new__(RedisFrontierStore)
+    store._prefix = "fw-test-mem"
+    store._lock = threading.Lock()
+    store._client = _MemoryRedis()
+    store._lease_ttl_s = 120
+    store._pending = deque()  # type: ignore[attr-defined]
+    return store
+
+
+def test_pending_shows_drain_head_not_tail() -> None:
+    """The queue view must list what workers take next (highest score).
+
+    Regression: pending() fetched ZRANGE 0..limit (the lowest scores),
+    so with a deep backlog the admin list froze on rows that drain
+    last while the depth count moved. Workers claim via ZPOPMAX.
+    """
+    store = _memory_store()
+    for i in range(30):
+        assert store.enqueue(f"https://example.com/{i}", 0) is True
+    assert store.enqueue("https://example.com/urgent", 0, priority=9) is True
+    head = store.pending(limit=5)
+    assert len(head) == 5
+    assert head[0].url.endswith("/urgent")
+
+
+@needs_redis
+def test_pending_shows_drain_head_live(store: RedisFrontierStore) -> None:
+    """Same drain-head assertion against a real Redis (see above)."""
+    for i in range(10):
+        assert store.enqueue(f"https://example.com/{i}", 0) is True
+    assert store.enqueue("https://example.com/urgent", 0, priority=9) is True
+    head = store.pending(limit=5)
+    assert len(head) == 5
+    assert head[0].url.endswith("/urgent")
