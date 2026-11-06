@@ -1280,6 +1280,26 @@ def test_push_evicts_past_maxsize_on_redis_store() -> None:
     assert store.queue_depth() == 3
 
 
+def test_push_reports_eviction_victims() -> None:
+    """Eviction victims are reported per URL for analytics.
+
+    Regression: evicted rows landed ``skipped`` in the store with no
+    ``crawl.page`` event, so the Analytics tab missed shed intake the
+    same way it once missed cap-refused seeds.
+    """
+    from openlens.indexing.crawler import PersistentFrontier
+
+    store = _memory_store()
+    reported: list[str] = []
+    frontier = PersistentFrontier(store, 2, on_evict=reported.append)
+    for i in range(4):
+        frontier.push(f"https://example.com/{i}")
+    assert frontier.evicted == 2
+    assert store.queue_depth() == 2
+    # Lowest-score first: the newest rows shed, oldest survive.
+    assert reported == ["https://example.com/2", "https://example.com/3"]
+
+
 @needs_redis
 def test_pending_shows_drain_head_live(store: RedisFrontierStore) -> None:
     """Same drain-head assertion against a real Redis (see above)."""

@@ -38,7 +38,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openlens.core.interfaces import ProviderError
 
@@ -1679,13 +1679,22 @@ class SqliteFrontierStore(FrontierStore):
             ) from exc
         return total
 
-    def evict_oldest(self, limit: int) -> int:
+    def evict_oldest(
+        self,
+        limit: int,
+        *,
+        on_evict: Callable[[str], None] | None = None,
+    ) -> int:
         """Drop oldest queued rows past ``limit`` (oldest-first eviction).
 
         Single-statement eviction: one ``COUNT`` sizes the overflow, then
         one ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT ?)``
         moves the victims. Victims match the old per-row loop exactly
         (oldest ``queued`` rows by ``discovered_at``, ``rowid`` tiebreak).
+        ``on_evict`` reports each victim URL (for analytics parity with
+        the per-page ``crawl.page`` events); listeners run inside the
+        eviction lock and must never raise — a raising listener is
+        swallowed so the shed still lands.
         """
         cap = max(0, limit)
         try:
@@ -1701,10 +1710,16 @@ class SqliteFrontierStore(FrontierStore):
                     " last_error = 'evicted: queue cap exceeded'"
                     " WHERE url IN (SELECT url FROM frontier_queue"
                     " WHERE status = 'queued'"
-                    " ORDER BY discovered_at ASC, rowid ASC LIMIT ?)",
+                    " ORDER BY discovered_at ASC, rowid ASC LIMIT ?)"
+                    " RETURNING url",
                     (overflow,),
                 )
-                return cursor.rowcount
+                victims = [str(row[0]) for row in cursor.fetchall()]
+                if on_evict is not None:
+                    for victim in victims:
+                        with contextlib.suppress(Exception):
+                            on_evict(victim)
+                return len(victims)
         except sqlite3.Error as exc:
             raise ProviderError(
                 f"failed to evict frontier URLs: {exc}",
@@ -3305,7 +3320,12 @@ class PostgresFrontierStore(FrontierStore):
             ) from exc
         return total
 
-    def evict_oldest(self, limit: int) -> int:
+    def evict_oldest(
+        self,
+        limit: int,
+        *,
+        on_evict: Callable[[str], None] | None = None,
+    ) -> int:
         """Drop oldest queued rows past ``limit`` (oldest-first eviction).
 
         Single-statement eviction: one ``COUNT`` sizes the overflow, then
@@ -3318,7 +3338,9 @@ class PostgresFrontierStore(FrontierStore):
         rows, so the eviction cannot deadlock itself the way two
         ``UPDATE ... WHERE url IN (SELECT ... ORDER BY ... LIMIT)``
         statements can (each locking the same oldest rows in a
-        different physical visit order).
+        different physical visit order). ``on_evict`` reports each
+        victim URL (analytics parity); a raising listener is swallowed
+        so the shed still lands and the transaction still commits.
         """
         table = self._qualified("frontier_queue")
         cap = max(0, limit)
@@ -3344,10 +3366,16 @@ class PostgresFrontierStore(FrontierStore):
                         " FOR UPDATE SKIP LOCKED"
                         f") UPDATE {table} AS q SET status = 'skipped',"  # noqa: S608
                         " last_error = 'evicted: queue cap exceeded'"
-                        " FROM victims AS v WHERE q.url = v.url",
+                        " FROM victims AS v WHERE q.url = v.url"
+                        " RETURNING q.url",
                         (overflow,),
                     )
-                    evicted = cur.rowcount or 0
+                    victims = [str(row[0]) for row in (cur.fetchall() or [])]
+                    if on_evict is not None:
+                        for victim in victims:
+                            with contextlib.suppress(Exception):
+                                on_evict(victim)
+                    evicted = len(victims)
                 conn.commit()
                 return int(evicted)
         except Exception as exc:

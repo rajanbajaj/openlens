@@ -39,7 +39,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from openlens.core.interfaces import ConfigError, ProviderError
 from openlens.storage.frontier import (
@@ -1673,7 +1673,12 @@ class RedisFrontierStore(FrontierStore):
                 raise self._fail("count frontier URLs", exc) from exc
             return int(ready) + int(active)
 
-    def evict_oldest(self, limit: int) -> int:
+    def evict_oldest(
+        self,
+        limit: int,
+        *,
+        on_evict: Callable[[str], None] | None = None,
+    ) -> int:
         """Shed queued rows past ``limit`` (lowest-score-first eviction).
 
         Same outcome contract as the SQL backends (exactly the overflow
@@ -1686,6 +1691,8 @@ class RedisFrontierStore(FrontierStore):
         Reading every meta HASH to recover discovery order would turn
         the per-push eviction check into a full-queue scan; the score
         order needs one ``ZRANGE`` plus per-victim cleanup only.
+        ``on_evict`` reports each victim URL (analytics parity); a
+        raising listener is swallowed so the shed still lands.
         """
         if isinstance(limit, bool) or not isinstance(limit, int):
             raise self._fail(
@@ -1718,6 +1725,9 @@ class RedisFrontierStore(FrontierStore):
                     STATUS_SKIPPED,
                     last_error="evicted: queue cap exceeded",
                 )
+                if on_evict is not None:
+                    with contextlib.suppress(Exception):
+                        on_evict(norm)
                 evicted += 1
             return evicted
 

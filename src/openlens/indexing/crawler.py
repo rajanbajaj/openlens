@@ -346,10 +346,17 @@ class BoundedFrontier:
     the cap evicts the oldest entry while counting evictions.
     """
 
-    def __init__(self, maxsize: int, *, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        maxsize: int,
+        *,
+        path: Path | None = None,
+        on_evict: Callable[[str], None] | None = None,
+    ) -> None:
         if maxsize <= 0:
             raise ValueError("frontier maxsize must be positive")
         self._maxsize = maxsize
+        self._on_evict = on_evict
         self._items: collections.deque[str] = collections.deque()
         self.evicted = 0
         if path is None:
@@ -373,7 +380,10 @@ class BoundedFrontier:
 
     def push(self, url: str) -> None:
         while len(self._items) >= self._maxsize:
-            self._items.popleft()
+            victim = self._items.popleft()
+            if self._on_evict is not None:
+                with contextlib.suppress(Exception):
+                    self._on_evict(victim)
             self.evicted += 1
         self._items.append(url)
         self._note_mutation()
@@ -439,12 +449,14 @@ class PersistentFrontier:
         store: Any,
         maxsize: int,
         on_push: Callable[[str, int, int | None], None] | None = None,
+        on_evict: Callable[[str], None] | None = None,
     ) -> None:
         if maxsize <= 0:
             raise ValueError("frontier maxsize must be positive")
         self._store = store
         self._maxsize = maxsize
         self._on_push = on_push
+        self._on_evict = on_evict
         self.evicted = 0
 
     def __len__(self) -> int:
@@ -476,7 +488,9 @@ class PersistentFrontier:
             # exhaustion under a full queue) must not abort the drain
             # and crash-loop the worker. The next push retries.
             with contextlib.suppress(Exception):
-                self.evicted += self._store.evict_oldest(self._maxsize)
+                self.evicted += self._store.evict_oldest(
+                    self._maxsize, on_evict=self._on_evict
+                )
 
     def pop(self) -> str | None:
         entry = self.pop_entry()
@@ -2170,6 +2184,12 @@ class PoliteCrawler:
             if checkpoint_interval is not None
             else self.checkpoint_interval_pages
         )
+
+        def _report_shed(shed_url: str) -> None:
+            # Same reason the store stamps on shed rows, so analytics
+            # groups shed intake with the matching failed-list rows.
+            _notify(shed_url, "skipped", "evicted: queue cap exceeded")
+
         if store is not None:
             # Lease-aware startup recovery: only expired (or legacy
             # ownerless) ``active`` rows return to ``queued``; rows with a
@@ -2190,7 +2210,7 @@ class PoliteCrawler:
                 if isinstance(seed, str) and seed.strip():
                     store.enqueue(seed.strip(), 0)
             frontier: Any = PersistentFrontier(
-                store, self.max_queued_urls, on_push=on_link
+                store, self.max_queued_urls, on_push=on_link, on_evict=_report_shed
             )
             # No BoundedFrontier is constructed on this path, so no temp
             # sidecar file exists to close/unlink here; queue rows persist
@@ -2210,7 +2230,9 @@ class PoliteCrawler:
                 if isinstance(seed, str) and seed.strip():
                     depths.setdefault(normalize_url(seed.strip()), 0)
         else:
-            frontier = BoundedFrontier(self.max_queued_urls, path=self._queue_path)
+            frontier = BoundedFrontier(
+                self.max_queued_urls, path=self._queue_path, on_evict=_report_shed
+            )
             depths = {}
             for seed in seed_urls:
                 if not isinstance(seed, str) or not seed.strip():

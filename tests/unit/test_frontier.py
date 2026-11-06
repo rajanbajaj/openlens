@@ -431,6 +431,34 @@ def test_evict_oldest_selects_same_oldest_victims() -> None:
         store.close()
 
 
+def test_evict_oldest_reports_victims_in_order() -> None:
+    """Eviction victims are reported per URL for analytics (oldest first)."""
+    store = SqliteFrontierStore(":memory:")
+    try:
+        for i in range(4):
+            assert store.enqueue(f"https://example.com/{i}", 0) is True
+        reported: list[str] = []
+        assert store.evict_oldest(1, on_evict=reported.append) == 3
+        assert sorted(reported) == [f"https://example.com/{i}" for i in range(3)]
+    finally:
+        store.close()
+
+
+def test_bounded_frontier_push_reports_evicted() -> None:
+    """In-memory eviction reports victims FIFO for analytics parity."""
+    from openlens.indexing.crawler import BoundedFrontier
+
+    reported: list[str] = []
+    frontier = BoundedFrontier(2, on_evict=reported.append)
+    try:
+        for name in ("a", "b", "c"):
+            frontier.push(f"https://example.com/{name}")
+        assert frontier.evicted == 1
+        assert reported == ["https://example.com/a"]
+    finally:
+        frontier.close()
+
+
 def test_evict_oldest_zero_limit_clears_queue() -> None:
     store = SqliteFrontierStore(":memory:")
     try:
@@ -533,6 +561,13 @@ def test_postgres_evict_oldest_skips_locked_rows_in_order() -> None:
         def fetchone(self) -> tuple[int]:
             return (5,)
 
+        def fetchall(self) -> list[tuple[str]]:
+            return [
+                ("https://example.com/a",),
+                ("https://example.com/b",),
+                ("https://example.com/c",),
+            ]
+
     class _FakeConn:
         def cursor(self) -> Any:
             return contextlib.nullcontext(_FakeCursor())
@@ -548,13 +583,20 @@ def test_postgres_evict_oldest_skips_locked_rows_in_order() -> None:
         yield _FakeConn()
 
     store._connection = _fake_connection  # type: ignore[method-assign]
-    assert store.evict_oldest(2) == 3
+    reported: list[str] = []
+    assert store.evict_oldest(2, on_evict=reported.append) == 3
+    assert reported == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
     assert len(executed) == 2
     update_sql, params = executed[1]
     assert params == (3,)
     assert "FOR UPDATE SKIP LOCKED" in update_sql
     assert "ORDER BY discovered_at ASC, url ASC" in update_sql
     assert "evicted: queue cap exceeded" in update_sql
+    assert "RETURNING" in update_sql
 
 
 def test_persistent_crawl_path_leaks_no_temp_sidecar() -> None:
