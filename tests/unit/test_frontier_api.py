@@ -1508,3 +1508,84 @@ def test_publish_seeds_threads_depth_to_kafka(
         == 1
     )
     assert seen == [("https://example.com/a", 2, 1)]
+
+
+def _read_store_request(config: Any) -> Any:
+    """Minimal request double carrying app.state.config for the read store."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=config)))
+
+
+def test_read_store_dispatches_redis_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admin reads must see the live Redis queue on redis deployments.
+
+    Regression: the read path used the ``storage:``-keyed opener, which
+    has no redis branch, so the dashboard froze on the SQLite mirror
+    (one seed row) while Redis held the whole backlog.
+    """
+    from openlens.api import routes as routes_mod
+    import openlens.storage.frontier_redis as frontier_redis_mod
+
+    sentinel = object()
+    monkeypatch.setattr(
+        frontier_redis_mod,
+        "build_redis_frontier_store",
+        lambda section: sentinel,
+    )
+    request = _read_store_request(
+        {
+            "frontier": {
+                "backend": "redis",
+                "redis": {"url": "redis://localhost:6379/0"},
+            }
+        }
+    )
+    assert routes_mod._frontier_read_store(request) is sentinel
+    # Cached per app lifetime: the builder runs once.
+    assert routes_mod._frontier_read_store(request) is sentinel
+
+
+def test_read_store_fail_open_latches_on_redis_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable Redis backend degrades to the snapshot, once."""
+    from openlens.api import routes as routes_mod
+    import openlens.storage.frontier_redis as frontier_redis_mod
+
+    calls = 0
+
+    def _boom(section: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("simulated socket cliff")
+
+    monkeypatch.setattr(frontier_redis_mod, "build_redis_frontier_store", _boom)
+    request = _read_store_request(
+        {
+            "frontier": {
+                "backend": "redis",
+                "redis": {"url": "redis://localhost:6379/0"},
+            }
+        }
+    )
+    assert routes_mod._frontier_read_store(request) is None
+    assert routes_mod._frontier_read_store(request) is None
+    assert calls == 1, "failure must latch, not retry per poll"
+
+
+def test_read_store_falls_through_without_redis_backend() -> None:
+    """Non-redis configs keep the legacy sqlite store (unchanged path)."""
+    from openlens.api import routes as routes_mod
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    request = _read_store_request(
+        {"storage": {"backend": "sqlite", "sqlite": {"db_path": ":memory:"}}}
+    )
+    store = routes_mod._frontier_read_store(request)
+    try:
+        assert isinstance(store, SqliteFrontierStore)
+    finally:
+        store.close()

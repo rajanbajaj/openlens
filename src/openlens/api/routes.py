@@ -119,6 +119,7 @@ from openlens.retrieval.suggest import (
     related_queries,
 )
 from openlens.storage.frontier import normalize_frontier_url, open_frontier_store
+from openlens.storage import frontier_redis as frontier_redis_mod
 
 logger = logging.getLogger(__name__)
 
@@ -1423,6 +1424,14 @@ def _frontier_read_store(request: Request | WebSocket) -> Any | None:
     cached admin config store): status polls must not pay pool
     construction per request. Unreachable/misconfigured backends yield
     None and the dashboard falls back to the in-memory snapshot.
+
+    Dispatches to the Redis store when ``frontier.backend == redis``
+    so those deployments read the live queue: the legacy
+    ``storage:``-keyed opener cannot see it (SQLite default), which is
+    why the admin queue froze at the seed row while Redis held the
+    whole backlog. Every other config falls through to
+    :func:`open_frontier_store` exactly as before (same patch points
+    for test doubles).
     """
     store = getattr(request.app.state, "_frontier_read_store", None)
     if store is not None:
@@ -1430,8 +1439,19 @@ def _frontier_read_store(request: Request | WebSocket) -> Any | None:
     if getattr(request.app.state, "_frontier_read_store_failed", False):
         return None
     app_config = getattr(request.app.state, "config", None)
+    cfg = app_config if isinstance(app_config, dict) else {}
     try:
-        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+        section = cfg.get("frontier", None)
+        backend: str | None = None
+        if isinstance(section, dict):
+            with suppress(ConfigError):
+                backend = frontier_redis_mod.validate_frontier_section(section).get(
+                    "backend"
+                )
+        if backend == "redis" and isinstance(section, dict):
+            store = frontier_redis_mod.build_redis_frontier_store(section)
+        else:
+            store = open_frontier_store(cfg)
     except Exception:
         request.app.state._frontier_read_store_failed = True
         return None
