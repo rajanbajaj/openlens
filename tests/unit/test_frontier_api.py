@@ -629,6 +629,9 @@ def test_store_overlay_preserves_kafka_enabled() -> None:
         def counts(self):
             return {}
 
+        def queue_depth(self):
+            return 0
+
     payload = _frontier_status_payload(
         {
             "kafka": {
@@ -640,6 +643,39 @@ def test_store_overlay_preserves_kafka_enabled() -> None:
         }
     )
     assert _overlay_store_status(payload, _StubStore()).kafka_enabled is True
+
+
+def test_store_overlay_uses_depth_not_full_counts() -> None:
+    """The live overlay must not full-scan the store per push.
+
+    Regression (prod): the 2s frontier socket called ``counts()`` per
+    push — a 250k-meta scan each time — saturating single-threaded
+    Redis until worker ops blew the 2s socket timeout and the fleet
+    crash-looped (650+ restarts each).
+    """
+    from openlens.api.routes import _frontier_status_payload, _overlay_store_status
+
+    calls: list[str] = []
+
+    class _DepthStore:
+        def load_checkpoint(self):
+            return None
+
+        def pending(self, limit: int = 500):
+            return []
+
+        def counts(self):
+            calls.append("counts")
+            raise AssertionError("full scan on the live path")
+
+        def queue_depth(self):
+            calls.append("depth")
+            return 7
+
+    payload = _frontier_status_payload({})
+    merged = _overlay_store_status(payload, _DepthStore())
+    assert merged.queue_depth == 7
+    assert calls == ["depth"]
 
 
 def test_pause_and_resume_cycle(client: TestClient) -> None:

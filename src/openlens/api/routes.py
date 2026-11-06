@@ -1454,7 +1454,12 @@ def _overlay_store_status(
     try:
         checkpoint = store.load_checkpoint()
         pending = store.pending(limit=500)
-        counts = store.counts()
+        # Depth only: the live socket pushes every 2s and status polls
+        # on every dashboard view, so a full counts() meta-scan here
+        # melts single-threaded Redis at backlog scale (250k metas) and
+        # worker ops start blowing the client socket timeout. queue_depth
+        # is two cardinality lookups on Redis and a COUNT(*) pair on SQL.
+        store_depth = store.queue_depth()
     except Exception:
         return payload
     merged: dict[str, dict[str, Any]] = {}
@@ -1530,9 +1535,7 @@ def _overlay_store_status(
         }
     queue = list(merged.values())
     try:
-        queued = int((counts or {}).get("queued", 0))
-        active = int((counts or {}).get("active", 0))
-        queue_depth = queued + active if (queued or active) else len(queue)
+        queue_depth = int(store_depth or 0) or len(queue)
     except Exception:
         queue_depth = len(queue)
     existing_checkpoint = getattr(payload, "checkpoint", None)
