@@ -1192,7 +1192,8 @@ class PostgresDocumentStore(DocumentStore):
         # top-N order is unchanged. Totals stay exact up to
         # MAX_EXACT_TOTAL (10k covers ~1000 pages); beyond that the page
         # reports the cap and the UI renders "10,000+". Parameter order:
-        # matched probe, ranked match, rank, then limit/offset.
+        # capped (query, category), rank query, ranked (query,
+        # category), then limit/offset.
         page_sql = (
             f"WITH matched AS ({capped}),"  # noqa: S608
             f" ranked AS (SELECT id, {rank} AS score"  # noqa: S608
@@ -1218,8 +1219,8 @@ class PostgresDocumentStore(DocumentStore):
                             ts_text,
                             category,
                             ts_text,
-                            category,
                             ts_text,
+                            category,
                             limit,
                             offset,
                         )

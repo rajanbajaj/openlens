@@ -1146,11 +1146,17 @@ class RedisFrontierStore(FrontierStore):
         moved = 0
         with self._lock:
             try:
-                members = list(self._client.zrange(self._ready, 0, -1))
+                candidates = [
+                    norm
+                    for bucket, norm, _ in self._ready_domain_priorities()
+                    if any(
+                        host_matches_skip_domains(bucket, [target])
+                        for target in targets
+                    )
+                ]
             except Exception as exc:
                 raise self._fail("skip queued domains", exc) from exc
-            for raw in members:
-                norm = str(raw)
+            for norm in candidates:
                 meta = self._read_meta(norm)
                 if not meta:
                     self._drop_stale_member(norm)
@@ -1453,6 +1459,30 @@ class RedisFrontierStore(FrontierStore):
             if str(meta.get("status") or "") == status
         ]
 
+    def _ready_domain_priorities(self) -> list[tuple[str, str, int]]:
+        """``(domain, norm, priority)`` for every READY row — no meta fetch.
+
+        Queued boards and queued ops only need membership + priority,
+        so they read the ready ZSET (members + scores, one round trip)
+        instead of HGETALLing every meta hash (250k+ fetches at backlog
+        scale, which is what turned the admin boards into 504s).
+        Priority decodes exactly via ``round(score / _PRIORITY_QUANTUM)``:
+        the depth/fraction parts stay far below half a quantum.
+        """
+        try:
+            members = self._client.zrange(self._ready, 0, -1, withscores=True)
+        except Exception as exc:
+            raise self._fail("list ready frontier URLs", exc) from exc
+        out: list[tuple[str, str, int]] = []
+        for raw, score in members or []:
+            norm = str(raw)
+            try:
+                prio = int(round(float(score) / _PRIORITY_QUANTUM))
+            except (TypeError, ValueError):
+                prio = 0
+            out.append((_host_bucket(norm), norm, prio))
+        return out
+
     def failed_domains(
         self, limit: int = 100, offset: int = 0
     ) -> list[tuple[str, int, str]]:
@@ -1535,14 +1565,65 @@ class RedisFrontierStore(FrontierStore):
     def queued_domain_urls(
         self, domain: str, limit: int = 100, offset: int = 0
     ) -> list[FrontierEntry]:
-        entries, _ = self._domain_entries(
-            domain, STATUS_QUEUED, limit, offset, order="queued"
-        )
+        entries, _ = self._queued_domain_entries(domain, limit, offset)
         return entries
 
     def queued_domain_url_count(self, domain: str) -> int:
-        _, total = self._domain_entries(domain, STATUS_QUEUED, 0, 0, order="queued")
+        _, total = self._queued_domain_entries(domain, 0, 0)
         return total
+
+    def _queued_domain_entries(
+        self, domain: str, limit: int, offset: int
+    ) -> tuple[list[FrontierEntry], int]:
+        """One host's queued rows, newest-priority first — bounded fetch.
+
+        Candidates come from the ready ZSET (no full-corpus scan); only
+        the host bucket's own metas are fetched, and the stored
+        ``domain`` field re-check keeps the exact
+        :meth:`_domain_entries` predicate. Same ``(-priority, -seq)``
+        order, same ``(entries, total)`` shape.
+        """
+        target = normalize_skip_domain(domain)
+        if not target:
+            return [], 0
+        capped = max(0, limit)
+        skipped = max(0, offset)
+        with self._lock:
+            norms = [
+                norm
+                for bucket, norm, _ in self._ready_domain_priorities()
+                if host_matches_skip_domains(bucket, [target])
+            ]
+            metas: list[dict[str, Any]] = []
+            for norm in norms:
+                meta = self._read_meta(norm)
+                if not meta:
+                    continue
+                if not host_matches_skip_domains(
+                    str(
+                        meta.get("domain")
+                        or _domain_of_url(str(meta.get("url", "")))
+                        or ""
+                    ),
+                    [target],
+                ):
+                    continue
+                metas.append(meta)
+        metas.sort(
+            key=lambda m: (
+                -int(m.get("priority") or 0),
+                -int(m.get("seq") or 0),
+            )
+        )
+        total = len(metas)
+        # A corrupt meta must not fail the whole drill-down: skip the
+        # row (the shared helper would raise here, and the route would
+        # degrade to an empty page — strictly worse).
+        entries: list[FrontierEntry] = []
+        for meta in metas[skipped : skipped + capped]:
+            with contextlib.suppress(Exception):
+                entries.append(self._entry_from_meta(meta))
+        return entries, total
 
     def requeue_failed_domains(self, domains: Any) -> int:
         targets = normalize_skip_domains(domains)
@@ -1605,13 +1686,9 @@ class RedisFrontierStore(FrontierStore):
         capped = max(0, int(limit or 0))
         skipped = max(0, int(offset or 0))
         with self._lock:
-            rows = self._domain_rows(STATUS_QUEUED)
+            rows = self._ready_domain_priorities()
         by_domain: dict[str, list[int]] = {}
-        for domain, meta in rows:
-            try:
-                prio = int(meta.get("priority") or 0)
-            except (TypeError, ValueError):
-                prio = 0
+        for domain, _, prio in rows:
             by_domain.setdefault(domain, []).append(prio)
         out = sorted(
             ((d, len(v), max(v)) for d, v in by_domain.items()),
@@ -1621,8 +1698,8 @@ class RedisFrontierStore(FrontierStore):
 
     def queued_domain_count(self) -> int:
         with self._lock:
-            rows = self._domain_rows(STATUS_QUEUED)
-        return len({domain for domain, _ in rows})
+            rows = self._ready_domain_priorities()
+        return len({domain for domain, _, _ in rows})
 
     def bump_queued_priority(self, domains: Any, delta: int = 1) -> int:
         targets = normalize_skip_domains(domains)
@@ -1634,11 +1711,23 @@ class RedisFrontierStore(FrontierStore):
             return 0
         moved = 0
         with self._lock:
-            cands = [
-                (norm, meta)
-                for norm, meta in self._iter_metas()
-                if str(meta.get("status") or "") == STATUS_QUEUED
-                and any(
+            try:
+                norms = [
+                    norm
+                    for bucket, norm, _ in self._ready_domain_priorities()
+                    if any(
+                        host_matches_skip_domains(bucket, [target])
+                        for target in targets
+                    )
+                ]
+            except Exception as exc:
+                raise self._fail("bump queued priority", exc) from exc
+            cands = []
+            for norm in norms:
+                meta = self._read_meta(norm)
+                if not meta:
+                    continue
+                if not any(
                     host_matches_skip_domains(
                         str(
                             meta.get("domain")
@@ -1648,8 +1737,9 @@ class RedisFrontierStore(FrontierStore):
                         [target],
                     )
                     for target in targets
-                )
-            ]
+                ):
+                    continue
+                cands.append((norm, meta))
             for norm, meta in cands:
                 try:
                     prio = int(meta.get("priority") or 0) + step

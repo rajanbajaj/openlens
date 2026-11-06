@@ -208,6 +208,21 @@ def test_search_category_params_match_placeholders() -> None:
         assert sql.count("%s") == len(params), sql
 
 
+def test_search_category_params_bind_query_before_category_in_ranked_cte() -> None:
+    """The narrowed page query binds (query, category) in match order.
+
+    Regression: the ranked CTE's WHERE once received (category, query),
+    so every category search ran e.g. query='health' AND
+    site_category='food' and silently matched zero rows while default
+    mode kept working.
+    """
+    store = _store_with_rows([_fifteen_col_row("d1", "news")])
+    store.search("hello", limit=3, offset=0, site_category="news")
+    (sql, params) = store._stub_cursor.calls[0]  # type: ignore[attr-defined]
+    assert "AND site_category" in sql
+    assert tuple(params) == ("hello", "news", "hello", "hello", "news", 3, 0)
+
+
 def test_list_domains_groups_by_host() -> None:
     rows = [("example.com", 2), ("other.test", 1)]
     store = _store_with_rows(rows)

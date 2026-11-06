@@ -14,6 +14,10 @@ Committed direction (see `docs/releases/` plans for detail):
   report-driven delisting review.
 - **Scale**: Kafka/worker autoscaling signals, PgBouncer-class
   connection discipline, multi-node frontier.
+- **Queue reliability**: lossless seed intake — an overflow holding pen
+  that parks over-cap seeds and trickles them in as the queue drains
+  (no more skipped pastes), priority-ordered admission; discovery
+  overflow keeps shedding to skipped.
 
 Out of scope stays out: external search APIs, maps, user accounts
 and tracking profiles.

@@ -107,7 +107,7 @@ def test_failed_lists_reasons_with_pagination(
         def counts(self):
             return {"failed": len(entries), "total": len(entries)}
 
-    monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: _Store())
+    monkeypatch.setattr(routes_mod, "_frontier_mirror_store", lambda request: _Store())
     first = client.get("/api/v1/frontier/failed?limit=2")
     assert first.status_code == 200, first.text
     body = first.json()
@@ -166,7 +166,7 @@ def test_failed_domains_groups_hosts_with_counts(
 
     store = _failed_domain_store(tmp_path)
     try:
-        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        monkeypatch.setattr(routes_mod, "_frontier_mirror_store", lambda request: store)
         body = client.get("/api/v1/frontier/failed/domains").json()
         assert body["total"] == 3
         assert [
@@ -327,7 +327,7 @@ def test_failed_domain_urls_lists_only_that_host(
 
     store = _failed_domain_store(tmp_path)
     try:
-        monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        monkeypatch.setattr(routes_mod, "_frontier_mirror_store", lambda request: store)
         body = client.get("/api/v1/frontier/failed/domains/example.com/urls").json()
         assert body["total"] == 2
         assert [(u["url"], u["reason"]) for u in body["urls"]] == [
@@ -487,6 +487,9 @@ def _triage_post(
     monkeypatch.setattr(routes_mod, "_admin_config_store", lambda request: config_store)
     try:
         monkeypatch.setattr(routes_mod, "_frontier_read_store", lambda request: store)
+        # The triage rollup reads history from the mirror; point it at
+        # the same seeded DB so reads and writes agree.
+        monkeypatch.setattr(routes_mod, "_frontier_mirror_store", lambda request: store)
         resp = client.post("/api/v1/frontier/failed/domains/auto-triage", json=payload)
         assert resp.status_code == 200, resp.text
         return {"body": resp.json(), "db_path": db_path}

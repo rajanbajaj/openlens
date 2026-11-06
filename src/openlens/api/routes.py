@@ -1459,6 +1459,32 @@ def _frontier_read_store(request: Request | WebSocket) -> Any | None:
     return store
 
 
+def _frontier_mirror_store(request: Request | WebSocket) -> Any | None:
+    """Legacy ``storage:``-backed store for history views (fail-open).
+
+    Failed/domain boards aggregate the full terminal corpus: against
+    Redis that means HGETALLing every meta hash (minutes at backlog
+    scale → 504s), while the mirror answers the same GROUP BYs in
+    milliseconds — the flush keeps its failed/done/skipped rows
+    current. Live queue views stay on the read store; only history
+    reads come here. Same once-per-lifetime caching and latch as the
+    read store.
+    """
+    store = getattr(request.app.state, "_frontier_mirror_store", None)
+    if store is not None:
+        return store
+    if getattr(request.app.state, "_frontier_mirror_store_failed", False):
+        return None
+    app_config = getattr(request.app.state, "config", None)
+    try:
+        store = open_frontier_store(app_config if isinstance(app_config, dict) else {})
+    except Exception:
+        request.app.state._frontier_mirror_store_failed = True
+        return None
+    request.app.state._frontier_mirror_store = store
+    return store
+
+
 def _overlay_store_status(
     payload: FrontierStatusSchema, store: Any | None
 ) -> FrontierStatusSchema:
@@ -1704,12 +1730,14 @@ def frontier_failed(
     """Paginated failed-URL list with reasons for the admin dashboard.
 
     Open read like ``/frontier/status`` (URLs + short error strings only).
-    Never 500s: store failures degrade to the empty list.
+    Never 500s: store failures degrade to the empty list. Reads hit the
+    mirror (fast SQL over synced terminal rows), not the live Redis
+    store (full-corpus meta scans → 504s at backlog scale).
     """
     capped = max(0, min(int(limit or 0), 500))
     skipped = max(0, int(offset or 0))
     try:
-        store = _frontier_read_store(request)
+        store = _frontier_mirror_store(request)
         if store is None:
             return FrontierFailedListSchema(
                 urls=[], total=0, limit=capped, offset=skipped
@@ -1746,7 +1774,8 @@ def frontier_failed_domain_urls(
 
     Open read like ``/frontier/failed``. Host matching is exact +
     subdomain (same bucketing as the rollup). Malformed hosts and
-    store failures degrade to the empty list, never 500.
+    store failures degrade to the empty list, never 500. Reads hit
+    the mirror (fast SQL), not the live Redis store.
     """
     from openlens.storage.frontier import normalize_skip_domain
 
@@ -1756,7 +1785,7 @@ def frontier_failed_domain_urls(
     if host is None:
         return FrontierFailedListSchema(urls=[], total=0, limit=capped, offset=skipped)
     try:
-        store = _frontier_read_store(request)
+        store = _frontier_mirror_store(request)
         if store is None:
             return FrontierFailedListSchema(
                 urls=[], total=0, limit=capped, offset=skipped
@@ -1791,11 +1820,12 @@ def frontier_failed_domains(
 
     Open read like ``/frontier/failed`` (hosts + counts only, no
     secrets). Never 500s: store failures degrade to the empty list.
+    Reads hit the mirror (fast SQL), not the live Redis store.
     """
     capped = max(0, int(limit or 0))
     skipped = max(0, int(offset or 0))
     try:
-        store = _frontier_read_store(request)
+        store = _frontier_mirror_store(request)
         if store is None:
             return FrontierFailedDomainListSchema(
                 domains=[], total=0, limit=capped, offset=skipped
@@ -2217,10 +2247,16 @@ def frontier_failed_domains_auto_triage(
                     "provider_unavailable", "frontier store unavailable"
                 ),
             )
+        # The rollup is a history read: the mirror answers it in
+        # milliseconds, while the live Redis store would HGETALL the
+        # whole corpus per page. Mutations below stay on the live
+        # store. Mirror outage falls back to the live store (slow but
+        # correct) rather than failing the triage.
+        history = _frontier_mirror_store(request) or store
         rollup: list[tuple[str, int, str]] = []
         seen_offset = 0
         while True:
-            page = store.failed_domains(limit=500, offset=seen_offset)
+            page = history.failed_domains(limit=500, offset=seen_offset)
             if not page:
                 break
             rollup.extend(

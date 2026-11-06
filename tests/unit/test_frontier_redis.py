@@ -1180,13 +1180,8 @@ class _MemoryRedis:
             zset[member] = float(score)
         return added
 
-    def zrange(self, key: str, start: int, stop: int) -> list[str]:
-        ordered = [
-            member
-            for member, _ in sorted(
-                self.zsets.get(key, {}).items(), key=lambda kv: (kv[1], kv[0])
-            )
-        ]
+    def zrange(self, key: str, start: int, stop: int, withscores: bool = False) -> list:
+        ordered = sorted(self.zsets.get(key, {}).items(), key=lambda kv: (kv[1], kv[0]))
         total = len(ordered)
         if start < 0:
             start = max(total + start, 0)
@@ -1195,7 +1190,10 @@ class _MemoryRedis:
         stop = min(stop, total - 1)
         if start > stop:
             return []
-        return ordered[start : stop + 1]
+        window = ordered[start : stop + 1]
+        if withscores:
+            return [(member, float(score)) for member, score in window]
+        return [member for member, _ in window]
 
     def zcard(self, key: str) -> int:
         return len(self.zsets.get(key, {}))
@@ -1386,3 +1384,76 @@ def test_pending_shows_drain_head_live(store: RedisFrontierStore) -> None:
     head = store.pending(limit=5)
     assert len(head) == 5
     assert head[0].url.endswith("/urgent")
+
+
+def _seed_queue(store) -> None:
+    assert store.enqueue("https://a.example/1", 0, priority=5)
+    assert store.enqueue("https://a.example/2", 0, priority=5)
+    assert store.enqueue("https://a.example/3", 0, priority=1)
+    assert store.enqueue("https://b.example/1", 0, priority=9)
+
+
+def _break_full_scans(store) -> None:
+    """Fail any full-corpus meta scan; ZSET/paged reads keep working."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("full meta scan")
+
+    store._iter_metas = _boom  # type: ignore[method-assign]
+
+
+def test_queued_domains_reads_ready_zset_not_metas() -> None:
+    """Queued boards must not HGETALL the corpus (504s at backlog scale).
+
+    Membership + top priority come from the ready ZSET members and
+    scores in one round trip; priorities decode exactly from the
+    score quantum.
+    """
+    store = _memory_store()
+    _seed_queue(store)
+    _break_full_scans(store)
+    assert store.queued_domain_count() == 2
+    assert store.queued_domains(limit=10) == [
+        ("b.example", 1, 9),
+        ("a.example", 3, 5),
+    ]
+    assert store.queued_domains(limit=1) == [("b.example", 1, 9)]
+    assert store.queued_domains(limit=1, offset=1) == [("a.example", 3, 5)]
+
+
+def test_queued_domain_urls_bounded_to_host() -> None:
+    """Drill-down fetches only the host's own metas, priority-first."""
+    store = _memory_store()
+    _seed_queue(store)
+    _break_full_scans(store)
+    assert store.queued_domain_url_count("a.example") == 3
+    assert store.queued_domain_url_count("missing.test") == 0
+    entries = store.queued_domain_urls("a.example", limit=10)
+    # Same (-priority, -seq) order as the shared drill-down helper.
+    assert [entry.url for entry in entries] == [
+        "https://a.example/2",
+        "https://a.example/1",
+        "https://a.example/3",
+    ]
+
+
+def test_skip_queued_domains_avoids_full_scan() -> None:
+    """Skip finds candidates in the ready ZSET, not the whole corpus."""
+    store = _memory_store()
+    _seed_queue(store)
+    _break_full_scans(store)
+    assert store.skip_queued_domains(["a.example"]) == 3
+    assert store.queued_domain_url_count("a.example") == 0
+    assert store.queued_domain_url_count("b.example") == 1
+
+
+def test_bump_queued_priority_avoids_full_scan() -> None:
+    """Priority bumps find candidates in the ready ZSET."""
+    store = _memory_store()
+    _seed_queue(store)
+    _break_full_scans(store)
+    assert store.bump_queued_priority(["b.example"], -4) == 1
+    assert store.queued_domains(limit=10) == [
+        ("a.example", 3, 5),
+        ("b.example", 1, 5),
+    ]
