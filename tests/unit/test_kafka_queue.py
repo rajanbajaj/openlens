@@ -239,6 +239,7 @@ def test_validate_kafka_section_poll_knobs() -> None:
     normalized = validate_kafka_section({})
     assert normalized["max_poll_interval_ms"] == 900_000
     assert normalized["max_pages_per_poll"] == 25
+    assert normalized["max_poll_records"] == 1
     section = validate_kafka_section(
         {"max_poll_interval_ms": 600_000, "max_pages_per_poll": 2}
     )
@@ -258,6 +259,48 @@ def test_validate_kafka_section_poll_knobs() -> None:
         validate_kafka_section({"max_pages_per_poll": "many"})
     with pytest.raises(ConfigError):
         validate_kafka_section({"max_pages_per_poll": 2.5})
+    section = validate_kafka_section({"max_poll_records": 5})
+    assert section["max_poll_records"] == 5
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_poll_records": 0})
+    with pytest.raises(ConfigError):
+        validate_kafka_section({"max_poll_records": True})
+
+
+def test_consumer_fetches_one_record_per_poll() -> None:
+    """The loop handles one record per cycle while ``commit()`` covers
+    the whole fetch — fetching more silently commits unprocessed URLs
+    and drops them from the topic (plus oversized fetches stretch the
+    poll gap toward ``max_poll_interval_ms`` and invite rebalances).
+    """
+    seen: dict[str, Any] = {}
+
+    class _ProbeConsumer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+        def poll(self, timeout_ms: int = 0) -> dict[Any, Any]:
+            return {}
+
+    class _FakeKafka:
+        KafkaConsumer = _ProbeConsumer
+
+    import openlens.indexing.kafka_queue as kafka_queue_mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        kafka_queue_mod, "_load_driver", lambda: (_FakeKafka(), Exception)
+    )
+    try:
+        queue = KafkaQueue.from_app_config(
+            {"kafka": {"bootstrap_servers": ["b:1"]}},
+            producer=_FakeProducer(),
+        )
+        queue.poll()
+    finally:
+        monkeypatch.undo()
+        queue.close()
+    assert seen["max_poll_records"] == 1
 
 
 def test_kafka_enabled() -> None:

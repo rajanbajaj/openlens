@@ -77,6 +77,7 @@ from openlens.storage.repository import (
     doc_columns,
     document_link_rows,
     fetch_ms_column,
+    sanitize_document,
     site_category_columns,
 )
 
@@ -197,6 +198,7 @@ def _to_tsquery_text(fts_query: str) -> str:
 def _doc_to_row(
     doc: Document,
 ) -> tuple[Any, ...]:
+    doc = sanitize_document(doc)
     content_type, published = doc_columns(doc)
     category, confidence, source, kids_hit, news_hit = site_category_columns(doc)
     return (
@@ -985,6 +987,7 @@ class PostgresDocumentStore(DocumentStore):
 
     def update_document(self, doc: Document) -> bool:
         """Rewrite a document by id (and its tsvector). False when missing."""
+        doc = sanitize_document(doc)
         content_type, published = doc_columns(doc)
         params = (
             doc.title,

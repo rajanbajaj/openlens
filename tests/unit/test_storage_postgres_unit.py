@@ -7,6 +7,7 @@ in ``tests/integration/test_storage_postgres.py`` cannot guard.
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 from typing import Any
@@ -250,6 +251,31 @@ def test_doc_to_row_carries_description_last() -> None:
 def test_doc_to_row_empty_description_without_metadata() -> None:
     doc = Document(id="d1", title="t", content="c", url="https://x.test/a")
     assert _doc_to_row(doc)[-1] == ""
+
+
+def test_doc_to_row_strips_nul_bytes() -> None:
+    """Postgres TEXT/JSONB reject NUL: one bad page must not fail a batch.
+
+    Regression: a fetched page containing ``\\x00`` crashed
+    ``add_documents`` with ``PostgreSQL text fields cannot contain NUL
+    (0x00) bytes``, which failed the whole drain and crash-looped the
+    worker instead of indexing the cleaned page.
+    """
+    doc = Document(
+        id="d\x00-1",
+        title="t\x00itle",
+        content="co\x00ntent",
+        url="https://x.test/a\x00",
+        metadata={
+            "content_type": "text/html\x00",
+            "description": "de\x00sc",
+            "nested": ["a\x00", {"k": "v\x00"}],
+        },
+    )
+    row = _doc_to_row(doc)
+    assert "\x00" not in json.dumps(row, default=str)
+    assert row[0] == "d-1"
+    assert row[2] == "content"
 
 
 class _WriteCursor(_StubCursor):

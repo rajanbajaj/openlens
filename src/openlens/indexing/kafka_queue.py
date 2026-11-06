@@ -53,6 +53,13 @@ DEFAULT_MAX_POLL_INTERVAL_MS = 900_000
 #: dead one. Raise per-poll throughput here, not by stretching this
 #: past ~1/4 of ``max_poll_interval_ms``.
 DEFAULT_MAX_PAGES_PER_POLL = 25
+#: Default cap on records returned per poll. The worker loop processes
+#: exactly one message per poll cycle (``poll`` returns the first
+#: record; the store drain does the heavy lifting), while ``commit()``
+#: covers the whole fetch — so any value above 1 silently commits
+#: unprocessed URLs and drops them from the topic. Keep at 1 unless
+#: the loop learns to process every fetched record.
+DEFAULT_MAX_POLL_RECORDS = 1
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,7 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "poll_timeout_s",
         "max_poll_interval_ms",
         "max_pages_per_poll",
+        "max_poll_records",
         "cluster_id",
         "controller_quorum",
     }
@@ -130,6 +138,7 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
         "poll_timeout_s": DEFAULT_POLL_TIMEOUT_S,
         "max_poll_interval_ms": DEFAULT_MAX_POLL_INTERVAL_MS,
         "max_pages_per_poll": DEFAULT_MAX_PAGES_PER_POLL,
+        "max_poll_records": DEFAULT_MAX_POLL_RECORDS,
         "cluster_id": "",
         "controller_quorum": [],
     }
@@ -182,6 +191,13 @@ def validate_kafka_section(section: Any) -> dict[str, Any]:
                 "Config 'kafka.max_pages_per_poll' must be an integer >= 1."
             )
         normalized["max_pages_per_poll"] = value
+    if "max_poll_records" in section:
+        value = section["max_poll_records"]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ConfigError(
+                "Config 'kafka.max_poll_records' must be an integer >= 1."
+            )
+        normalized["max_poll_records"] = value
     if "cluster_id" in section:
         value = section["cluster_id"]
         if not isinstance(value, str):
@@ -266,6 +282,7 @@ class KafkaQueue:
         poll_timeout_s: float = DEFAULT_POLL_TIMEOUT_S,
         max_poll_interval_ms: int = DEFAULT_MAX_POLL_INTERVAL_MS,
         max_pages_per_poll: int = DEFAULT_MAX_PAGES_PER_POLL,
+        max_poll_records: int = DEFAULT_MAX_POLL_RECORDS,
         producer: Any | None = None,
         consumer_factory: Callable[[], Any] | None = None,
     ) -> None:
@@ -278,6 +295,7 @@ class KafkaQueue:
         self._poll_timeout_s = poll_timeout_s
         self._max_poll_interval_ms = max_poll_interval_ms
         self.max_pages_per_poll = max_pages_per_poll
+        self._max_poll_records = max_poll_records
         self._consumer_factory = consumer_factory
         self._consumer: Any | None = None
         self._pending_record: Any | None = None
@@ -322,6 +340,7 @@ class KafkaQueue:
             poll_timeout_s=float(normalized["poll_timeout_s"]),
             max_poll_interval_ms=int(normalized["max_poll_interval_ms"]),
             max_pages_per_poll=int(normalized["max_pages_per_poll"]),
+            max_poll_records=int(normalized["max_poll_records"]),
             producer=producer,
             consumer_factory=consumer_factory,
         )
@@ -426,6 +445,11 @@ class KafkaQueue:
                         # A consumed message can trigger a multi-page store
                         # drain; keep slow pages from looking like death.
                         max_poll_interval_ms=self._max_poll_interval_ms,
+                        # The loop handles one record per cycle while
+                        # commit() covers the whole fetch: never fetch
+                        # more than one, or unprocessed URLs are
+                        # silently committed and lost from the topic.
+                        max_poll_records=self._max_poll_records,
                         key_deserializer=lambda raw: raw.decode("utf-8") if raw else "",
                         value_deserializer=lambda raw: json.loads(raw.decode("utf-8")),
                     )

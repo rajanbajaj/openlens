@@ -38,6 +38,37 @@ def content_hash_of(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _strip_nul(value: Any) -> Any:
+    """Drop NUL bytes from text (Postgres TEXT/JSONB reject ``0x00``)."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {key: _strip_nul(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_nul(item) for item in value)
+    return value
+
+
+def sanitize_document(doc: Document) -> Document:
+    """Copy a Document with NUL bytes removed from every text field.
+
+    Binary page artifacts (e.g. a truncated multi-byte sequence decoded
+    as NUL) otherwise fail the whole insert batch — Postgres rejects
+    ``0x00`` in TEXT and JSONB — and the failed drain crash-loops the
+    worker. Hashing and promotion helpers downstream all see the
+    cleaned copy, so the content hash matches the stored bytes.
+    """
+    return Document(
+        id=_strip_nul(doc.id),
+        title=_strip_nul(doc.title),
+        content=_strip_nul(doc.content),
+        url=_strip_nul(doc.url),
+        metadata=_strip_nul(doc.metadata or {}),
+    )
+
+
 def published_from_last_modified(value: Any) -> Optional[str]:
     """Normalize a stored ``last_modified`` value to ISO ``YYYY-MM-DD``.
 
