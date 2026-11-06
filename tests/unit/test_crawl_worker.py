@@ -167,9 +167,48 @@ def test_worker_global_pause_flag_via_store_settings() -> None:
         assert worker.last_checkpoint is not None
         assert worker.last_checkpoint["phase"] == "paused"
         assert hits == {}
-        # Clearing the flag lets the next run proceed.
+        # Clearing the flag lets the next run proceed (past the settings
+        # TTL: rapid re-reads share one cached row by design).
         store.save_settings({"paused": False})
+        worker._settings_cache_at = 0.0
         assert worker.should_stop() is False
+    finally:
+        store.close()
+        repo.close()
+
+
+def test_worker_caches_shared_settings_row() -> None:
+    """Pause checks must not HGETALL the settings row every call.
+
+    Regression (prod): paused()/should_stop()/refresh_limits() each
+    read the shared settings row, and the idle worker loop calls them
+    thousands of times per second — ~125k HGETALL/s of fw:settings
+    that saturated single-threaded Redis until ops blew the 2s socket
+    timeout and the fleet crash-looped (650+ restarts each).
+    """
+    repo = DocumentRepository(":memory:")
+    store = SqliteFrontierStore(":memory:")
+    try:
+        worker = _worker(_crawler(), repo, store)
+        reads = 0
+        real = store.get_settings
+
+        def counting() -> dict:
+            nonlocal reads
+            reads += 1
+            return real()
+
+        store.get_settings = counting  # type: ignore[method-assign]
+        store.save_settings({"paused": True})
+        assert worker.paused() is True
+        assert worker.paused() is True
+        assert worker.should_stop() is True
+        assert reads == 1
+        # Expiry re-reads: the pause clear lands within one TTL.
+        worker._settings_cache_at = 0.0
+        store.save_settings({"paused": False})
+        assert worker.paused() is False
+        assert reads == 2
     finally:
         store.close()
         repo.close()

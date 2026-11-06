@@ -1110,6 +1110,14 @@ class _MemoryPipeline:
         self._cmds.append(("delete", args, kwargs))
         return self
 
+    def expire(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("expire", args, kwargs))
+        return self
+
+    def set(self, *args: object, **kwargs: object) -> "_MemoryPipeline":
+        self._cmds.append(("set", args, kwargs))
+        return self
+
     def execute(self) -> list[object]:
         return [
             getattr(self._client, name)(*args, **kwargs)
@@ -1147,6 +1155,10 @@ class _MemoryRedis:
     def incr(self, key: str, amount: int = 1) -> int:
         self.strings[key] = self.strings.get(key, 0) + amount
         return self.strings[key]
+
+    def set(self, key: str, value: object, **kwargs: object) -> bool:
+        self.strings[key] = str(value)
+        return True
 
     def hset(self, key: str, mapping: dict | None = None, **kwargs: object) -> int:
         fields = self.hashes.setdefault(key, {})
@@ -1218,6 +1230,20 @@ class _MemoryRedis:
     def pipeline(self) -> _MemoryPipeline:
         return _MemoryPipeline(self)
 
+    def zpopmax(self, key: str, count: int = 1) -> list[tuple[str, float]]:
+        zset = self.zsets.get(key, {})
+        ordered = sorted(zset.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+        popped = ordered[: max(0, int(count or 0))]
+        for member, _ in popped:
+            del zset[member]
+        return [(member, score) for member, score in popped]
+
+    def zscan_iter(self, key: str, count: int = 500) -> object:
+        return iter(list(self.zsets.get(key, {}).items()))
+
+    def expire(self, key: str, seconds: int) -> bool:
+        return key in self.hashes or key in self.strings or key in self.sets
+
 
 def _memory_store() -> RedisFrontierStore:
     """Store wired to the in-memory client (no server needed)."""
@@ -1230,6 +1256,30 @@ def _memory_store() -> RedisFrontierStore:
     store._lease_ttl_s = 120
     store._pending = deque()  # type: ignore[attr-defined]
     return store
+
+
+def test_owned_reads_active_set_not_full_scan() -> None:
+    """owned() must not full-scan every known URL.
+
+    Regression (prod): the 5s reporter beat calls owned() per worker,
+    and the old implementation scanned all 251k metas each time —
+    saturating single-threaded Redis until worker ops blew the 2s
+    socket timeout and the fleet crash-looped.
+    """
+    store = _memory_store()
+    store.enqueue("https://example.com/mine")
+    for i in range(20):
+        store.enqueue(f"https://example.com/other-{i}")
+    entry = store.dequeue()
+    assert entry is not None and entry.url == "https://example.com/mine"
+    for key, fields in store._client.hashes.items():
+        if fields.get("status") == "active":
+            store._client.hset(key, mapping={"owner": "w1"})
+    store._client.sscan_iter = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("full scan on the owned() path")
+    )
+    assert [e.url for e in store.owned("w1")] == ["https://example.com/mine"]
+    assert store.owned("nobody") == []
 
 
 def test_pending_shows_drain_head_not_tail() -> None:

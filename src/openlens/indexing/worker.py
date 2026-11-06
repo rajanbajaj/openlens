@@ -470,6 +470,11 @@ class CrawlerWorker:
     #: Started by :func:`_build_worker`, stopped + drained on shutdown so
     #: the Postgres mirror converges even when the loop exits uncleanly.
     mirror_flusher: Any = None
+    #: Cached shared settings row + monotonic fetch time (see
+    #: :meth:`_live_settings`). Workers must never read around this
+    #: cache for the hot pause/stop/limit paths.
+    _settings_cache: Any = None
+    _settings_cache_at: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.worker_id:
@@ -523,18 +528,43 @@ class CrawlerWorker:
             return True
         return self._paused_via_store()
 
+    def _live_settings(self) -> dict[str, Any]:
+        """Shared settings row, TTL-cached (fail-open).
+
+        Every pause check, stop predicate, and limit refresh reads this
+        row; the idle loop calls those paths thousands of times per
+        second, so each call goes to the cache unless the TTL lapsed.
+        Attempts are throttled either way: when the store is sick each
+        check would otherwise block on the client socket timeout. The
+        last-good row is served while the store is unreachable, so a
+        pause set before an outage keeps holding through it.
+        """
+        now = time.monotonic()
+        if (
+            isinstance(self._settings_cache, dict)
+            and now - self._settings_cache_at <= _SETTINGS_TTL_S
+        ):
+            return self._settings_cache
+        store = self.frontier_store
+        if store is not None:
+            try:
+                fetched = store.get_settings()
+            except Exception:
+                fetched = None
+            # Throttle attempts even on failure: a sick store must not
+            # turn every pause check into a blocking socket timeout.
+            self._settings_cache_at = now
+            if isinstance(fetched, dict):
+                self._settings_cache = fetched
+        cached = self._settings_cache
+        return dict(cached) if isinstance(cached, dict) else {}
+
     def _paused_via_store(self) -> bool:
         """True when the shared settings row carries the pause flag."""
-        store = self.frontier_store
-        if store is None:
+        if self.frontier_store is None:
             return False
-        try:
-            settings = store.get_settings()
-        except Exception:
-            return False
-        return bool(
-            isinstance(settings, dict) and settings.get(PAUSE_SETTINGS_KEY) is True
-        )
+        settings = self._live_settings()
+        return bool(settings.get(PAUSE_SETTINGS_KEY) is True)
 
     def refresh_limits(self) -> None:
         """Refresh live crawl limits from the shared settings row.
@@ -549,10 +579,7 @@ class CrawlerWorker:
         crawler = self.crawler
         if store is None or crawler is None:
             return
-        try:
-            settings = store.get_settings()
-        except Exception:
-            return
+        settings = self._live_settings()
         if not isinstance(settings, dict):
             return
         live = _live_crawl_limits(settings)
@@ -1073,6 +1100,15 @@ _IDLE_DRAIN_EVERY_POLLS = 30
 #: off the dashboard; the reporter calls the throttled progress beat on
 #: this cadence so the registry keeps seeing the replica.
 _LIVE_REPORTER_TICK_S = 5.0
+
+#: Shared settings-row cache TTL. Pause checks, stop predicates, and
+#: limit refreshes all read the same store row; without the cache the
+#: idle worker loop HGETALLs it tens of thousands of times per second
+#: and melts single-threaded Redis at backlog scale (250k metas), until
+#: real ops blow the client socket timeout and the fleet crash-loops.
+#: A stale row only delays a dashboard edit by seconds, and pause still
+#: lands within one TTL.
+_SETTINGS_TTL_S = 5.0
 
 
 def _reporter_loop(report: Callable[[], None], stop: Any) -> None:

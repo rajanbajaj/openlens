@@ -950,9 +950,22 @@ class RedisFrontierStore(FrontierStore):
         return moved
 
     def owned(self, worker_id: str) -> list[FrontierEntry]:
+        """Rows this worker holds active (bounded by the active set).
+
+        The old implementation scanned every known URL; with a 250k-row
+        backlog the 5s reporter beat turned into a full-queue scan per
+        worker and saturated single-threaded Redis. The active set is
+        the only place owned rows can be, so iterate that (near-empty
+        when idle) and read just those metas.
+        """
         out: list[FrontierEntry] = []
         with self._lock:
-            for norm, meta in self._iter_metas():
+            members = self._scan_active("list owned frontier URLs")
+            for norm in members:
+                meta = self._read_meta(norm)
+                if not meta:
+                    self._drop_stale_member(norm)
+                    continue
                 if str(meta.get("status") or "") != STATUS_ACTIVE:
                     continue
                 if str(meta.get("owner") or "") != worker_id:

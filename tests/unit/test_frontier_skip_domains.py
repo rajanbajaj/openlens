@@ -524,8 +524,10 @@ def test_refresh_applies_list_changes_add_then_remove() -> None:
         assert store.enqueue("https://evil.test/one", 0) is True
         worker.refresh_limits()
         assert store.status_of("https://evil.test/one") == "skipped"
-        # Removing the domain stops enforcement for later rows.
+        # Removing the domain stops enforcement for later rows (past the
+        # settings TTL: rapid re-reads share one cached row).
         store.save_settings({"skip_domains": []})
+        worker._settings_cache_at = 0.0
         worker.refresh_limits()
         assert worker.skip_domains == []
         assert store.enqueue("https://evil.test/two", 0) is True
