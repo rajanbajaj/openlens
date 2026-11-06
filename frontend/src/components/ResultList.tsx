@@ -1,4 +1,5 @@
 import type { SearchResult } from '../api/types';
+import { formatResultTotal } from '../api/client.ts';
 import { resultStoryId } from '../api/enrichments.ts';
 import { ResultCard } from './ResultCard';
 import { EmptyResults } from './States';
@@ -121,7 +122,7 @@ export function ResultList({
     <section aria-label="Search results">
       {assistance}
       <p data-testid="result-count" className="text-ol-s text-ol-ink-soft">
-        Showing {results.length} of {total} result{total === 1 ? '' : 's'}
+        Showing {results.length} of {formatResultTotal(total)} result{total === 1 ? '' : 's'}
       </p>
       <ol className="my-ol-m flex list-none flex-col gap-ol-m p-0">
         {groupByStory(results).map((group) =>

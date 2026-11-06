@@ -162,6 +162,22 @@ export function totalPages(total: number, limit: number): number {
   return Math.ceil(total / limit);
 }
 
+/**
+ * Backend exact-total ceiling (`MAX_EXACT_TOTAL` in
+ * `storage/postgres_backend.py`): the search total is exact below this
+ * value and saturates at it for larger result sets. Keep in sync.
+ */
+export const MAX_EXACT_TOTAL = 10_000;
+
+/**
+ * Display form of a search `total`: locale-grouped, with a `+` suffix
+ * at the backend cap (`10,000+`) where the true count is unknown.
+ */
+export function formatResultTotal(total: number): string {
+  if (total >= MAX_EXACT_TOTAL) return `${MAX_EXACT_TOTAL.toLocaleString('en-US')}+`;
+  return total.toLocaleString('en-US');
+}
+
 /** Offset of the first result on 1-based `page` at the given page size. */
 export function offsetForPage(page: number, limit: number): number {
   return Math.max(0, (Math.max(1, Math.floor(page)) - 1) * limit);

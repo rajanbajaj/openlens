@@ -7,6 +7,7 @@ import {
   prefetchPage,
   searchLens,
   SearchApiError,
+  formatResultTotal,
   totalPages,
   validateQuery,
 } from './api/client.ts';
@@ -128,7 +129,7 @@ export default function App() {
       // never sent to the backend. Pagination re-records are harmless.
       recordRecentSearch(searchQuery);
       setAnnouncement(
-        `${payload.total} result${payload.total === 1 ? '' : 's'} for “${searchQuery}”`,
+        `${formatResultTotal(payload.total)} result${payload.total === 1 ? '' : 's'} for “${searchQuery}”`,
       );
     } catch (err) {
       if (err instanceof SearchApiError) {

@@ -108,6 +108,12 @@ _PRIORITY_QUANTUM = 1_000_000.0
 #: terminal rows persist for the mirror). Always >= the lease TTL.
 _META_TTL_MULTIPLIER = 2
 
+#: HGETALL commands per pipeline EXECUTE in :meth:`_iter_metas`. A full
+#: scan at backlog scale (250k+ URLs) in one pipeline can never fit the
+#: 2s client socket timeout under load, killing the caller; chunked
+#: executes degrade to slow instead of dying.
+_META_PIPELINE_BATCH = 500
+
 
 def _score(priority: int, depth: int, seq: int) -> float:
     """Queue score: ``priority DESC, depth ASC``, ties by discovery order.
@@ -486,23 +492,30 @@ class RedisFrontierStore(FrontierStore):
             raise self._fail(op, exc) from exc
 
     def _iter_metas(self) -> Iterable[tuple[str, dict[str, Any]]]:
-        """Yield ``(norm, meta)`` for every known URL (bounded scan)."""
+        """Yield ``(norm, meta)`` for every known URL (bounded scan).
+
+        Pipelines go out in :data:`_META_PIPELINE_BATCH`-sized chunks:
+        one EXECUTE per chunk bounds both the socket read and the
+        server-side reply, so full scans degrade to slow instead of
+        tripping the client timeout and killing the caller.
+        """
         try:
-            members = list(self._client.sscan_iter(self._seen, count=500))
+            members = [str(m) for m in self._client.sscan_iter(self._seen, count=500)]
         except Exception as exc:
             raise self._fail("scan frontier URLs", exc) from exc
-        pipe = self._client.pipeline()
-        for norm in members:
-            pipe.hgetall(self._meta(str(norm)))
-        try:
-            metas = pipe.execute()
-        except Exception as exc:
-            raise self._fail("read frontier URLs", exc) from exc
         out: list[tuple[str, dict[str, Any]]] = []
-        for norm, meta in zip(members, metas):
-            norm_s = str(norm)
-            if meta:
-                out.append((norm_s, dict(meta)))
+        for start in range(0, len(members), _META_PIPELINE_BATCH):
+            batch = members[start : start + _META_PIPELINE_BATCH]
+            pipe = self._client.pipeline()
+            for norm in batch:
+                pipe.hgetall(self._meta(norm))
+            try:
+                metas = pipe.execute()
+            except Exception as exc:
+                raise self._fail("read frontier URLs", exc) from exc
+            for norm, meta in zip(batch, metas):
+                if meta:
+                    out.append((norm, dict(meta)))
         return out
 
     def _drop_stale_member(self, norm: str) -> None:

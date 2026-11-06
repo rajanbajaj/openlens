@@ -84,7 +84,7 @@ a deep drain is expected; flapping membership afterwards means a
 drain outran `max_poll_interval_ms` (900 s) and the broker kicked
 the member mid-drain. Watch heartbeats + `queue_depth`, not the
 member count — see
-[`kafka-group-fewer-members-than-crawlers`](../troubleshoots/kafka-group-fewer-members-than-crawlers.md).
+[`kafka-group-fewer-members-than-crawlers`](../troubleshoots/2026-11-02-kafka-group-fewer-members-than-crawlers.md).
 
 ## Fetch outcomes, retries, and trap defense
 

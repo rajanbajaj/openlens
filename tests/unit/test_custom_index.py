@@ -115,3 +115,21 @@ def test_configure_rejects_bad_config():
     provider = CustomIndexProvider(db_path=":memory:")
     with pytest.raises(Exception):
         provider.configure({"db_path": ""})  # type: ignore[dict-item]
+
+
+def test_configure_applies_timeout_s():
+    """Admin-saved ``timeout_s`` must reach the live provider object.
+
+    Regression: ``CustomIndexProvider.configure`` skipped
+    ``super().configure()``, so the manager's live ``getattr`` read the
+    5s default forever and admin timeout edits never took effect.
+    """
+    provider = CustomIndexProvider(db_path=":memory:")
+    provider.configure({"db_path": ":memory:", "seed": False, "timeout_s": 10})
+    assert provider.timeout_s == 10.0
+
+
+def test_configure_rejects_bad_timeout_s():
+    provider = CustomIndexProvider(db_path=":memory:")
+    with pytest.raises(Exception):
+        provider.configure({"db_path": ":memory:", "seed": False, "timeout_s": 0})

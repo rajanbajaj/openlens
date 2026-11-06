@@ -82,6 +82,7 @@
 - If the change has an issue, link it; check for duplicate or overlapping work first.
 - Update the docs that describe the behavior you changed.
 - New wiki page → index it in `docs/wiki/Home.md` and `docs/wiki/_Sidebar.md` (whichever section fits; Home is the discovery index, the sidebar is navigation).
+- Troubleshooting docs only when requested: never proactively write incident notes; when asked, one file per incident at `docs/troubleshoots/YYYY-MM-DD-<slug>.md` (chronological in plain `ls`) and link it from the matching `docs/wiki/Troubleshooting.md` section.
 - Release commits set `project.version` in `pyproject.toml` to the tag (no `v` prefix); tags never move — a missed bump is a follow-up sync commit, never a retag (`docs/wiki/Release-Process.md`).
 
 ## 9. Never do

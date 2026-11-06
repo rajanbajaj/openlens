@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_QUERY_LENGTH, buildSearchBody, debounce, sanitizeInput } from './client.ts';
+import {
+  MAX_EXACT_TOTAL,
+  MAX_QUERY_LENGTH,
+  buildSearchBody,
+  debounce,
+  formatResultTotal,
+  sanitizeInput,
+} from './client.ts';
 
 describe('sanitizeInput', () => {
   it('trims surrounding whitespace', () => {
@@ -74,5 +81,17 @@ describe('debounce', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('formatResultTotal', () => {
+  it('renders exact totals below the backend cap', () => {
+    expect(formatResultTotal(1)).toBe('1');
+    expect(formatResultTotal(9999)).toBe('9,999');
+  });
+
+  it('saturates at the cap with a plus suffix', () => {
+    expect(formatResultTotal(MAX_EXACT_TOTAL)).toBe('10,000+');
+    expect(formatResultTotal(MAX_EXACT_TOTAL + 1)).toBe('10,000+');
   });
 });

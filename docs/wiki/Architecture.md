@@ -117,7 +117,7 @@ commit only after index. Drains are time-boxed under 1/4 of
 `max_poll_interval_ms` so a busy consumer is never mistaken for a
 dead one. Kafka lag without members means nobody has polled yet —
 watch heartbeats and `queue_depth`, not the member count
-([troubleshoot](../troubleshoots/kafka-group-fewer-members-than-crawlers.md)).
+([troubleshoot](../troubleshoots/2026-11-02-kafka-group-fewer-members-than-crawlers.md)).
 
 Deep dives: [Search Path](Search-Path) (stages, providers, ranking,
 agent mode) and [Crawl Path](Crawl-Path) (frontier, fetch pipeline,

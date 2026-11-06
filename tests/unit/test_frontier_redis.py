@@ -1258,6 +1258,33 @@ def _memory_store() -> RedisFrontierStore:
     return store
 
 
+def test_iter_metas_chunks_pipeline_executes() -> None:
+    """Full scans must not send one unbounded pipeline.
+
+    Regression (prod): a 250k-HGETALL pipeline EXECUTE can never fit the
+    2s client socket timeout under load, so every full scan killed its
+    caller — workers died in startup/reporting loops and crash-looped.
+    Chunked executes degrade to slow instead of dying.
+    """
+    store = _memory_store()
+    for i in range(1500):
+        assert store.enqueue(f"https://example.com/{i}") is True
+
+    real_execute = _MemoryPipeline.execute
+
+    def cliff_execute(self: _MemoryPipeline) -> list[object]:
+        if len(self._cmds) > 1000:
+            raise TimeoutError("simulated 2s socket cliff")
+        return real_execute(self)
+
+    store._client.pipeline = lambda: _MemoryPipeline(store._client)  # noqa: E731
+    import unittest.mock as _mock
+
+    with _mock.patch.object(_MemoryPipeline, "execute", cliff_execute):
+        rows = list(store._iter_metas())
+    assert len(rows) == 1500
+
+
 def test_owned_reads_active_set_not_full_scan() -> None:
     """owned() must not full-scan every known URL.
 

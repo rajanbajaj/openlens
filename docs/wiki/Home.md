@@ -33,6 +33,7 @@ backends are swappable via config.
 - [API Reference](API-Reference) — routes, envelopes, generated clients
 - [Testing and CI](Testing-and-CI) — gates, offline fakes, contracts
 - [Crawler and Frontier Ops](Crawler-and-Frontier-Ops) — queue, Kafka scale, freshness
+- [Troubleshooting](Troubleshooting) — symptom-first prod runbook
 - [Contributing](Contributing) — workflow, docs, redaction rules
 
 ## Product pages

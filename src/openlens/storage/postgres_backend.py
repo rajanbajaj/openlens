@@ -147,6 +147,14 @@ def _backfill_category_metadata(
 #: Cached ranks may be stale (documented on ``list_domains``).
 _DOMAINS_CACHE_TTL_S = 30.0
 
+#: Exact-match ceiling for ``search`` totals. The page query counts
+#: through a ``LIMIT MAX_EXACT_TOTAL + 1`` probe, so totals stay exact
+#: up to this value and report it beyond that (the UI renders
+#: "10,000+"). 10k covers ~1000 pages; nobody paginates past that,
+#: while an unbounded ``COUNT(*)`` over 40k+ matches costs seconds of
+#: heap fetches and blows the provider timeout.
+MAX_EXACT_TOTAL = 10_000
+
 _PROVIDER_NAME = "custom_index"
 
 #: Optional-driver import name. Never imported at module top level.
@@ -1168,25 +1176,32 @@ class PostgresDocumentStore(DocumentStore):
         rank = "ts_rank(search_tsv, plainto_tsquery('english', %s))"
         narrowing = " AND site_category = %s" if category is not None else ""
         # S608 false positives below: validated identifiers; the query
-        # text, category, and paging values are bound %s parameters.
-        count_sql = f"SELECT COUNT(*) FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
-        # Single-statement page: the total rides on the same match scan
-        # as the ranked window (``COUNT(*) OVER ()`` counts pre-LIMIT /
-        # pre-OFFSET rows), so one round trip replaces the old
-        # count-then-page pair and common terms (10k+ matches) pay for
-        # one GIN bitmap build instead of two. Totals stay exact for
-        # pagination. Rank still goes narrow (id, score) first with full
-        # TOASTed rows fetched for the top-N only. Parameter order is
-        # unchanged, so existing call sites are untouched.
+        # text, category, and paging values are bound %s parameters, and
+        # the LIMIT cap is an int module constant, never user input.
+        capped = (
+            f"SELECT 1 FROM {self._qualified()} WHERE {match}{narrowing}"  # noqa: S608
+            f" LIMIT {MAX_EXACT_TOTAL + 1}"
+        )
+        count_sql = f"SELECT COUNT(*) FROM ({capped}) AS capped"  # noqa: S608
+        # Single-statement page: the total rides as a scalar subquery over
+        # a capped match probe, NOT ``COUNT(*) OVER ()``. The window form
+        # materialized every match (44k ranked rows for common terms:
+        # ~4s of heap fetches), blowing the provider timeout; the capped
+        # probe stops its bitmap scan after MAX_EXACT_TOTAL + 1 rows
+        # (~0.5s) while the ranked CTE still scores ALL matches, so the
+        # top-N order is unchanged. Totals stay exact up to
+        # MAX_EXACT_TOTAL (10k covers ~1000 pages); beyond that the page
+        # reports the cap and the UI renders "10,000+". Parameter order:
+        # matched probe, ranked match, rank, then limit/offset.
         page_sql = (
-            f"WITH ranked AS (SELECT id, {rank} AS score,"  # noqa: S608
-            " COUNT(*) OVER () AS total"
+            f"WITH matched AS ({capped}),"  # noqa: S608
+            f" ranked AS (SELECT id, {rank} AS score"  # noqa: S608
             f" FROM {self._qualified()} WHERE {match}{narrowing}"
             " ORDER BY score DESC, id ASC LIMIT %s OFFSET %s)"
             " SELECT documents.id, documents.title, documents.content,"
             " documents.url, documents.metadata, documents.content_type,"
             f" documents.published, {CATEGORY_SELECT}, documents.fetch_ms,"
-            " ranked.score, ranked.total"
+            " ranked.score, (SELECT COUNT(*) FROM matched) AS total"
             f" FROM {self._qualified()} AS documents"
             " JOIN ranked ON ranked.id = documents.id"
             " ORDER BY ranked.score DESC, ranked.id ASC"
@@ -1195,13 +1210,23 @@ class PostgresDocumentStore(DocumentStore):
             try:
                 with conn.cursor() as cur:
                     if category is None:
-                        cur.execute(page_sql, (ts_text, ts_text, limit, offset))
+                        cur.execute(
+                            page_sql, (ts_text, ts_text, ts_text, limit, offset)
+                        )
                     else:
-                        narrowed = (ts_text, ts_text, category, limit, offset)
+                        narrowed = (
+                            ts_text,
+                            category,
+                            ts_text,
+                            category,
+                            ts_text,
+                            limit,
+                            offset,
+                        )
                         cur.execute(page_sql, narrowed)
                     rows = cur.fetchall()
                     if rows:
-                        total = int(rows[0][-1])
+                        total = min(int(rows[0][-1]), MAX_EXACT_TOTAL)
                     elif offset == 0:
                         # An empty first page means zero matches: the
                         # window has no row to ride on, and the count is
@@ -1209,13 +1234,13 @@ class PostgresDocumentStore(DocumentStore):
                         total = 0
                     else:
                         # Deep empty page (offset past the end): fall back
-                        # to the count query — rare, exactness preserved.
+                        # to the capped count — rare, exact below the cap.
                         if category is None:
                             cur.execute(count_sql, (ts_text,))
                         else:
                             cur.execute(count_sql, (ts_text, category))
                         row = cur.fetchone()
-                        total = int(row[0])
+                        total = min(int(row[0]), MAX_EXACT_TOTAL)
             except Exception as exc:
                 raise ProviderError(
                     f"search failed: {exc}",

@@ -15,6 +15,7 @@ import pytest
 
 from openlens.core.interfaces import Document, ProviderError
 from openlens.storage.postgres_backend import (
+    MAX_EXACT_TOTAL,
     PostgresDocumentStore,
     _doc_to_row,
     _row_to_document,
@@ -436,14 +437,40 @@ def test_search_page_query_ranks_ids_before_fetching_rows() -> None:
     calls = store._stub_cursor.calls  # type: ignore[attr-defined]
     assert len(calls) == 1, "count+page must be one statement, one trip"
     page_sql = calls[0][0]
-    assert "WITH ranked AS" in page_sql
-    assert "COUNT(*) OVER ()" in page_sql
+    assert "WITH matched AS" in page_sql
+    assert "ranked AS (SELECT id," in page_sql
+    # No window count: materializing every match (~4s at 44k rows) is
+    # what blew the provider timeout. The total rides a capped probe.
+    assert "COUNT(*) OVER ()" not in page_sql
+    assert "SELECT COUNT(*) FROM matched" in page_sql
+    assert f"LIMIT {MAX_EXACT_TOTAL + 1}" in page_sql
     assert "JOIN ranked ON ranked.id" in page_sql
-    assert page_sql.count("%s") == 4  # match, rank, limit, offset
+    assert page_sql.count("%s") == 5  # probe match, rank match, rank, limit, offset
     params = calls[0][1]
-    assert params == ("hello", "hello", 10, 0)
+    assert params == ("hello", "hello", "hello", 10, 0)
     assert total == 1
     assert hits[0][1] == 0.75
+
+
+def test_search_total_caps_at_max_exact_total() -> None:
+    """Beyond the cap the page reports MAX_EXACT_TOTAL ("10,000+").
+
+    The probe counts at most MAX_EXACT_TOTAL + 1 rows, so common terms
+    stop their bitmap scan early instead of heap-fetching every match.
+    Top-N order is unaffected (the ranked CTE still scores all matches);
+    only the displayed total saturates.
+    """
+    store = _store_with_rows([_fifteen_col_row("d1", total=MAX_EXACT_TOTAL + 1)])
+    hits, total = store.search("hello", limit=10)
+    assert len(hits) == 1
+    assert total == MAX_EXACT_TOTAL
+
+
+def test_search_total_exact_below_cap() -> None:
+    """Small result sets keep their exact total (no off-by-cap)."""
+    store = _store_with_rows([_fifteen_col_row("d1", total=7)])
+    _, total = store.search("hello", limit=10)
+    assert total == 7
 
 
 def test_search_empty_first_page_returns_zero_without_count() -> None:

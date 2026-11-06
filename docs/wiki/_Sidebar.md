@@ -19,6 +19,7 @@
   - [API Reference](API-Reference)
   - [Testing and CI](Testing-and-CI)
   - [Crawler and Frontier Ops](Crawler-and-Frontier-Ops)
+  - [Troubleshooting](Troubleshooting)
   - [Contributing](Contributing)
 - Product
   - [Vision and Values](Vision-and-Values)

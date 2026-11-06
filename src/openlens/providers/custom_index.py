@@ -22,10 +22,10 @@ from openlens.core.interfaces import (
     ConfigError,
     Document,
     ProviderError,
-    SearchProvider,
     SearchRequest,
     SearchResult,
 )
+from openlens.providers.base import BaseSearchProvider
 from openlens.indexing.indexer import DocumentIndexer
 from openlens.indexing.seed import SEED_DOCUMENTS
 from openlens.retrieval.deduplicator import deduplicate
@@ -147,7 +147,7 @@ def open_store(
     return PostgresDocumentStore.from_config(_subsection(storage, "postgres"))
 
 
-class CustomIndexProvider(SearchProvider):
+class CustomIndexProvider(BaseSearchProvider):
     """SearchProvider over a swappable document store (default SQLite FTS5).
 
     Hybrid retrieval is opt-in: ``semantic_enabled`` defaults to ``False``,
@@ -171,6 +171,7 @@ class CustomIndexProvider(SearchProvider):
         models: Any | None = None,
         semantic_enabled: bool = False,
     ) -> None:
+        super().__init__()
         self._db_path = db_path
         self._models = models
         self._semantic_enabled = bool(semantic_enabled)
@@ -356,6 +357,9 @@ class CustomIndexProvider(SearchProvider):
         return self._semantic_enabled
 
     def configure(self, config: dict[str, Any]) -> None:
+        # Base owns ``timeout_s``: skip this and the manager's live read
+        # keeps the 5s default no matter what admin/boot configured.
+        super().configure(config)
         if not isinstance(config, dict):
             raise ConfigError("custom_index config must be a mapping")
         # Validate the cheap fields before touching any connection so a
