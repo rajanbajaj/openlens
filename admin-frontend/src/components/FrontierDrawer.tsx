@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   autoTriageFailedDomains,
   blockDomains,
@@ -141,6 +141,18 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
   const { items: toasts, push: pushToast, dismiss: dismissToast } = useToasts();
   const [live, setLive] = useState(false);
   const liveRef = useRef(false);
+  const queryClient = useQueryClient();
+
+  /**
+   * The queued-domains board polls minutely, so a seed insert would
+   * otherwise stay invisible until the next tick. Invalidate its
+   * pages (plus any open drill-down) after every intake mutation so
+   * freshly inserted domains render immediately.
+   */
+  function refreshQueuedDomains(): void {
+    void queryClient.invalidateQueries({ queryKey: ['frontier', 'queued-domains'] });
+    void queryClient.invalidateQueries({ queryKey: ['frontier', 'queued-domain-urls'] });
+  }
 
   const snapshot = useQuery({
     queryKey: ['frontier', 'snapshot'],
@@ -297,6 +309,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       pushToast(list.length > 0 ? `Resumed with ${list.length} seed(s).` : 'Resumed.', 'success');
       setSeeds('');
       setPriority('');
+      if (list.length > 0) refreshQueuedDomains();
     } catch {
       pushToast('Resume failed.', 'error');
     }
@@ -334,6 +347,7 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
       setSeeds('');
       setPriority('');
       setDepth('');
+      refreshQueuedDomains();
       await snapshot.refetch();
     } catch {
       pushToast('Enqueue seeds failed.', 'error');

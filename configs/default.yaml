@@ -272,7 +272,7 @@ indexing:
   #   slow.example.org: {rate_limit_s: 5.0}
   #   trap.example.net: {max_pages: 200}
   #   blocked.example.net: {allow: false}
-  default_max_depth: null
+  default_max_depth: 2
 
 # Persistent URL frontier (frontier plan). `frontier.enabled` gates the
 # persistent crawl path (`PoliteCrawler.crawl(..., frontier_store=...)`):

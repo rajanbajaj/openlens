@@ -378,7 +378,11 @@ class BoundedFrontier:
     def path(self) -> Path:
         return self._path
 
-    def push(self, url: str) -> None:
+    def push(self, url: str, depth: int = 0, priority: int | None = None) -> None:
+        # ``depth``/``priority`` mirror :meth:`PersistentFrontier.push` so
+        # the in-memory crawl path accepts the same call shape; ordering
+        # stays FIFO and per-URL depths live in the crawl loop's
+        # ``depths`` map (see :meth:`PoliteCrawler.crawl`).
         while len(self._items) >= self._maxsize:
             victim = self._items.popleft()
             if self._on_evict is not None:
@@ -2482,14 +2486,11 @@ class PoliteCrawler:
                             key = normalize_url(link)
                             if key not in depths or child_depth < depths[key]:
                                 depths[key] = child_depth
-                            if store is not None:
-                                frontier.push(
-                                    link,
-                                    depths[key],
-                                    decay_child_priority(entry_priority),
-                                )
-                            else:
-                                frontier.push(link)
+                            frontier.push(
+                                link,
+                                depths[key],
+                                decay_child_priority(entry_priority),
+                            )
                             enqueued_this_page += 1
                 if store is not None and interval > 0 and attempts % interval == 0:
                     _save_checkpoint(PHASE_RUNNING)

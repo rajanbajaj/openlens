@@ -348,7 +348,7 @@ def test_default_yaml_indexing_section_still_configures() -> None:
         "dawn.com": {"rate_limit_s": 5.0},
         "pkg.go.dev": {"rate_limit_s": 5.0},
     }
-    assert crawler.default_max_depth is None
+    assert crawler.default_max_depth == 2
 
 
 def test_cli_delegation_surfaces_refresh_counts(

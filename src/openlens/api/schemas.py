@@ -574,7 +574,7 @@ class FrontierSettingsSchema(BaseModel):
     max_pages: int = Field(default=100, ge=1)
     max_queued_urls: int = Field(default=1000, ge=1)
     crawl_delay_s: float = Field(default=0.5, ge=0)
-    default_max_depth: int = Field(default=3, ge=0)
+    default_max_depth: int = Field(default=2, ge=0)
     respect_robots: bool = True
     user_agent: str = Field(
         default=DEFAULT_USER_AGENT,

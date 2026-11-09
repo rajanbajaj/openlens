@@ -679,7 +679,7 @@
           "search"
         ],
         "summary": "Frontier Failed",
-        "description": "Paginated failed-URL list with reasons for the admin dashboard.\n\nOpen read like ``/frontier/status`` (URLs + short error strings only).\nNever 500s: store failures degrade to the empty list.",
+        "description": "Paginated failed-URL list with reasons for the admin dashboard.\n\nOpen read like ``/frontier/status`` (URLs + short error strings only).\nNever 500s: store failures degrade to the empty list. Reads hit the\nmirror (fast SQL over synced terminal rows), not the live Redis\nstore (full-corpus meta scans \u2192 504s at backlog scale).",
         "operationId": "frontier_failed_api_v1_frontier_failed_get",
         "parameters": [
           {
@@ -733,7 +733,7 @@
           "search"
         ],
         "summary": "Frontier Failed Domain Urls",
-        "description": "Failed URLs for one host with per-URL reasons (domain drill-down).\n\nOpen read like ``/frontier/failed``. Host matching is exact +\nsubdomain (same bucketing as the rollup). Malformed hosts and\nstore failures degrade to the empty list, never 500.",
+        "description": "Failed URLs for one host with per-URL reasons (domain drill-down).\n\nOpen read like ``/frontier/failed``. Host matching is exact +\nsubdomain (same bucketing as the rollup). Malformed hosts and\nstore failures degrade to the empty list, never 500. Reads hit\nthe mirror (fast SQL), not the live Redis store.",
         "operationId": "frontier_failed_domain_urls_api_v1_frontier_failed_domains__domain__urls_get",
         "parameters": [
           {
@@ -796,7 +796,7 @@
           "search"
         ],
         "summary": "Frontier Failed Domains",
-        "description": "Failed-URL rollup by host with per-host counts (admin failed view).\n\nOpen read like ``/frontier/failed`` (hosts + counts only, no\nsecrets). Never 500s: store failures degrade to the empty list.",
+        "description": "Failed-URL rollup by host with per-host counts (admin failed view).\n\nOpen read like ``/frontier/failed`` (hosts + counts only, no\nsecrets). Never 500s: store failures degrade to the empty list.\nReads hit the mirror (fast SQL), not the live Redis store.",
         "operationId": "frontier_failed_domains_api_v1_frontier_failed_domains_get",
         "parameters": [
           {
@@ -3260,7 +3260,7 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Default Max Depth",
-            "default": 3
+            "default": 2
           },
           "respect_robots": {
             "type": "boolean",

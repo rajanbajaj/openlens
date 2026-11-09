@@ -51,7 +51,7 @@ def test_lifespan_seeds_empty_store_row_without_overwriting(
     app.state.config = config
     with TestClient(app):
         pass
-    assert open_frontier_store(config).get_settings()["default_max_depth"] == 3
+    assert open_frontier_store(config).get_settings()["default_max_depth"] == 2
     store = open_frontier_store(config)
     try:
         saved = dict(store.get_settings())
@@ -73,7 +73,7 @@ def test_lifespan_seeds_empty_store_row_without_overwriting(
     with TestClient(app):
         pass
     row = open_frontier_store(config).get_settings()
-    assert row["default_max_depth"] == 3
+    assert row["default_max_depth"] == 2
     assert row["paused"] is False
 
 

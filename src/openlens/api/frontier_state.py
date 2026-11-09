@@ -20,7 +20,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_pages": 100,
     "max_queued_urls": 1000,
     "crawl_delay_s": 0.5,
-    "default_max_depth": 3,
+    "default_max_depth": 2,
     "respect_robots": True,
     "allow_domains": [],
     "deny_domains": [],
