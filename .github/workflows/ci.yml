@@ -54,4 +54,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
+      # Pinned to v2 on purpose: v3+ requires a paid GITLEAKS_LICENSE
+      # and fails the job without one. v2 runs the same OSS engine.
+      # Do not "upgrade" this to v3 without buying a license.
+      - uses: gitleaks/gitleaks-action@v2
