@@ -52,6 +52,38 @@ Add `-v` to also drop the `openlens-data`, `pgdata`,
 The seed corpus is indexed into Postgres automatically on first boot
 (tables are created with `CREATE TABLE IF NOT EXISTS`).
 
+## Lightweight stack (4 vCPU / 4 GB RAM)
+
+From the repo root:
+
+```bash
+docker compose -f docker-compose-lightweight.yml up --build -d
+```
+
+Same ports (`:3000` frontend, `:8000` backend), but only five
+services: backend (single uvicorn worker), frontend, Postgres
+(`max_connections=50`, `shared_buffers=128MB`), one Redis
+(`maxmemory 64mb`), and one store-backed crawler (`--queue store`,
+no Kafka consumer group). Dropped: Kafka, kafka-ui, ClickHouse +
+analytics-worker (analytics stays on the SQLite file; collection
+without a broker is skipped fail-open), redis-frontier (frontier
+stays on Postgres), postgres-replica (reads serve from the primary),
+pgAdmin, dozzle, and crawler-backoff. The admin console is opt-in:
+
+```bash
+docker compose --profile admin -f docker-compose-lightweight.yml up --build -d
+```
+
+backend/crawler build from
+`deploy/local/Dockerfile.backend-lightweight` (base deps only, no
+`[kafka,analytics]` extras — the drivers lazy-import and every
+Kafka/ClickHouse call site degrades cleanly without them, so the
+image skips import weight and broker reconnect threads). Trade-off:
+one crawler drains the Postgres queue instead of a Kafka fleet, so
+large seeds crawl slower; add replicas only with the headroom to
+raise `POSTGRES_MAX_CONNECTIONS` (each process holds
+~2 × `OPENLENS_PG_POOL_SIZE` connections).
+
 ## Release to the LAN server (192.168.1.13)
 
 Every version tag push (`v*`, e.g. `v1.0.0`) redeploys the server
