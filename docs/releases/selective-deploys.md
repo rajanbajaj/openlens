@@ -34,3 +34,15 @@ Rules the workflow enforces:
   data services, `SELECT 1` for ClickHouse. Backend healthz is
   checked on every run — a broken control plane never hides
   behind a green service restart.
+
+## Downgrade to lightweight (release-lightweight CI)
+
+Actions → release-lightweight → Run workflow (inputs: `ref`,
+`admin_profile`). Detects the current fleet: if heavy services are
+running it drains the crawlers, tears the full stack down with plain
+`down` (never `-v` — `pgdata` is the index), and starts
+`docker-compose-lightweight.yml` under the SAME project name
+(`-p openlens-local`), so the data volumes are reused, not
+recreated. If already lightweight it just refreshes. Search is briefly
+unavailable during the swap — run at a quiet time. Rollback is a
+plain `release` run; heavy-only volumes stay on disk in between.

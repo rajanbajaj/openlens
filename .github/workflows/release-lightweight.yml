@@ -1,0 +1,190 @@
+name: release-lightweight
+
+# Downgrades the release server from the full stack to the lightweight
+# stack (docker-compose-lightweight.yml: backend, frontend, postgres,
+# redis, one store-backed crawler) — or refreshes it when it is already
+# there. Manual dispatch only: Actions -> release-lightweight ->
+# Run workflow. Downgrading is a deliberate ops action, never a tag push.
+#
+# Graceful means three things here, in order:
+#   1. Crawlers drain first (SIGTERM lets in-flight fetches land instead
+#      of dying mid-page), so no URL is left claimed by a dead worker
+#      past its lease.
+#   2. Data volumes are never touched: the lightweight stack runs under
+#      the SAME project name (`-p openlens-local`, overriding the file's
+#      `name:`), so `pgdata`, `redis-data`, and `openlens-data` resolve
+#      to the exact volumes the full stack wrote. The old stack is torn
+#      down with plain `down` — never `down -v`. Heavy-only volumes
+#      (kafka1-data, clickhouse-data, replica-data, ...) stay on disk,
+#      which is also what makes rollback a plain full-stack redeploy.
+#   3. Images pre-build before anything stops, so the outage window is
+#      only old-down -> new-backend-healthy (about a minute: postgres
+#      restart on the existing volume plus backend boot). Search is
+#      briefly unavailable inside that window — run this at a quiet time.
+#
+# Rollback: re-run the `release` workflow (tag push or dispatch `all`);
+# it rebuilds the full fleet on the same preserved volumes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag, branch, or SHA to deploy (default: main)."
+        required: false
+        default: "main"
+      admin_profile:
+        description: "Also start admin-frontend (:3001)."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+
+jobs:
+  downgrade:
+    # Same self-hosted runner as `release`: it executes the deploy on
+    # the server itself, and the shared concurrency group keeps the two
+    # workflows from racing each other.
+    runs-on: [self-hosted, openlens-release]
+    timeout-minutes: 45
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Show release commit
+        run: |
+          echo "ref: ${{ inputs.ref || github.ref_name }}"
+          echo "admin profile: ${{ inputs.admin_profile }}"
+          git log -1 --format='%H %s'
+          docker compose version
+
+      - name: Install server secrets
+        # Same gitignored server file as `release`; the lightweight file
+        # lives at the repo root, so it reads `./.env` (also gitignored).
+        # Full-stack vars in release.env are harmless: the lightweight
+        # file only references its subset, and Kafka stays off via a
+        # hardcoded `OPENLENS_KAFKA_ENABLED: "false"`.
+        run: cp /home/rajan/servers/release.env ./.env
+
+      - name: Detect current fleet
+        id: fleet
+        run: |
+          HEAVY="kafka-1 kafka-ui clickhouse analytics-worker redis-frontier postgres-replica pgadmin dozzle crawler-backoff"
+          RUNNING="$(docker compose -f deploy/local/docker-compose.yml ps --format '{{.Service}}|{{.State}}' 2>/dev/null | grep '|running' | cut -d'|' -f1 || true)"
+          MODE="refresh"
+          for svc in $HEAVY; do
+            if printf '%s\n' "$RUNNING" | grep -qx "$svc"; then
+              MODE="downgrade"
+              break
+            fi
+          done
+          echo "running: $(printf '%s' "$RUNNING" | tr '\n' ' ')"
+          echo "mode: $MODE"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.admin_profile }}" = "true" ]; then
+            echo "profile=--profile admin" >> "$GITHUB_OUTPUT"
+          else
+            echo "profile=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-build lightweight images
+        # Build before stopping anything: no ports are touched, and the
+        # later `up --build` becomes a cache hit, keeping the outage
+        # window to container restart time only.
+        run: |
+          # shellcheck disable=SC2086
+          docker compose ${{ steps.fleet.outputs.profile }} -p openlens-local \
+            -f docker-compose-lightweight.yml build backend crawler frontend
+          if [ "${{ inputs.admin_profile }}" = "true" ]; then
+            docker compose --profile admin -p openlens-local \
+              -f docker-compose-lightweight.yml build admin-frontend
+          fi
+
+      - name: Drain crawl fleet
+        # Stop-the-world for crawlers only: SIGTERM lets in-flight fetches
+        # land and heartbeat one last time; leases on anything caught
+        # mid-flight expire and are reaped (never stolen live). Skipped
+        # on refresh (nothing heavy to drain).
+        if: steps.fleet.outputs.mode == 'downgrade'
+        working-directory: deploy/local
+        run: |
+          docker compose stop crawler crawler-backoff analytics-worker
+          sleep 15
+
+      - name: Tear down old stack (volumes kept)
+        # Plain `down`: containers and the compose network go, named
+        # volumes stay. NEVER add `-v` here — pgdata IS the index.
+        if: steps.fleet.outputs.mode == 'downgrade'
+        working-directory: deploy/local
+        run: docker compose down
+
+      - name: Start lightweight stack
+        # Same project name as the full stack, so pgdata/redis-data/
+        # openlens-data are the SAME volumes, not fresh empty ones.
+        run: |
+          # shellcheck disable=SC2086
+          docker compose ${{ steps.fleet.outputs.profile }} -p openlens-local \
+            -f docker-compose-lightweight.yml up --build -d
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz >/dev/null; then
+              echo "backend healthy"
+              break
+            fi
+            sleep 10
+          done
+          curl -fsS http://localhost:8000/healthz
+
+      - name: Health gates (search)
+        run: |
+          curl -fsS -X POST http://localhost:8000/api/v1/search \
+            -H 'Content-Type: application/json' \
+            -d '{"query": "release health check", "limit": 1}'
+
+      - name: Health gates (frontends)
+        run: |
+          curl -fsS -o /dev/null http://localhost:3000/
+          if [ "${{ inputs.admin_profile }}" = "true" ]; then
+            curl -fsS -o /dev/null http://localhost:3001/
+          fi
+
+      - name: Health gates (workers and data services)
+        # Poll `docker compose ps` until every lightweight container is
+        # running (and healthy where a healthcheck exists).
+        run: |
+          for i in $(seq 1 30); do
+            # shellcheck disable=SC2086
+            BAD=$(docker compose -p openlens-local -f docker-compose-lightweight.yml ps \
+              --format '{{.Service}}|{{.State}}|{{.Health}}' \
+              | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}' \
+              | head -5)
+            if [ -z "$BAD" ]; then
+              echo "lightweight stack running"
+              docker compose -p openlens-local -f docker-compose-lightweight.yml ps \
+                --format '{{.Name}} {{.Status}}'
+              break
+            fi
+            echo "waiting on:"; echo "$BAD"
+            sleep 10
+          done
+          # shellcheck disable=SC2086
+          LEFTOVER=$(docker compose -p openlens-local -f docker-compose-lightweight.yml ps \
+            --format '{{.Service}}|{{.State}}|{{.Health}}' \
+            | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}')
+          if [ -n "$LEFTOVER" ]; then
+            echo "unhealthy after 5m:"; echo "$LEFTOVER"; exit 1
+          fi
+
+      - name: Show stack status
+        if: always()
+        run: docker compose -p openlens-local -f docker-compose-lightweight.yml ps
+
+      - name: Prune unused images
+        if: success()
+        run: docker image prune -af --filter "until=168h"
