@@ -144,14 +144,21 @@ services:
     networks:
       - openlens
 
-  # Single store-backed crawl worker: drains the Postgres frontier until
-  # exhausted (no Kafka consumer group). Scale stays 1 on this host;
-  # throughput is deliberately lower than the full Kafka fleet.
+  # Single store-backed crawl worker. Store mode is batch, not a
+  # daemon: `run_standalone_worker` drains the Postgres frontier and
+  # EXITS, so a bare `crawl-worker --queue store` PID 1 would exit and
+  # compose would hot-restart it forever (failed health gate). The shell
+  # supervisor below re-drains on a cadence instead: new seeds (POST
+  # /frontier/resume) are picked up within one idle sleep, and idle
+  # stretches cost nothing. SIGTERM is forwarded to the running child
+  # so in-flight fetches drain instead of dying at SIGKILL.
+  # Healthcheck note: PID 1 is the `sh` supervisor whose own command
+  # line contains "crawl-worker", so the probe below stays valid.
   crawler:
     build:
       context: .
       dockerfile: deploy/local/Dockerfile.backend-lightweight
-    command: ["sh", "-c", "exec python -m openlens.cli crawl-worker --queue store --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\""]
+    command: ["sh", "-c", "stop=0; term() { stop=1; kill -TERM \"$${child}\" 2>/dev/null; }; trap term TERM INT; while [ \"$${stop}\" = 0 ]; do python -m openlens.cli crawl-worker --queue store --crawl-id \"$${OPENLENS_CRAWL_ID:-default}\" & child=$$!; wait \"$${child}\"; [ \"$${stop}\" = 0 ] || break; sleep \"$${OPENLENS_CRAWLER_IDLE_SLEEP_S:-30}\" & child=$$!; wait \"$${child}\"; done"]
     mem_limit: ${CRAWLER_MEM:-512M}
     cpus: ${CRAWLER_CPUS:-0.5}
     logging: *default-logging
@@ -189,7 +196,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 12
-      start_period: 10s
+      # First drain indexes the seed corpus and can outlast the
+      # retry budget; don't mark it unhealthy while it is working.
+      start_period: 5m
     networks:
       - openlens
 
