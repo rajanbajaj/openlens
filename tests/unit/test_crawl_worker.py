@@ -247,6 +247,47 @@ def test_worker_heartbeat_registers_liveness_in_store() -> None:
         repo.close()
 
 
+def test_standalone_worker_posts_api_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Store-mode drains must beat the API registry, not just the store.
+
+    `GET /frontier/workers` reads only the ephemeral API registry fed by
+    `POST /frontier/workers/heartbeat`; the Kafka loop beats it, so a
+    store-mode worker that never posts is invisible on the dashboard
+    (the lightweight stack runs store mode exclusively).
+    """
+    import openlens.indexing.worker as worker_mod
+
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def fake_beat(api_url: str, worker_id: str, **kwargs: Any) -> None:
+        calls.append((api_url, worker_id, kwargs))
+
+    monkeypatch.setattr(worker_mod, "heartbeat_once", fake_beat)
+
+    repo = DocumentRepository(":memory:")
+    store = SqliteFrontierStore(":memory:")
+    try:
+        crawler = _crawler()
+        hits: dict[str, int] = {}
+        _install_fake_fetch(crawler, hits)
+        worker = _worker(crawler, repo, store)
+
+        def fake_build(app_config: dict[str, Any], **kwargs: Any) -> Any:
+            return worker, repo, store, {}
+
+        monkeypatch.setattr(worker_mod, "_build_worker", fake_build)
+        worker_mod.run_standalone_worker([], {}, crawl_id="test-crawl")
+
+        assert calls, "expected at least one API heartbeat per drain"
+        assert all(worker_id == "test-worker" for _, worker_id, _ in calls)
+        assert all(k.get("crawl_id") == "test-crawl" for _, _, k in calls)
+    finally:
+        store.close()
+        repo.close()
+
+
 def test_worker_releases_owned_rows_on_shutdown() -> None:
     repo = DocumentRepository(":memory:")
     store = SqliteFrontierStore(":memory:")

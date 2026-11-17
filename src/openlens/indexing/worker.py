@@ -1075,9 +1075,37 @@ def run_standalone_worker(
         chunk_size=chunk_size,
         crawler_factory=crawler_factory,
     )
+    # Dashboard reporting (fail-open), mirroring the Kafka loop: the
+    # Workers view reads the API registry, so a store-mode drain that
+    # never beats is invisible there (the lightweight stack's only
+    # worker). Beat through the blocking drain; the forced exit beat
+    # lands before the stores close.
+    _report_progress = _make_api_reporter(worker, crawl_id)
+    store_api_url = (
+        os.environ.get(API_URL_ENV, "http://localhost:8000").strip()
+        or "http://localhost:8000"
+    )
+    print(
+        f"[worker {worker.worker_id}] crawl={crawl_id} queue=store "
+        f"api={store_api_url} seeds={len(seed_urls)}",
+        flush=True,
+    )
+    with contextlib.suppress(Exception):
+        _report_progress(force=True)
+    reporter_stop = threading.Event()
+    with contextlib.suppress(Exception):
+        threading.Thread(
+            target=_reporter_loop,
+            args=(_report_progress, reporter_stop),
+            name="ol-store-reporter",
+            daemon=True,
+        ).start()
     try:
         return worker.run(list(seed_urls))
     finally:
+        reporter_stop.set()
+        with contextlib.suppress(Exception):
+            _report_progress(force=True)
         with contextlib.suppress(Exception):
             stop_and_flush_mirror(getattr(worker, "mirror_flusher", None))
         with contextlib.suppress(Exception):
@@ -1159,6 +1187,67 @@ def _outcome_sink(
             queue.publish_event(crawl_page_event(url, outcome, reason, domain))
 
     return _report
+
+
+def _make_api_reporter(worker: Any, crawl_id: str) -> Callable[..., None]:
+    """Build the throttled API-heartbeat closure for one worker replica.
+
+    Shared by the Kafka and standalone loops: the beat carries the rows
+    THIS replica owns plus its last discovery pass and cumulative stats,
+    read live off the worker. A separate reporter process could only
+    ever send zeros under a different id, so the loop owner must beat.
+    Fail-open throughout — a missed beat only ages dashboard liveness,
+    never the crawl.
+    """
+    api_url = (
+        os.environ.get(API_URL_ENV, "http://localhost:8000").strip()
+        or "http://localhost:8000"
+    )
+    admin_token = os.environ.get(ADMIN_TOKEN_ENV, "")
+    last_beat_at = 0.0
+
+    def _report_progress(force: bool = False) -> None:
+        nonlocal last_beat_at
+        try:
+            interval = float(getattr(worker, "heartbeat_interval_s", 0) or 0)
+        except (TypeError, ValueError):
+            interval = 0.0
+        now = time.monotonic()
+        if not force and interval > 0 and now - last_beat_at < interval:
+            return
+        last_beat_at = now
+        try:
+            owned = worker.frontier_store.owned(worker.worker_id)
+            claimed = len(owned) if owned is not None else 0
+        except Exception:
+            claimed = 0
+        # No completed pass yet: omit rather than report a zeroed summary
+        # that would mask an older replica's real numbers in the aggregate.
+        discovery = dict(worker.last_discovery) if worker.last_discovery else None
+        stats: dict[str, int] | None = None
+        if (
+            worker.cumulative_pages > 0
+            or worker.cumulative_tokens > 0
+            or worker.cumulative_errors > 0
+        ):
+            stats = {
+                "pages": worker.cumulative_pages,
+                "tokens": worker.cumulative_tokens,
+                "errors": worker.cumulative_errors,
+            }
+        with contextlib.suppress(Exception):
+            heartbeat_once(
+                api_url,
+                worker.worker_id,
+                crawl_id=crawl_id,
+                claimed=max(0, int(claimed)),
+                admin_token=admin_token,
+                timeout_s=2.0,
+                discovery=discovery,
+                stats=stats,
+            )
+
+    return _report_progress
 
 
 def run_kafka_worker(
@@ -1383,56 +1472,13 @@ def run_kafka_worker(
         worker._sync_crawl_stats()
 
     # Dashboard reporting (fail-open): the Kafka consumer itself owns its
-    # API heartbeat so `claimed` carries the rows this replica actually
-    # holds and `discovery` carries its last discovery pass. A separate
-    # reporter process could only ever send zeros under a different id.
+    # API heartbeat; shared helper keeps the claimed/discovery/stats
+    # shape identical across loops.
+    _report_progress = _make_api_reporter(worker, crawl_id)
     api_url = (
         os.environ.get(API_URL_ENV, "http://localhost:8000").strip()
         or "http://localhost:8000"
     )
-    admin_token = os.environ.get(ADMIN_TOKEN_ENV, "")
-    last_beat_at = 0.0
-
-    def _report_progress(force: bool = False) -> None:
-        nonlocal last_beat_at
-        try:
-            interval = float(getattr(worker, "heartbeat_interval_s", 0) or 0)
-        except (TypeError, ValueError):
-            interval = 0.0
-        now = time.monotonic()
-        if not force and interval > 0 and now - last_beat_at < interval:
-            return
-        last_beat_at = now
-        try:
-            owned = worker.frontier_store.owned(worker.worker_id)
-            claimed = len(owned) if owned is not None else 0
-        except Exception:
-            claimed = 0
-        # No completed pass yet: omit rather than report a zeroed summary
-        # that would mask an older replica's real numbers in the aggregate.
-        discovery = dict(worker.last_discovery) if worker.last_discovery else None
-        stats: dict[str, int] | None = None
-        if (
-            worker.cumulative_pages > 0
-            or worker.cumulative_tokens > 0
-            or worker.cumulative_errors > 0
-        ):
-            stats = {
-                "pages": worker.cumulative_pages,
-                "tokens": worker.cumulative_tokens,
-                "errors": worker.cumulative_errors,
-            }
-        with contextlib.suppress(Exception):
-            heartbeat_once(
-                api_url,
-                worker.worker_id,
-                crawl_id=crawl_id,
-                claimed=max(0, int(claimed)),
-                admin_token=admin_token,
-                timeout_s=2.0,
-                discovery=discovery,
-                stats=stats,
-            )
 
     # Startup banner + first beat BEFORE any drain: the initial
     # _drain_once() can run for many minutes on a deep backlog, and
