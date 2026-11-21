@@ -64,9 +64,11 @@ Same ports (`:3000` frontend, `:8000` backend), but only five
 services: backend (single uvicorn worker), frontend, Postgres
 (`max_connections=50`, `shared_buffers=128MB`), one Redis
 (`maxmemory 64mb`), and one store-backed crawler (`--queue store`,
-no Kafka consumer group). Dropped: Kafka, kafka-ui, ClickHouse +
-analytics-worker (analytics stays on the SQLite file; collection
-without a broker is skipped fail-open), redis-frontier (frontier
+no Kafka consumer group). Dropped: Kafka, kafka-ui, ClickHouse (no
+analytics-worker either: with no broker the API records events
+straight into the shared SQLite analytics file instead of dropping
+them, so the admin Analytics tab works with no extra service),
+redis-frontier (frontier
 stays on Postgres), postgres-replica (reads serve from the primary),
 pgAdmin, dozzle, and crawler-backoff. The admin console is opt-in:
 

@@ -246,6 +246,14 @@ indexing:
   deny_url_patterns: []
   user_agent: "OpenLensBot/1.0"
   respect_robots: true
+  # Per-crawl domain containment: when true, discovered outlinks are
+  # enqueued only under their discoverer's seed domain (apex and
+  # subdomains stay in; a leading www. on the seed never splits the
+  # site). Each crawl stays within its own seeds with no static
+  # allowlist to maintain. Default off (follow-everywhere); toggle live
+  # from the admin frontier settings ("Keep each crawl within its seed
+  # domains") without restarting workers.
+  scope_to_seed_domains: false
   # Per-domain crawl policy (index breadth, plan step 4). Active keys
   # below carry the defaults (no per-domain overrides, unlimited
   # link-following depth); add entries under `domain_policies` to scope
@@ -330,7 +338,11 @@ kafka:
 
 # Server-side analytics pipeline: API publishes fire-and-forget events to
 # the `analytics.events` Kafka topic, `analytics-worker` batch-inserts
-# them into the analytics store, and retention purges old rows. The store
+# them into the analytics store, and retention purges old rows. Brokerless
+# sqlite deployments skip the topic: the API records events straight into
+# the shared SQLite file (direct-write fallback with the same retention),
+# so lightweight stacks get working analytics with no extra service.
+# The store
 # backend is the single switch (`sqlite` | `clickhouse`, shipped default
 # `sqlite` so offline/tests boot with no services — compose overrides to
 # `clickhouse`). ClickHouse is a separate database on purpose: analytics

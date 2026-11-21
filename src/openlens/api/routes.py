@@ -881,16 +881,111 @@ def admin_analytics_counts(
     )
 
 
+def _analytics_store_section(app_config: Any) -> dict[str, Any]:
+    """Analytics ``store:`` section (empty mapping when unconfigured)."""
+    if isinstance(app_config, dict):
+        raw = app_config.get("analytics", {})
+        if isinstance(raw, Mapping):
+            section = raw.get("store", {})
+            if isinstance(section, Mapping):
+                return dict(section)
+    return {}
+
+
 def _open_analytics_store(app_config: Any) -> Any:
     """Open the configured analytics store (shared by HTTP and WS reads)."""
     from openlens.analytics.store import open_analytics_store
 
-    section: dict[str, Any] = {}
-    if isinstance(app_config, dict):
-        raw = app_config.get("analytics", {})
-        if isinstance(raw, Mapping):
-            section = dict(raw.get("store", {}))
-    return open_analytics_store(section)
+    return open_analytics_store(_analytics_store_section(app_config))
+
+
+def _record_analytics_direct(app_config: Any, events: list[Any]) -> None:
+    """SQLite fallback for analytics events when no broker is reachable.
+
+    Brokerless deployments (lightweight stack: no Kafka service) would
+    otherwise lose every event — collection degrades to a skip while the
+    dashboard reads an empty SQLite file. When the configured analytics
+    backend is SQLite (the file the API and dashboard already share),
+    validated event payloads are inserted directly and retention is
+    enforced like the worker's slow pass. Any other backend keeps the
+    old skip behavior, and every failure stays silent: analytics must
+    never slow a search or fail it.
+    """
+    if not events:
+        return
+    try:
+        section = _analytics_store_section(app_config)
+        backend = str(section.get("backend", "sqlite") or "sqlite").strip().lower()
+        if backend != "sqlite":
+            return
+        payloads: list[dict[str, Any]] = []
+        for event in events:
+            to_payload = getattr(event, "to_payload", None)
+            if not callable(to_payload):
+                continue
+            try:
+                payload = to_payload()
+            except Exception:  # noqa: S112 — one bad event skips silently
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        if not payloads:
+            return
+        from openlens.analytics.store import open_analytics_store
+
+        store = open_analytics_store(section)
+        try:
+            store.insert_many(payloads)
+            raw = (
+                app_config.get("analytics", {}) if isinstance(app_config, dict) else {}
+            )
+            days = 90
+            if isinstance(raw, Mapping):
+                try:
+                    candidate = int(raw.get("retention_days", 90))
+                except (TypeError, ValueError):
+                    candidate = 90
+                days = candidate if candidate > 0 else 90
+            if days > 0:
+                with suppress(Exception):
+                    store.purge_older_than(days)
+        finally:
+            with suppress(Exception):
+                store.close()
+    except Exception:
+        return
+
+
+def _publish_analytics_event(request: Request, events: list[Any]) -> None:
+    """Publish events, falling back to direct SQLite writes.
+
+    Broker path first (unchanged): every event goes to the topic when a
+    queue exists. When no queue exists — or a publish fails — sqlite
+    deployments record the remainder straight into the shared analytics
+    file instead of dropping it. Never raises.
+    """
+    outstanding = list(events or [])
+    try:
+        queue = _analytics_queue(request)
+        if queue is not None:
+            outstanding = []
+            for event in events or []:
+                try:
+                    published = bool(queue.publish_event(event))
+                except Exception:
+                    published = False
+                if not published:
+                    outstanding.append(event)
+            if not outstanding:
+                return
+    except Exception:
+        outstanding = list(events or [])
+    try:
+        state = getattr(getattr(request, "app", None), "state", None)
+        config = getattr(state, "config", None)
+    except Exception:
+        return
+    _record_analytics_direct(config, outstanding)
 
 
 def _admin_analytics_store(
@@ -1395,26 +1490,20 @@ def _analytics_queue(request: Request) -> Any | None:
 
 def _publish_search_served(request: Request, query: str, mode: str, total: int) -> None:
     """Best-effort ``search.served`` event (raw text never leaves)."""
-    queue = _analytics_queue(request)
-    if queue is None:
-        return
     with suppress(Exception):
         from openlens.analytics.events import served_event
 
-        queue.publish_event(served_event(query, mode, total))
+        _publish_analytics_event(request, [served_event(query, mode, total)])
 
 
 def _publish_feedback_event(
     request: Request, doc_id: str, action: str, reason: str | None
 ) -> None:
     """Best-effort ``search.feedback`` event mirroring the tally."""
-    queue = _analytics_queue(request)
-    if queue is None:
-        return
     with suppress(Exception):
         from openlens.analytics.events import feedback_event
 
-        queue.publish_event(feedback_event(doc_id, action, reason))
+        _publish_analytics_event(request, [feedback_event(doc_id, action, reason)])
 
 
 def _frontier_read_store(request: Request | WebSocket) -> Any | None:
@@ -2514,17 +2603,12 @@ def _publish_seed_cap_skipped(request: Request, urls: list[str]) -> None:
     """Best-effort ``crawl.page`` skipped events for cap-refused seeds.
 
     Same fire-and-forget contract as :func:`_publish_search_served`:
-    a sick broker degrades to dropped events, never a failed paste.
+    a sick broker degrades to dropped events (or direct SQLite writes
+    on brokerless sqlite deployments), never a failed paste.
     One event per refused URL, matching the per-page granularity of
     worker emissions so reason rollups stay comparable.
     """
     if not urls:
-        return
-    try:
-        queue = _analytics_queue(request)
-    except Exception:
-        return
-    if queue is None:
         return
     try:
         from urllib.parse import urlsplit
@@ -2532,9 +2616,10 @@ def _publish_seed_cap_skipped(request: Request, urls: list[str]) -> None:
         from openlens.analytics.events import crawl_page_event
     except Exception:
         return
+    events: list[Any] = []
     for url in urls:
         with suppress(Exception):
-            queue.publish_event(
+            events.append(
                 crawl_page_event(
                     url,
                     "skipped",
@@ -2542,6 +2627,8 @@ def _publish_seed_cap_skipped(request: Request, urls: list[str]) -> None:
                     urlsplit(url).hostname or None,
                 )
             )
+    if events:
+        _publish_analytics_event(request, events)
 
 
 def _store_save_settings(app_config: Any, settings: Mapping[str, Any]) -> bool:

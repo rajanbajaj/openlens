@@ -5,7 +5,11 @@
 # from deploy/local/docker-compose.yml is dropped on purpose:
 #   - no Kafka (OPENLENS_KAFKA_ENABLED=false -> store claim path)
 #   - no redis-frontier (OPENLENS_FRONTIER_BACKEND=postgres)
-#   - no ClickHouse / analytics-worker (analytics on SQLite file)
+#   - no ClickHouse (analytics on the SQLite file). There is no
+#     analytics-worker either: with no broker the API records events
+#     straight into the shared SQLite analytics file (direct-write
+#     fallback) instead of dropping them, so the admin Analytics tab
+#     works with no extra service.
 #   - no postgres-replica, pgAdmin, kafka-ui, dozzle, crawler-backoff
 #   - admin-frontend is opt-in via `--profile admin`
 #

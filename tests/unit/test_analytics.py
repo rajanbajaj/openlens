@@ -285,6 +285,95 @@ def test_feedback_still_200_when_broker_down(
     assert resp.status_code == 200
 
 
+def _read_props(db_path: str) -> list[tuple[str, str]]:
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        return [
+            (row[0], row[1])
+            for row in conn.execute("SELECT name, props FROM analytics_events")
+        ]
+    finally:
+        conn.close()
+
+
+def test_search_served_direct_writes_sqlite_when_no_broker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """No broker + sqlite backend: the served event lands in the store."""
+    db_path = str(tmp_path / "direct.db")
+    store = AnalyticsStore(db_path)
+    try:
+
+        class _Broken:
+            @classmethod
+            def from_app_config(cls, config, **kwargs):
+                raise RuntimeError("no broker")
+
+        monkeypatch.setattr("openlens.analytics.events.AnalyticsQueue", _Broken)
+        monkeypatch.setattr(
+            "openlens.analytics.store.open_analytics_store", lambda section: store
+        )
+        resp = client.post("/api/v1/search", json={"query": "red shoes", "limit": 1})
+        assert resp.status_code == 200
+        rows = _read_props(db_path)
+        assert len(rows) == 1
+        name, props_json = rows[0]
+        assert name == "search.served"
+        import json
+
+        props = json.loads(props_json)
+        assert "query_hash" in props
+        assert "red shoes" not in props_json
+    finally:
+        store.close()
+
+
+def test_direct_write_skipped_for_clickhouse_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ClickHouse backend never takes the sqlite fallback (no driver
+    needed, no exception): broker-down still means dropped, as before."""
+    from openlens.api.routes import _record_analytics_direct
+
+    def _must_not_open(section):
+        raise AssertionError("must not open a store for clickhouse")
+
+    monkeypatch.setattr("openlens.analytics.store.open_analytics_store", _must_not_open)
+    _record_analytics_direct(
+        {"analytics": {"store": {"backend": "clickhouse"}}},
+        served_event("q", "default", 1),
+    )
+
+
+def test_direct_write_purges_beyond_retention(tmp_path) -> None:
+    """The fallback enforces retention like the worker's slow pass."""
+    from openlens.api.routes import _record_analytics_direct
+    from openlens.analytics.store import AnalyticsStore
+
+    db_path = str(tmp_path / "retention.db")
+    store = AnalyticsStore(db_path)
+    try:
+        old = dict(served_event("old", "default", 1).to_payload())
+        old["at"] = time.time() - 100 * 86400
+        assert store.insert_many([old]) == 1
+        config = {
+            "analytics": {
+                "retention_days": 90,
+                "store": {"backend": "sqlite", "sqlite": {"db_path": db_path}},
+            }
+        }
+        _record_analytics_direct(config, served_event("new", "default", 1))
+        check = AnalyticsStore(db_path)
+        try:
+            assert check.counts_by_name(since_days=200) == {"search.served": 1}
+        finally:
+            check.close()
+    finally:
+        store.close()
+
+
 def test_search_publishes_served_event(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
