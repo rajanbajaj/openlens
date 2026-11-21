@@ -298,6 +298,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
     # (empty ``allow_domains`` re-opens crawling to every domain).
     allow = normalize_skip_domains(settings.get("allow_domains"))
     deny = normalize_skip_domains(settings.get("deny_domains"))
+    scoped = settings.get("scope_to_seed_domains")
     return {
         "default_max_depth": (
             depth
@@ -322,6 +323,7 @@ def _live_crawl_limits(settings: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "respect_robots": robots if isinstance(robots, bool) else None,
+        "scope_to_seed_domains": scoped if isinstance(scoped, bool) else None,
         "user_agent": agent if 1 <= len(agent) <= 256 else None,
         "skip_domains": skip,
         "allow_domains": allow,
@@ -621,6 +623,13 @@ class CrawlerWorker:
         with contextlib.suppress(Exception):
             if live.get("deny_domains") is not None:
                 crawler.deny_domains = list(live["deny_domains"])
+        # Seed-domain containment applies live like the allowlist: the
+        # crawl loop reads the flag per outlink, so a dashboard edit
+        # takes effect on the next drain without restarting workers.
+        # None keeps the boot configuration.
+        with contextlib.suppress(Exception):
+            if live.get("scope_to_seed_domains") is not None:
+                crawler.scope_to_seed_domains = bool(live["scope_to_seed_domains"])
         with contextlib.suppress(Exception):
             if live.get("discovery_feeds") is not None:
                 self.discovery_feeds = list(live["discovery_feeds"])

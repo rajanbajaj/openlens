@@ -42,6 +42,8 @@ export interface FrontierSettingsSchema {
    * @items.maxLength 253
    */
   deny_domains?: string[];
+  /** Per-crawl domain containment applied live by workers: when true, discovered outlinks are enqueued only under their discoverer's seed domain (apex and subdomains stay in, a leading www. on the seed never splits the site). Each crawl stays within its own seeds with no static allowlist to maintain. */
+  scope_to_seed_domains?: boolean;
   /**
    * Sitemap/RSS/Atom URLs polled by workers for new articles; empty disables discovery. Malformed entries are ignored, never fatal.
    * @items.minLength 1

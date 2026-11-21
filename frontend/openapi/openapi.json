@@ -3305,6 +3305,12 @@
             "title": "Deny Domains",
             "description": "Domain blocklist applied live by workers; entries are bare lowercase hostnames (subdomains match too); malformed entries are ignored, never fatal."
           },
+          "scope_to_seed_domains": {
+            "type": "boolean",
+            "title": "Scope To Seed Domains",
+            "description": "Per-crawl domain containment applied live by workers: when true, discovered outlinks are enqueued only under their discoverer's seed domain (apex and subdomains stay in, a leading www. on the seed never splits the site). Each crawl stays within its own seeds with no static allowlist to maintain.",
+            "default": false
+          },
           "discovery_feeds": {
             "items": {
               "type": "string",

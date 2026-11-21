@@ -25,6 +25,7 @@ const SETTINGS = {
   skip_domains: [],
   allow_domains: [],
   deny_domains: [],
+  scope_to_seed_domains: false,
   discovery_feeds: [],
   refresh_after_days: 30.0,
   discovery_interval_s: 21600.0,
@@ -626,6 +627,25 @@ describe('FrontierDrawer skip domains', () => {
       allow_domains: ['news.example.com'],
       deny_domains: ['ads.example'],
     });
+  });
+
+  it('toggles and saves seed-domain scoping', async () => {
+    MockSocket.instances = [];
+    const capture: { body: unknown } = { body: null };
+    stubFetchCapture(capture);
+    vi.stubGlobal('WebSocket', MockSocket);
+    render(<FrontierDrawer adminToken="" />);
+    const scopeToggle = await screen.findByTestId('frontier-setting-scope-seeds');
+    expect(scopeToggle).not.toBeChecked();
+    fireEvent.click(scopeToggle);
+
+    fireEvent.click(screen.getByText('Save settings'));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Push settings to fleet?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await waitFor(() => {
+      expect(screen.getByTestId('toasts')).toHaveTextContent('Settings saved.');
+    });
+    expect(capture.body).toMatchObject({ scope_to_seed_domains: true });
   });
 
   it('adds and saves discovery feeds', async () => {

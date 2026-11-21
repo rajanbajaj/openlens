@@ -611,6 +611,17 @@ class FrontierSettingsSchema(BaseModel):
             "malformed entries are ignored, never fatal."
         ),
     )
+    scope_to_seed_domains: bool = Field(
+        default=False,
+        description=(
+            "Per-crawl domain containment applied live by workers: when "
+            "true, discovered outlinks are enqueued only under their "
+            "discoverer's seed domain (apex and subdomains stay in, "
+            "a leading www. on the seed never splits the site). "
+            "Each crawl stays within its own seeds with no static "
+            "allowlist to maintain."
+        ),
+    )
     discovery_feeds: list[Annotated[str, Field(min_length=1, max_length=2000)]] = Field(
         default_factory=list,
         description=(

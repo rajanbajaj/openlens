@@ -813,3 +813,99 @@ def test_persistent_frontier_len_falls_back_to_counts() -> None:
     from openlens.indexing.crawler import PersistentFrontier
 
     assert len(PersistentFrontier(_CountsOnly(), 100)) == 3
+
+
+def _scoped_page(title: str, *hrefs: str) -> bytes:
+    links = " ".join(f'<a href="{href}">link</a>' for href in hrefs)
+    return (
+        b"<html><head><title>"
+        + title.encode()
+        + b"</title></head><body>"
+        + PROSE
+        + links.encode()
+        + b"</body></html>"
+    )
+
+
+def _scoped_fetch(pages: dict[str, bytes], hits: list[str]):
+    from openlens.indexing.crawler import _FetchedPage
+
+    def _fetch(url: str) -> object:
+        hits.append(url)
+        return _FetchedPage(
+            status=200,
+            url=url,
+            content_type="text/html",
+            body=pages[url],
+            headers={},
+        )
+
+    return _fetch
+
+
+def test_scope_to_seed_domains_drops_external_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scoped crawls never fetch off-seed-domain outlinks."""
+    pages = {
+        "https://seed.example/": _scoped_page(
+            "Seed",
+            "https://seed.example/child",
+            "https://other.example/x",
+        ),
+        "https://seed.example/child": _scoped_page("Child"),
+    }
+    hits: list[str] = []
+    crawler = _crawler(max_pages=10, respect_robots=False, scope_to_seed_domains=True)
+    monkeypatch.setattr(crawler, "_fetch_bounded", _scoped_fetch(pages, hits))
+    docs = crawler.crawl(["https://seed.example/"])
+    urls = [doc.url or "" for doc in docs]
+    assert "https://seed.example/" in urls
+    assert "https://seed.example/child" in urls
+    assert "https://other.example/x" not in urls
+    assert "https://other.example/x" not in hits
+
+
+def test_scope_to_seed_domains_covers_apex_and_subdomains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apex seeds keep www/subdomain pages; siblings stay out."""
+    pages = {
+        "https://www.seed.example/": _scoped_page(
+            "Seed",
+            "https://seed.example/x",
+            "https://blog.seed.example/y",
+            "https://other.example/z",
+        ),
+        "https://seed.example/x": _scoped_page("Apex"),
+        "https://blog.seed.example/y": _scoped_page("Blog"),
+    }
+    hits: list[str] = []
+    crawler = _crawler(max_pages=10, respect_robots=False, scope_to_seed_domains=True)
+    monkeypatch.setattr(crawler, "_fetch_bounded", _scoped_fetch(pages, hits))
+    docs = crawler.crawl(["https://www.seed.example/"])
+    urls = [doc.url or "" for doc in docs]
+    assert "https://seed.example/x" in urls
+    assert "https://blog.seed.example/y" in urls
+    assert "https://other.example/z" not in hits
+
+
+def test_scope_to_seed_domains_defaults_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset scoping keeps the old follow-everywhere behavior."""
+    pages = {
+        "https://seed.example/": _scoped_page("Seed", "https://other.example/x"),
+        "https://other.example/x": _scoped_page("External"),
+    }
+    hits: list[str] = []
+    crawler = _crawler(max_pages=10, respect_robots=False)
+    monkeypatch.setattr(crawler, "_fetch_bounded", _scoped_fetch(pages, hits))
+    crawler.crawl(["https://seed.example/"])
+    assert "https://other.example/x" in hits
+
+
+def test_scope_to_seed_domains_rejects_non_bool() -> None:
+    """Fail closed on a mistyped scoping flag, like the other bools."""
+    with pytest.raises(ConfigError):
+        _crawler(scope_to_seed_domains="yes")

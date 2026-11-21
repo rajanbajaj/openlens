@@ -775,7 +775,9 @@ export const getFrontierFailedApiV1FrontierFailedGetUrl = (
  * Paginated failed-URL list with reasons for the admin dashboard.
  *
  * Open read like ``/frontier/status`` (URLs + short error strings only).
- * Never 500s: store failures degrade to the empty list.
+ * Never 500s: store failures degrade to the empty list. Reads hit the
+ * mirror (fast SQL over synced terminal rows), not the live Redis
+ * store (full-corpus meta scans → 504s at backlog scale).
  * @summary Frontier Failed
  */
 export const frontierFailedApiV1FrontierFailedGet = async (
@@ -844,7 +846,8 @@ export const getFrontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGetU
  *
  * Open read like ``/frontier/failed``. Host matching is exact +
  * subdomain (same bucketing as the rollup). Malformed hosts and
- * store failures degrade to the empty list, never 500.
+ * store failures degrade to the empty list, never 500. Reads hit
+ * the mirror (fast SQL), not the live Redis store.
  * @summary Frontier Failed Domain Urls
  */
 export const frontierFailedDomainUrlsApiV1FrontierFailedDomainsDomainUrlsGet = async (
@@ -918,6 +921,7 @@ export const getFrontierFailedDomainsApiV1FrontierFailedDomainsGetUrl = (
  *
  * Open read like ``/frontier/failed`` (hosts + counts only, no
  * secrets). Never 500s: store failures degrade to the empty list.
+ * Reads hit the mirror (fast SQL), not the live Redis store.
  * @summary Frontier Failed Domains
  */
 export const frontierFailedDomainsApiV1FrontierFailedDomainsGet = async (

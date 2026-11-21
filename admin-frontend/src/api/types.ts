@@ -276,6 +276,8 @@ export interface FrontierSettings {
   allow_domains: string[];
   /** Domains workers never fetch (exact host or subdomain). */
   deny_domains: string[];
+  /** When true, workers keep each crawl within its seed domains. */
+  scope_to_seed_domains: boolean;
   /** Feed/sitemap URLs the discovery pass polls for new URLs. */
   discovery_feeds: string[];
   /** Done pages older than this are requeued (days; 0 disables). */

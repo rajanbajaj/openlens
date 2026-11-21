@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS: FrontierSettings = {
   skip_domains: [],
   allow_domains: [],
   deny_domains: [],
+  scope_to_seed_domains: false,
   discovery_feeds: [],
   refresh_after_days: 30.0,
   discovery_interval_s: 21600.0,
@@ -952,6 +953,20 @@ function FrontierDrawerView({ adminToken }: FrontierDrawerProps) {
                     }
                   />{' '}
                   Respect robots.txt
+                </label>
+                <label className="flex items-center gap-ol-xs text-ol-s font-semibold">
+                  <input
+                    data-testid="frontier-setting-scope-seeds"
+                    type="checkbox"
+                    checked={settings.scope_to_seed_domains}
+                    onChange={(event) =>
+                      setSettings({
+                        ...settings,
+                        scope_to_seed_domains: event.target.checked,
+                      })
+                    }
+                  />{' '}
+                  Keep each crawl within its seed domains
                 </label>
                 <label className="flex flex-col gap-ol-xs text-ol-s font-semibold">
                   Crawler User-Agent

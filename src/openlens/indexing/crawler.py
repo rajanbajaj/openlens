@@ -107,6 +107,7 @@ ALLOWED_CONFIG_KEYS = frozenset(
         "default_max_depth",
         "user_agent",
         "respect_robots",
+        "scope_to_seed_domains",
         "checkpoint_interval_pages",
         "max_attempts_per_url",
         "frontier_enabled",
@@ -314,6 +315,8 @@ class CrawlStats:
     skipped_domain: int = 0
     skipped_policy: int = 0
     skipped_depth: int = 0
+    #: Outlinks dropped by seed-domain scoping (scope_to_seed_domains).
+    skipped_scope: int = 0
     skipped_content_type: int = 0
     skipped_not_modified: int = 0
     skipped_quality: int = 0
@@ -994,6 +997,28 @@ def _domain_hit(host: str, entries: frozenset[str]) -> bool:
         if host == entry or host.endswith("." + entry):
             return True
     return False
+
+
+def _scope_base(host: str) -> str:
+    """Crawl-scope base for a seed host: itself minus one leading www.
+
+    ``www.example.com`` seeds scope to ``example.com`` (apex and every
+    subdomain stay in), so www-vs-apex never splits a site. A seed on
+    any other subdomain scopes to that subdomain only.
+    """
+    base = (host or "").lower()
+    if base.startswith("www.") and len(base) > 4:
+        return base[4:]
+    return base
+
+
+def _in_seed_scope(child_host: str, bases: set[str]) -> bool:
+    """True when the child host falls under any scope base."""
+    if not child_host or not bases:
+        return False
+    return any(
+        child_host == base or child_host.endswith("." + base) for base in bases if base
+    )
 
 
 def classify_site_category(
@@ -1838,6 +1863,7 @@ class PoliteCrawler:
         self.default_max_depth: int | None = DEFAULT_MAX_DEPTH
         self.user_agent = DEFAULT_USER_AGENT
         self.respect_robots = True
+        self.scope_to_seed_domains = False
         self.checkpoint_interval_pages = 10
         self.max_attempts_per_url = 3
         self.frontier_enabled = True
@@ -2041,6 +2067,12 @@ class PoliteCrawler:
                 f"crawler: 'respect_robots' must be a bool, got {respect!r}. "
                 "Startup validation failed."
             )
+        scoped = config.get("scope_to_seed_domains", False)
+        if not isinstance(scoped, bool):
+            raise ConfigError(
+                "crawler: 'scope_to_seed_domains' must be a bool, "
+                f"got {scoped!r}. Startup validation failed."
+            )
         checkpoint_interval = config.get("checkpoint_interval_pages", 10)
         if (
             isinstance(checkpoint_interval, bool)
@@ -2096,6 +2128,7 @@ class PoliteCrawler:
         self.default_max_depth = default_depth
         self.user_agent = user_agent.strip()
         self.respect_robots = respect
+        self.scope_to_seed_domains = scoped
         self.checkpoint_interval_pages = checkpoint_interval
         self.max_attempts_per_url = max_attempts
         self.frontier_enabled = frontier_enabled
@@ -2228,22 +2261,36 @@ class PoliteCrawler:
             except Exception:
                 preloaded = []
             depths: dict[str, int] = {}
+            # Per-URL crawl scope for scope_to_seed_domains: each queued
+            # URL inherits its discoverer's scope base, so one crawl's
+            # seeds never leak into each other's (or any external)
+            # domains. Preloaded store rows scope to their own host —
+            # rows queued before the flag was enabled drain out instead
+            # of refilling from outside.
+            scopes: dict[str, set[str]] = {}
             for queued_entry in preloaded:
-                depths.setdefault(normalize_url(queued_entry.url), queued_entry.depth)
+                key = normalize_url(queued_entry.url)
+                depths.setdefault(key, queued_entry.depth)
+                scopes.setdefault(key, {_scope_base(_host_of(queued_entry.url))})
             for seed in seed_urls:
                 if isinstance(seed, str) and seed.strip():
-                    depths.setdefault(normalize_url(seed.strip()), 0)
+                    key = normalize_url(seed.strip())
+                    depths.setdefault(key, 0)
+                    scopes.setdefault(key, {_scope_base(_host_of(seed.strip()))})
         else:
             frontier = BoundedFrontier(
                 self.max_queued_urls, path=self._queue_path, on_evict=_report_shed
             )
             depths = {}
+            scopes = {}
             for seed in seed_urls:
                 if not isinstance(seed, str) or not seed.strip():
                     continue
                 cleaned = seed.strip()
                 frontier.push(cleaned)
-                depths.setdefault(normalize_url(cleaned), 0)
+                key = normalize_url(cleaned)
+                depths.setdefault(key, 0)
+                scopes.setdefault(key, {_scope_base(_host_of(cleaned))})
         stopped = False
 
         def _save_checkpoint(phase: str) -> None:
@@ -2475,6 +2522,15 @@ class PoliteCrawler:
                             if not self._policy_allowed(child_host):
                                 stats.skipped_policy += 1
                                 continue
+                            if self.scope_to_seed_domains and not _in_seed_scope(
+                                child_host,
+                                scopes.get(
+                                    normalize_url(raw),
+                                    {_scope_base(_host_of(raw))},
+                                ),
+                            ):
+                                stats.skipped_scope += 1
+                                continue
                             if self.respect_robots and not self._allowed_by_robots(
                                 link
                             ):
@@ -2486,6 +2542,13 @@ class PoliteCrawler:
                             key = normalize_url(link)
                             if key not in depths or child_depth < depths[key]:
                                 depths[key] = child_depth
+                            parent_scope = scopes.get(
+                                normalize_url(raw), {_scope_base(_host_of(raw))}
+                            )
+                            if key in scopes:
+                                scopes[key] = set(scopes[key]) | set(parent_scope)
+                            else:
+                                scopes[key] = set(parent_scope)
                             frontier.push(
                                 link,
                                 depths[key],
