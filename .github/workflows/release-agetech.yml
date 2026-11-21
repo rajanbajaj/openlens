@@ -1,0 +1,139 @@
+name: release-agetech
+
+# Deploys the private AgeTech instance (agetech.artisticmonk.in) on the
+# release server via the same self-hosted runner. Manual dispatch only:
+# Actions -> release-agetech -> Run workflow. Never triggered by tags,
+# so `v*` pushes keep deploying only the main stack (`release`).
+#
+# What it runs: the lightweight stack (docker-compose-lightweight.yml:
+# backend, frontend, postgres, redis, one store-backed crawler) under a
+# SEPARATE project name (`-p openlens-agetech`) with its own env file
+# (`/home/rajan/servers/agetech.env`, gitignored). The project name is
+# what isolates it: containers, networks, and named volumes all resolve
+# to `openlens-agetech-*`, so the corpus starts fresh and the main
+# stack's volumes are never touched. Ports come from agetech.env
+# (backend :8001, frontend :3002, admin :3003, postgres :5434,
+# redis :6380) and must stay off the main stack's ports.
+#
+# Privacy posture (enforced by agetech.env, not this file):
+# OPENLENS_FRONTIER_ADMIN_TOKEN set, OPENLENS_ALLOW_OPEN_ADMIN empty
+# (fail-closed admin gate), no public tunnel hostname except the
+# Cloudflare-Access-gated agetech domain, admin console LAN/SSH only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag, branch, or SHA to deploy (default: main)."
+        required: false
+        default: "main"
+      admin_profile:
+        description: "Also start admin-frontend (:3003, LAN/SSH only)."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-agetech
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Same self-hosted runner as `release`: it executes the deploy on
+    # the server itself. Own concurrency group: the agetech project is
+    # fully disjoint (own containers, volumes, ports), so it deploys
+    # independently of the main stack.
+    runs-on: [self-hosted, openlens-release]
+    timeout-minutes: 45
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Show release commit
+        run: |
+          echo "ref: ${{ inputs.ref || github.ref_name }}"
+          echo "admin profile: ${{ inputs.admin_profile }}"
+          git log -1 --format='%H %s'
+          docker compose version
+
+      - name: Install server secrets
+        # Gitignored by design: real secrets live only in
+        # /home/rajan/servers/agetech.env on the release server.
+        # The lightweight file lives at the repo root, so it reads
+        # `./.env` (also gitignored).
+        run: cp /home/rajan/servers/agetech.env ./.env
+
+      - name: Resolve admin profile
+        id: opts
+        run: |
+          if [ "${{ inputs.admin_profile }}" = "true" ]; then
+            echo "profile=--profile admin" >> "$GITHUB_OUTPUT"
+          else
+            echo "profile=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and start agetech stack
+        # Distinct project name: fresh `openlens-agetech-*` volumes
+        # (fresh corpus) and zero contact with the main stack.
+        # Plain `up -d`, never `down -v`: the volumes ARE the index.
+        run: |
+          # shellcheck disable=SC2086
+          docker compose ${{ steps.opts.outputs.profile }} -p openlens-agetech \
+            -f docker-compose-lightweight.yml up --build -d
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8001/healthz >/dev/null; then
+              echo "backend healthy"
+              break
+            fi
+            sleep 10
+          done
+          curl -fsS http://localhost:8001/healthz
+
+      - name: Health gates (search)
+        run: |
+          curl -fsS -X POST http://localhost:8001/api/v1/search \
+            -H 'Content-Type: application/json' \
+            -d '{"query": "release health check", "limit": 1}'
+
+      - name: Health gates (frontends)
+        run: |
+          curl -fsS -o /dev/null http://localhost:3002/
+          if [ "${{ inputs.admin_profile }}" = "true" ]; then
+            curl -fsS -o /dev/null http://localhost:3003/
+          fi
+
+      - name: Health gates (workers and data services)
+        # Poll `docker compose ps` until every agetech container is
+        # running (and healthy where a healthcheck exists).
+        run: |
+          for i in $(seq 1 30); do
+            # shellcheck disable=SC2086
+            BAD=$(docker compose -p openlens-agetech -f docker-compose-lightweight.yml ps \
+              --format '{{.Service}}|{{.State}}|{{.Health}}' \
+              | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}' \
+              | head -5)
+            if [ -z "$BAD" ]; then
+              echo "agetech stack running"
+              docker compose -p openlens-agetech -f docker-compose-lightweight.yml ps \
+                --format '{{.Name}} {{.Status}}'
+              break
+            fi
+            echo "waiting on:"; echo "$BAD"
+            sleep 10
+          done
+          # shellcheck disable=SC2086
+          LEFTOVER=$(docker compose -p openlens-agetech -f docker-compose-lightweight.yml ps \
+            --format '{{.Service}}|{{.State}}|{{.Health}}' \
+            | awk -F'|' '$2 != "running" || ($3 != "" && $3 != "healthy") {print}')
+          if [ -n "$LEFTOVER" ]; then
+            echo "unhealthy after 5m:"; echo "$LEFTOVER"; exit 1
+          fi
+
+      - name: Show stack status
+        if: always()
+        run: docker compose -p openlens-agetech -f docker-compose-lightweight.yml ps
