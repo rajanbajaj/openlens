@@ -2268,21 +2268,31 @@ class PoliteCrawler:
             # rows queued before the flag was enabled drain out instead
             # of refilling from outside.
             scopes: dict[str, set[str]] = {}
+            # Seed-relative depth budget: each URL remembers the explicit
+            # seed depth its lineage started from (0 for plain crawls).
+            # Preloaded rows keep absolute semantics (base 0, exactly as
+            # before); explicit seeds re-root the budget at their own
+            # depth so an admin depth above ``default_max_depth`` is
+            # honored for the seed and its children, never capped.
+            bases: dict[str, int] = {}
             for queued_entry in preloaded:
                 key = normalize_url(queued_entry.url)
                 depths.setdefault(key, queued_entry.depth)
                 scopes.setdefault(key, {_scope_base(_host_of(queued_entry.url))})
+                bases.setdefault(key, 0)
             for seed in seed_urls:
                 if isinstance(seed, str) and seed.strip():
                     key = normalize_url(seed.strip())
                     depths.setdefault(key, 0)
                     scopes.setdefault(key, {_scope_base(_host_of(seed.strip()))})
+                    bases[key] = depths[key]
         else:
             frontier = BoundedFrontier(
                 self.max_queued_urls, path=self._queue_path, on_evict=_report_shed
             )
             depths = {}
             scopes = {}
+            bases = {}
             for seed in seed_urls:
                 if not isinstance(seed, str) or not seed.strip():
                     continue
@@ -2291,6 +2301,7 @@ class PoliteCrawler:
                 key = normalize_url(cleaned)
                 depths.setdefault(key, 0)
                 scopes.setdefault(key, {_scope_base(_host_of(cleaned))})
+                bases[key] = 0
         stopped = False
 
         def _save_checkpoint(phase: str) -> None:
@@ -2357,6 +2368,13 @@ class PoliteCrawler:
                     depths[normalize_url(raw)] = depth
                 else:
                     depth = depths.get(normalize_url(raw), 0)
+                raw_key = normalize_url(raw)
+                if raw_key not in bases:
+                    # External mid-crawl arrival (an admin seed or reseed
+                    # that landed while draining): its own depth roots a
+                    # fresh budget, so the explicit depth is honored.
+                    bases[raw_key] = depth
+                base = bases[raw_key]
                 if self._denied(host):
                     stats.skipped_domain += 1
                     if store is not None:
@@ -2375,7 +2393,7 @@ class PoliteCrawler:
                         store.mark_failed(raw, "domain not allowlisted")
                     _notify(raw, "skipped", "domain not allowlisted")
                     continue
-                if not self._depth_allowed(host, depth):
+                if not self._depth_allowed(host, depth, base=base):
                     stats.skipped_depth += 1
                     if store is not None:
                         store.mark_failed(raw, "depth cap exceeded")
@@ -2536,12 +2554,16 @@ class PoliteCrawler:
                             ):
                                 stats.skipped_robots += 1
                                 continue
-                            if not self._depth_allowed(child_host, child_depth):
+                            if not self._depth_allowed(
+                                child_host, child_depth, base=base
+                            ):
                                 stats.skipped_depth += 1
                                 continue
                             key = normalize_url(link)
                             if key not in depths or child_depth < depths[key]:
                                 depths[key] = child_depth
+                            if key not in bases or base < bases[key]:
+                                bases[key] = base
                             parent_scope = scopes.get(
                                 normalize_url(raw), {_scope_base(_host_of(raw))}
                             )
@@ -2650,9 +2672,25 @@ class PoliteCrawler:
             return self.default_max_depth
         return depth
 
-    def _depth_allowed(self, host: str, depth: int) -> bool:
+    def _depth_allowed(self, host: str, depth: int, base: int = 0) -> bool:
+        """Seed-relative link-following depth gate (None cap = unlimited).
+
+        ``base`` is the explicit seed depth the URL's lineage started
+        from (0 for plain crawls): a page is allowed while its hops
+        beyond its seed (``depth - base``) fit the cap. Explicit seeds
+        therefore always fetch (zero hops beyond themselves) and their
+        children get the full ``cap`` hops from the seed — an admin
+        seed depth above ``default_max_depth`` is honored, never
+        capped. Base-0 URLs behave exactly as before.
+        """
         cap = self._max_depth_for(host)
-        return cap is None or depth <= cap
+        if cap is None:
+            return True
+        if isinstance(depth, bool) or not isinstance(depth, int):
+            return True
+        if isinstance(base, bool) or not isinstance(base, int):
+            base = 0
+        return (depth - base) <= cap
 
     def _robots_for(self, url: str) -> urllib.robotparser.RobotFileParser:
         parts = urllib.parse.urlsplit(url)

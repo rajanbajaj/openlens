@@ -69,11 +69,17 @@ class KafkaMessage:
     ``priority`` mirrors the frontier store semantic: ``None`` (absent
     from the payload, e.g. pre-upgrade messages) keeps whatever the
     store already has; an explicit int overwrites it on conflict.
+    ``seed`` marks an explicitly requested seed (admin dashboard,
+    resume-with-seeds, startup seeds): the drain treats it as its own
+    depth-budget root so an explicit depth above
+    ``default_max_depth`` is honored, never capped. Discovered links
+    always carry ``False``. Absent on pre-upgrade payloads (False).
     """
 
     url: str
     depth: int = 0
     priority: int | None = None
+    seed: bool = False
 
 
 def _coerce_enabled(value: Any) -> bool:
@@ -363,30 +369,46 @@ class KafkaQueue:
 
     # -- produce ---------------------------------------------------------
 
-    def publish(self, url: str, depth: int = 0, priority: int | None = None) -> bool:
+    def publish(
+        self,
+        url: str,
+        depth: int = 0,
+        priority: int | None = None,
+        seed: bool = False,
+    ) -> bool:
         """Publish one URL (keyed by normalized URL). False when blank.
 
         ``priority`` is only carried when explicit (``None`` omits the
         key so consumers keep the stored value); an explicit int,
-        including ``0``, overwrites it on conflict. Raises
-        ``ProviderError(UNAVAILABLE)`` when the broker rejects or
-        times out, so callers can fall back to the store queue.
+        including ``0``, overwrites it on conflict. ``seed`` marks an
+        explicitly requested seed (admin/resume/startup); discovered
+        links leave it ``False``. Raises ``ProviderError(UNAVAILABLE)``
+        when the broker rejects or times out, so callers can fall back
+        to the store queue.
         """
         if not isinstance(url, str) or not url.strip():
             return False
-        future = self._send_one(url, depth, priority)
+        future = self._send_one(url, depth, priority, seed=seed)
         try:
             future.get(timeout=self._publish_timeout_s)
         except Exception as exc:
             raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
         return True
 
-    def _send_one(self, url: str, depth: int = 0, priority: int | None = None) -> Any:
+    def _send_one(
+        self,
+        url: str,
+        depth: int = 0,
+        priority: int | None = None,
+        seed: bool = False,
+    ) -> Any:
         """Queue one URL send; the caller decides when to wait on it."""
         cleaned = url.strip()
         payload: dict[str, Any] = {"url": cleaned, "depth": int(depth)}
         if priority is not None:
             payload["priority"] = int(priority)
+        if seed is True:
+            payload["seed"] = True
         try:
             return self._producer.send(
                 self._topic,
@@ -396,20 +418,26 @@ class KafkaQueue:
         except Exception as exc:
             raise _error(f"Kafka publish to '{self._topic}' failed: {exc}") from exc
 
-    def publish_many(self, items: list[tuple[str, int, int | None]]) -> int:
+    def publish_many(
+        self, items: list[tuple[str, int, int | None]], *, seed: bool = False
+    ) -> int:
         """Publish many URLs with a single broker flush; returns count sent.
 
         Blank URLs are skipped. Throughput equivalent of :meth:`publish`
         for link-heavy pages: one flush waits on every send instead of
-        one round-trip per link. Raises ``ProviderError(UNAVAILABLE)``
-        when the broker rejects or the flush times out, so callers can
-        fall back to the store queue.
+        one round-trip per link. ``seed`` applies to the whole batch
+        (admin seed pastes set it; discovered-link flushes leave it
+        ``False``). Raises ``ProviderError(UNAVAILABLE)`` when the
+        broker rejects or the flush times out, so callers can fall back
+        to the store queue.
         """
         pending: list[tuple[Any, str]] = []
         for url, depth, priority in items:
             if not isinstance(url, str) or not url.strip():
                 continue
-            pending.append((self._send_one(url, depth, priority), url.strip()))
+            pending.append(
+                (self._send_one(url, depth, priority, seed=seed), url.strip())
+            )
         if not pending:
             return 0
         try:
@@ -509,6 +537,7 @@ class KafkaQueue:
         self._pending_record = record
         value = getattr(record, "value", None)
         priority: int | None = None
+        seed = False
         if isinstance(value, Mapping):
             url = str(value.get("url", "") or "")
             try:
@@ -521,11 +550,15 @@ class KafkaQueue:
                     priority = int(raw_priority)
                 except (TypeError, ValueError):
                     priority = None
+            # Only a literal True marks a seed: pre-upgrade payloads
+            # omit the key (False) and a forged truthy string must not
+            # grant budget-root status.
+            seed = value.get("seed", False) is True
         else:
             url, depth = str(value or ""), 0
         if not url.strip():
             return None
-        return KafkaMessage(url=url.strip(), depth=depth, priority=priority)
+        return KafkaMessage(url=url.strip(), depth=depth, priority=priority, seed=seed)
 
     def commit(self) -> None:
         """Commit the last polled offset (call after a successful crawl)."""

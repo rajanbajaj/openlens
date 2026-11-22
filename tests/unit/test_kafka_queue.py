@@ -105,14 +105,24 @@ class _FakeQueue:
 
     def __init__(
         self,
-        messages: list[tuple[str, int] | tuple[str, int, int | None]] | None = None,
+        messages: (
+            list[
+                tuple[str, int]
+                | tuple[str, int, int | None]
+                | tuple[str, int, int | None, bool]
+            ]
+            | None
+        ) = None,
         available: bool = True,
         max_poll_interval_ms: int = 900_000,
     ) -> None:
         self._max_poll_interval_ms = max_poll_interval_ms
         self._messages = []
         for item in messages or []:
-            if len(item) == 3:
+            if len(item) == 4:
+                url, depth, prio, seed = item
+                self._messages.append(KafkaMessage(url, depth, prio, bool(seed)))
+            elif len(item) == 3:
                 url, depth, prio = item
                 self._messages.append(KafkaMessage(url, depth, prio))
             else:
@@ -120,13 +130,21 @@ class _FakeQueue:
                 self._messages.append(KafkaMessage(url, depth))
         self._available = available
         self.published: list[tuple[str, int, int | None]] = []
+        self.published_seeds: list[bool] = []
         self.commits = 0
 
     def check_available(self, timeout_s: float = 5.0) -> bool:
         return self._available
 
-    def publish(self, url: str, depth: int = 0, priority: int | None = None) -> bool:
+    def publish(
+        self,
+        url: str,
+        depth: int = 0,
+        priority: int | None = None,
+        seed: bool = False,
+    ) -> bool:
         self.published.append((url, depth, priority))
+        self.published_seeds.append(bool(seed))
         return True
 
     def poll(self) -> KafkaMessage | None:
@@ -393,6 +411,57 @@ def test_publish_carries_priority_only_when_explicit() -> None:
     queue.close()
 
 
+def test_publish_marks_seeds_only_when_explicit() -> None:
+    producer = _FakeProducer()
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=producer
+    )
+    assert queue.publish("https://example.com/seed", 2, seed=True) is True
+    assert producer.sent[0][2] == {
+        "url": "https://example.com/seed",
+        "depth": 2,
+        "seed": True,
+    }
+    # Discovered links leave the key out entirely (pre-upgrade parity).
+    assert queue.publish("https://example.com/found", 3) is True
+    assert producer.sent[1][2] == {"url": "https://example.com/found", "depth": 3}
+    queue.close()
+
+
+def test_publish_many_threads_seed_flag_to_batch() -> None:
+    producer = _FakeProducer()
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}}, producer=producer
+    )
+    sent = queue.publish_many([("https://example.com/a", 2, None)], seed=True)
+    assert sent == 1
+    assert producer.sent[0][2]["seed"] is True
+    queue.close()
+
+
+def test_poll_decodes_seed_flag_strictly() -> None:
+    consumer = _FakeConsumer(
+        [
+            [{"url": "https://example.com/seed", "depth": 2, "seed": True}],
+            [{"url": "https://example.com/old", "depth": 1}],
+            [{"url": "https://example.com/forged", "depth": 1, "seed": "yes"}],
+        ]
+    )
+    queue = KafkaQueue.from_app_config(
+        {"kafka": {"bootstrap_servers": ["b:1"]}},
+        producer=_FakeProducer(),
+        consumer_factory=lambda: consumer,
+    )
+    assert queue.poll() == KafkaMessage(
+        url="https://example.com/seed", depth=2, seed=True
+    )
+    # Pre-upgrade payloads (no key) stay non-seeds.
+    assert queue.poll() == KafkaMessage(url="https://example.com/old", depth=1)
+    # Only a literal True grants seed status.
+    assert queue.poll() == KafkaMessage(url="https://example.com/forged", depth=1)
+    queue.close()
+
+
 def test_publish_many_flushes_once_for_the_batch() -> None:
     producer = _FakeProducer()
     queue = KafkaQueue.from_app_config(
@@ -655,6 +724,111 @@ def test_run_kafka_worker_drains_and_fans_out(tmp_path: Path) -> None:
     assert "https://kafka.test/a" not in pending_urls
     assert "https://kafka.test/b" not in pending_urls
     assert hits.get("https://kafka.test/a", 0) == 1
+
+
+_DEEP_PAGES: dict[str, list[str]] = {
+    "https://deep.test/seed": ["https://deep.test/child"],
+    "https://deep.test/child": ["https://deep.test/grandchild"],
+    "https://deep.test/grandchild": ["https://deep.test/beyond"],
+    "https://deep.test/beyond": [],
+}
+
+
+def _deep_crawler_factory(hits: dict[str, int]):  # type: ignore[no-untyped-def]
+    def factory() -> PoliteCrawler:
+        crawler = PoliteCrawler()
+        crawler.configure(
+            {
+                "timeout_s": 5,
+                "crawl_delay_s": 0,
+                "max_pages": 10,
+                "respect_robots": False,
+                "default_max_depth": 2,
+            }
+        )
+
+        def fake_fetch(url: str) -> _FetchedPage | None:
+            hits[url] = hits.get(url, 0) + 1
+            if url not in _DEEP_PAGES:
+                return _FetchedPage(
+                    status=404, url=url, content_type="text/plain", body=b""
+                )
+            links = "".join(f'<a href="{link}">x</a>' for link in _DEEP_PAGES[url])
+            prose = "Informative crawlable prose about the topic. " * 20
+            body = (
+                f"<html><head><title>Guide for {url}</title></head>"
+                f"<body><p>{prose}</p>{links}</body></html>"
+            ).encode()
+            return _FetchedPage(
+                status=200,
+                url=url,
+                content_type="text/html",
+                body=body,
+                headers={},
+            )
+
+        crawler._fetch_bounded = fake_fetch  # type: ignore[method-assign]
+        crawler.respect_robots = False
+        return crawler
+
+    return factory
+
+
+def _kafka_app_config_with_depth(db_path: str) -> dict[str, Any]:
+    config = _kafka_app_config(db_path)
+    config["indexing"] = {**config["indexing"], "default_max_depth": 2}
+    return config
+
+
+def test_run_kafka_worker_seed_message_roots_depth_budget(tmp_path: Path) -> None:
+    """A seed-flagged message at depth 2 follows two hops (bug report).
+
+    End-to-end worker shape: the admin seed arrives over Kafka with an
+    explicit depth at the default cap, yet the seed and its children
+    are honored instead of ``depth cap exceeded``; the third hop stays
+    capped.
+    """
+    db_path = str(tmp_path / "frontier.db")
+    fake = _FakeQueue([("https://deep.test/seed", 2, None, True)])
+    hits: dict[str, int] = {}
+    run_kafka_worker(
+        [],
+        _kafka_app_config_with_depth(db_path),
+        worker_id="w-seed",
+        crawler_factory=_deep_crawler_factory(hits),
+        queue=fake,
+        max_iterations=1,
+        idle_sleep_s=0.01,
+    )
+    assert hits.get("https://deep.test/seed", 0) == 1
+    assert hits.get("https://deep.test/child", 0) == 1
+    assert hits.get("https://deep.test/grandchild", 0) == 1
+    assert "https://deep.test/beyond" not in hits
+
+
+def test_run_kafka_worker_unflagged_deep_row_stays_absolute(
+    tmp_path: Path,
+) -> None:
+    """Without the seed flag the same row keeps absolute gating.
+
+    Pins the no-inflation guarantee: a depth-2 row with no seed
+    context still fetches itself under a cap of 2, but its depth-3
+    children stay capped.
+    """
+    db_path = str(tmp_path / "frontier.db")
+    fake = _FakeQueue([("https://deep.test/seed", 2, None)])
+    hits: dict[str, int] = {}
+    run_kafka_worker(
+        [],
+        _kafka_app_config_with_depth(db_path),
+        worker_id="w-plain",
+        crawler_factory=_deep_crawler_factory(hits),
+        queue=fake,
+        max_iterations=1,
+        idle_sleep_s=0.01,
+    )
+    assert hits.get("https://deep.test/seed", 0) == 1
+    assert "https://deep.test/child" not in hits
 
 
 def test_backoff_frontier_view_serves_only_backoff_rows(tmp_path: Path) -> None:

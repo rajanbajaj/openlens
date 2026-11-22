@@ -1517,7 +1517,7 @@ def run_kafka_worker(
     try:
         for seed in seed_urls:
             if isinstance(seed, str) and seed.strip():
-                kafka.publish(seed.strip(), 0)
+                kafka.publish(seed.strip(), 0, seed=True)
         # Drain any backlog the store already holds (fallback-enqueued
         # seeds from a broker outage, crash leftovers) before entering
         # the poll loop, so no queued URL waits for the next message.
@@ -1592,8 +1592,12 @@ def run_kafka_worker(
             full_budget = worker.crawler.max_pages
             worker.crawler.max_pages = min(full_budget, per_poll)
             try:
+                # Explicit seeds re-root the depth budget at their own
+                # depth (an admin depth above ``default_max_depth`` is
+                # honored, never capped); discovered links drain with
+                # absolute depths exactly as before.
                 stats = run_index(
-                    [],
+                    ([message.url] if getattr(message, "seed", False) is True else []),
                     repository,
                     dict(indexing_config),
                     chunk_size,

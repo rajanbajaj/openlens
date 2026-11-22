@@ -2795,6 +2795,9 @@ def _publish_seeds(
     Kafka twin then dedups to a no-op.
     ``depth`` defaults to 0 (seed convention); callers with an explicit
     seed depth pass it through to both the topic and the store.
+    Every message is flagged as an explicit seed so drains re-root
+    the depth budget at the seed's own depth (an admin depth above
+    ``default_max_depth`` is honored, never capped).
     Returns how many seeds a durable queue (Kafka or store) accepted,
     capped at ``len(seeds)``: a priority seed written to both the topic
     and the store still counts once.
@@ -2808,11 +2811,13 @@ def _publish_seeds(
                 if callable(batched):
                     # One broker flush for the whole paste instead of one
                     # round trip per seed.
-                    sent = batched([(seed, depth, priority) for seed in seeds])
+                    sent = batched(
+                        [(seed, depth, priority) for seed in seeds], seed=True
+                    )
                     accepted += max(0, int(sent or 0))
                 else:
                     for seed in seeds:
-                        if queue.publish(seed, depth, priority=priority):
+                        if queue.publish(seed, depth, priority=priority, seed=True):
                             accepted += 1
             finally:
                 with suppress(Exception):

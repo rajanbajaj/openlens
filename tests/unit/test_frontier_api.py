@@ -1485,6 +1485,35 @@ def test_enqueue_seeds_stores_depth(
     assert rows == {"https://example.com/a": ("queued", 2)}
 
 
+def test_enqueue_seeds_stores_depth_above_default_uncapped(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An admin seed depth above ``default_max_depth`` is stored as-is.
+
+    The intake must not cap the explicit depth at the default (2):
+    enforcement honors it downstream instead of ``422``-ing or
+    clamping it here.
+    """
+    db_path = _file_store(monkeypatch, tmp_path)
+    resp = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/deep"], "depth": 5},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"enqueued": 1, "skipped_over_cap": 0}
+    probe = SqliteFrontierStore(db_path)
+    try:
+        rows = {
+            row["url"]: (row["status"], row["depth"])
+            for row in probe._conn.execute(
+                "SELECT url, status, depth FROM frontier_queue"
+            ).fetchall()
+        }
+    finally:
+        probe.close()
+    assert rows == {"https://example.com/deep": ("queued", 5)}
+
+
 def test_publish_seeds_threads_depth_to_kafka(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1492,10 +1521,12 @@ def test_publish_seeds_threads_depth_to_kafka(
     from openlens.api import routes as routes_mod
 
     seen: list[tuple] = []
+    flags: list[bool] = []
 
     class _Queue:
-        def publish_many(self, items):  # type: ignore[no-untyped-def]
+        def publish_many(self, items, *, seed=False):  # type: ignore[no-untyped-def]
             seen.extend(items)
+            flags.append(seed)
             return len(items)
 
         def close(self) -> None:
@@ -1511,6 +1542,9 @@ def test_publish_seeds_threads_depth_to_kafka(
         == 1
     )
     assert seen == [("https://example.com/a", 2, 1)]
+    # Seeds travel flagged so drains re-root the depth budget instead
+    # of capping an explicit admin depth at ``default_max_depth``.
+    assert flags == [True]
 
 
 def _read_store_request(config: Any) -> Any:

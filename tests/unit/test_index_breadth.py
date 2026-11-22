@@ -376,3 +376,130 @@ def test_cli_delegation_surfaces_refresh_counts(
     assert "updated=2" in out
     assert "skipped_unchanged=3" in out
     assert "skipped_duplicates=4" in out
+
+
+# -- explicit seeds re-root the depth budget --------------------------------
+
+
+def _seed_store(urls_with_depths: list[tuple[str, int]]) -> object:
+    """In-memory frontier store preloaded with ``(url, depth)`` rows."""
+    from openlens.storage.frontier import SqliteFrontierStore
+
+    store = SqliteFrontierStore(":memory:")
+    for url, depth in urls_with_depths:
+        assert store.enqueue(url, depth) is True
+    return store
+
+
+def test_explicit_seed_depth_roots_budget_for_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seed submitted with depth 2 follows its page links (bug report).
+
+    Regression: a dev.to profile seeded at depth 2 with
+    ``default_max_depth=2`` fetched only itself — the article links
+    (children at depth 3) died to ``skipped_depth`` under absolute
+    gating. Explicit seeds re-root the budget, so the seed and its
+    ``cap`` hops of children are honored, never capped.
+    """
+    seed = "http://d.test/profile"
+    articles = [f"http://d.test/article-{index}" for index in range(2)]
+    anchors = "".join(f'<a href="{link}">read</a>' for link in articles)
+    prose = "Informative crawlable prose about the topic. " * 20
+    seed_page = _FetchedPage(
+        status=200,
+        url=seed,
+        content_type="text/html",
+        body=(
+            f"<html><head><title>profile</title></head>"
+            f"<body><p>{prose}</p>{anchors}</body></html>"
+        ).encode(),
+    )
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        if url == seed:
+            return seed_page
+        return _html_page(url)
+
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    store = _seed_store([(seed, 2)])
+    try:
+        docs = crawler.crawl([seed], frontier_store=store)
+    finally:
+        store.close()
+    assert sorted(doc.url or "" for doc in docs) == sorted([seed, *articles])
+    assert crawler.last_stats.skipped_depth == 0
+
+
+def test_explicit_seed_above_cap_still_fetches_with_bounded_hops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An admin seed depth above the default is honored, not capped.
+
+    Seed at depth 5 with ``default_max_depth=2`` must still fetch, and
+    its children get two hops from the seed (depths 6 and 7); the third
+    hop (depth 8) stays capped, so the depth gate still binds.
+    """
+    chain = {
+        "http://d.test/seed": ["http://d.test/a"],
+        "http://d.test/a": ["http://d.test/b"],
+        "http://d.test/b": ["http://d.test/c"],
+        "http://d.test/c": [],
+    }
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        return _html_page(url, *chain.get(url, []))
+
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    store = _seed_store([("http://d.test/seed", 5)])
+    try:
+        docs = crawler.crawl(["http://d.test/seed"], frontier_store=store)
+    finally:
+        store.close()
+    assert sorted(doc.url or "" for doc in docs) == [
+        "http://d.test/a",
+        "http://d.test/b",
+        "http://d.test/seed",
+    ]
+    assert crawler.last_stats.skipped_depth >= 1
+
+
+def test_rows_only_drain_keeps_absolute_depths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backlog/restart rows without seed context keep absolute gating.
+
+    A drain that never saw the explicit seed (empty ``seed_urls``,
+    stale preloaded rows) behaves exactly as before: the row at the
+    cap fetches, its children stay capped. This pins the no-inflation
+    guarantee for queues that predate seed-relative budgeting.
+    """
+    seed = "http://d.test/profile"
+    articles = [f"http://d.test/article-{index}" for index in range(2)]
+    anchors = "".join(f'<a href="{link}">read</a>' for link in articles)
+    prose = "Informative crawlable prose about the topic. " * 20
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        if url == seed:
+            return _FetchedPage(
+                status=200,
+                url=seed,
+                content_type="text/html",
+                body=(
+                    f"<html><head><title>profile</title></head>"
+                    f"<body><p>{prose}</p>{anchors}</body></html>"
+                ).encode(),
+            )
+        return _html_page(url)
+
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    store = _seed_store([(seed, 2)])
+    try:
+        docs = crawler.crawl([], frontier_store=store)
+    finally:
+        store.close()
+    assert [doc.url for doc in docs] == [seed]
+    assert crawler.last_stats.skipped_depth >= 1
