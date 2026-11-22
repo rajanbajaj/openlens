@@ -3061,10 +3061,18 @@ def frontier_enqueue_seeds(
             if store is not None:
                 known = getattr(store, "is_known", None)
                 for index, seed in enumerate(seeds):
-                    # Already queued counts as accepted (idempotent
-                    # re-paste); only genuinely new seeds insert below.
+                    # A re-pasted seed refreshes instead of no-op-ing:
+                    # terminal rows (done/failed/skipped) revive to
+                    # queued so the URL refetches (the indexer upserts
+                    # by id, so refresh never duplicates documents).
+                    # Still-queued/active rows are left alone and count
+                    # as accepted (idempotent re-paste).
                     with suppress(Exception):
                         if callable(known) and known(seed):
+                            reseed = getattr(store, "reseed", None)
+                            if callable(reseed):
+                                with suppress(Exception):
+                                    reseed(seed)
                             settled.add(index)
                         elif store.enqueue(seed, depth, priority=body.priority):
                             settled.add(index)

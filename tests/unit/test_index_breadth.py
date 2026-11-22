@@ -503,3 +503,105 @@ def test_rows_only_drain_keeps_absolute_depths(
         store.close()
     assert [doc.url for doc in docs] == [seed]
     assert crawler.last_stats.skipped_depth >= 1
+
+
+def test_hub_page_fans_out_to_every_article_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link-heavy hub queues every article, not just the first.
+
+    Regression pin for a hub seed (e.g. a homepage full of ``<a>``
+    tags) that yielded a single queued URL: junk/chrome/tag-index
+    links are still dropped, but every distinct article link is
+    enqueued and fetched.
+    """
+    articles = [f"http://d.test/story-{index}" for index in range(8)]
+    anchors = "".join(f'<a href="{link}">read {link}</a>' for link in articles)
+    # Chrome, tag indexes, and nofollow links must stay out.
+    anchors += (
+        '<nav><a href="http://d.test/nav-only">nav</a></nav>'
+        '<a href="http://d.test/t/sometag">tag</a>'
+        '<a href="http://d.test/nofollow-me" rel="nofollow">nf</a>'
+    )
+    prose = "Informative crawlable prose about the topic. " * 20
+    hub = _FetchedPage(
+        status=200,
+        url="http://d.test/",
+        content_type="text/html",
+        body=(
+            "<html><head><title>hub</title></head>"
+            f"<body><p>{prose}</p>{anchors}</body></html>"
+        ).encode(),
+    )
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        if url.rstrip("/") == "http://d.test":
+            return hub
+        return _html_page(url)
+
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    store = _seed_store([("http://d.test/", 0)])
+    try:
+        docs = crawler.crawl(["http://d.test/"], frontier_store=store)
+    finally:
+        store.close()
+    assert sorted(doc.url or "" for doc in docs) == sorted(
+        ["http://d.test/", *articles]
+    )
+    assert crawler.last_stats.skipped_depth == 0
+
+
+def test_reseed_refresh_updates_without_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-crawling a reseeded URL updates its row instead of duplicating.
+
+    Seed, crawl, edit the page, reseed, crawl again: the repository
+    holds exactly one row with the latest content (refresh keeps the
+    latest crawl, never duplicates).
+    """
+    from openlens.indexing.indexer import run_index
+    from openlens.storage.frontier import SqliteFrontierStore
+    from openlens.storage.repository import DocumentRepository
+
+    seed = "http://d.test/story"
+    bodies = {"v1": "first version of the story. "}
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        prose = (bodies["live"] + "Informative crawlable prose. ") * 20
+        return _FetchedPage(
+            status=200,
+            url=url,
+            content_type="text/html",
+            body=(
+                f"<html><head><title>story</title></head>"
+                f"<body><p>{prose}</p></body></html>"
+            ).encode(),
+        )
+
+    bodies["live"] = bodies["v1"]
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    repository = DocumentRepository(":memory:")
+    store = SqliteFrontierStore(":memory:")
+    try:
+        first = run_index([seed], repository, {}, crawler=crawler, frontier_store=store)
+        assert first.added == 1
+        assert repository.count() == 1
+        # Edit the page, then refresh via reseed (what a duplicate
+        # admin seed now triggers) and crawl again.
+        bodies["live"] = "second version of the story, rewritten. "
+        assert store.reseed(seed) is True
+        second = run_index(
+            [seed], repository, {}, crawler=crawler, frontier_store=store
+        )
+        assert second.added == 0
+        assert second.updated == 1
+        assert repository.count() == 1
+        (hits, total) = repository.search("rewritten", limit=5)
+        assert total == 1
+        assert "second version" in hits[0][0].content
+    finally:
+        store.close()
+        repository.close()

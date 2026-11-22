@@ -1514,6 +1514,43 @@ def test_enqueue_seeds_stores_depth_above_default_uncapped(
     assert rows == {"https://example.com/deep": ("queued", 5)}
 
 
+def test_enqueue_seeds_refreshes_finished_url(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Re-pasting a finished seed revives it for a refresh (no duplicates).
+
+    The first paste queues the URL; once it settles to ``done``,
+    pasting it again must move it back to ``queued`` so workers
+    refetch it. The indexer upserts by document id, so the refresh
+    overwrites instead of duplicating rows.
+    """
+    db_path = _file_store(monkeypatch, tmp_path)
+    first = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a"]},
+    )
+    assert first.status_code == 200
+    assert first.json() == {"enqueued": 1, "skipped_over_cap": 0}
+    probe = SqliteFrontierStore(db_path)
+    try:
+        probe.mark_done("https://example.com/a")
+        assert probe.entry_of("https://example.com/a").status == "done"
+    finally:
+        probe.close()
+    second = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a"]},
+    )
+    assert second.status_code == 200
+    assert second.json() == {"enqueued": 1, "skipped_over_cap": 0}
+    probe = SqliteFrontierStore(db_path)
+    try:
+        entry = probe.entry_of("https://example.com/a")
+        assert entry is not None and entry.status == "queued"
+    finally:
+        probe.close()
+
+
 def test_publish_seeds_threads_depth_to_kafka(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
