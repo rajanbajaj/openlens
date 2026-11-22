@@ -1,16 +1,22 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_LIMIT,
+  SITE_UNAUTHORIZED_CODE,
+  SITE_UNAUTHORIZED_EVENT,
   buildSearchBody,
+  clearSiteToken,
+  fetchSiteStatus,
   isDevMode,
   offsetForPage,
   prefetchPage,
   searchLens,
+  setSiteToken,
   SearchApiError,
   formatResultTotal,
   totalPages,
   validateQuery,
 } from './api/client.ts';
+import type { SiteStatus } from './api/client.ts';
 import { EMPTY_FILTER_STATE, buildFilters, type UserFilterState } from './api/filters.ts';
 import type {
   ErrorDetail,
@@ -39,6 +45,7 @@ import { QuickFilters } from './components/QuickFilters.tsx';
 import { ResultList } from './components/ResultList.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import SearchForm from './components/SearchForm.tsx';
+import SiteLock from './components/SiteLock.tsx';
 import Tour from './components/Tour.tsx';
 import { TOUR_STEPS } from './tourSteps.ts';
 import { ErrorState, LoadingState } from './components/States.tsx';
@@ -91,6 +98,47 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<'search' | 'chat'>('search');
   const [tourRun, setTourRun] = useState(0);
+  // Site-password gate (private deployments only): null until the
+  // status fetch lands; locked replaces the whole UI below.
+  const [site, setSite] = useState<SiteStatus | null>(null);
+
+  function refreshSite() {
+    void fetchSiteStatus().then((status) => setSite(status));
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSiteStatus().then((status) => {
+      if (!cancelled) setSite(status);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Any query call can hit the gate mid-session (password rotated or
+  // storage cleared elsewhere): drop the token and show the lock.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      clearSiteToken();
+      refreshSite();
+    };
+    window.addEventListener(SITE_UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(SITE_UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
+
+  async function unlockSite(password: string): Promise<boolean> {
+    setSiteToken(password);
+    const status = await fetchSiteStatus();
+    setSite(status);
+    if (!status.authorized) clearSiteToken();
+    return status.authorized;
+  }
+
+  function handleLock() {
+    clearSiteToken();
+    refreshSite();
+  }
   // Tour-driven demo question: set by the tour's chat example, consumed
   // once by ChatView, then cleared so a replay can ask again.
   const [chatExample, setChatExample] = useState<string | null>(null);
@@ -132,6 +180,11 @@ export default function App() {
         `${formatResultTotal(payload.total)} result${payload.total === 1 ? '' : 's'} for “${searchQuery}”`,
       );
     } catch (err) {
+      if (err instanceof SearchApiError && err.code === SITE_UNAUTHORIZED_CODE) {
+        // The event listener already drops the token and refreshes the
+        // gate state; the lock screen takes over, no error card needed.
+        return;
+      }
       if (err instanceof SearchApiError) {
         setError({ code: err.code, message: err.message });
       } else {
@@ -290,7 +343,30 @@ export default function App() {
         >
           AI chat
         </button>
+        {site !== null && site.auth_required && site.authorized ? (
+          <button
+            type="button"
+            className="ol-viewtab"
+            data-testid="nav-lock"
+            aria-label="Lock site"
+            onClick={handleLock}
+          >
+            Lock
+          </button>
+        ) : null}
       </nav>
+    );
+  }
+
+  const siteLocked = site !== null && site.auth_required && !site.authorized;
+
+  if (siteLocked) {
+    return (
+      <div className="ol-shell flex min-h-screen flex-col">
+        <main className="ol-landing grid min-h-screen place-items-center p-6">
+          <SiteLock onUnlock={unlockSite} />
+        </main>
+      </div>
     );
   }
 

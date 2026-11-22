@@ -262,7 +262,9 @@ describe('search workspace', () => {
     await waitFor(() => {
       expect(screen.getByText('Acme Headphones')).toBeInTheDocument();
     });
-    const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+    // The boot-time site-status check also hits fetch: find the search POST by URL.
+    const searchCall = fetchStub.mock.calls.find(([url]) => String(url).includes('/api/v1/search'));
+    const [, init] = searchCall as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect('provider_prefs' in body).toBe(false);
     expect(screen.getByTestId('result-announcer')).toHaveTextContent(

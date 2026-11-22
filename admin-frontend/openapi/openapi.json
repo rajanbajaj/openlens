@@ -5,6 +5,28 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/site/status": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Site Status",
+        "description": "Whether the query surface currently needs the site password.\n\nAlways public (the login screen must reach it to decide whether\nto show): ``authorized`` reflects the presented\n``X-Site-Password`` header, so a password can be verified without\nburning a query.",
+        "operationId": "site_status_api_v1_site_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteStatusSchema"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/search": {
       "post": {
         "tags": [
@@ -4471,6 +4493,23 @@
         ],
         "title": "SearchResultSchema",
         "description": "One normalized search hit on the wire."
+      },
+      "SiteStatusSchema": {
+        "properties": {
+          "auth_required": {
+            "type": "boolean",
+            "title": "Auth Required",
+            "default": false
+          },
+          "authorized": {
+            "type": "boolean",
+            "title": "Authorized",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "SiteStatusSchema",
+        "description": "GET /api/v1/site/status response body (always public).\n\n``auth_required`` mirrors ``OPENLENS_SITE_PASSWORD`` (empty means\nthe query surface is public); ``authorized`` tells a password\nholder whether the presented ``X-Site-Password`` header (if any)\nalready unlocks search, so the login screen can verify without\nburning a query."
       },
       "SuggestResponseSchema": {
         "properties": {

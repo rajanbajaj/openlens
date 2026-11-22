@@ -116,6 +116,97 @@ export class SearchApiError extends Error {
 type FetchImpl = typeof fetch;
 
 /**
+ * Site-password gate (env-gated on the backend via
+ * `OPENLENS_SITE_PASSWORD`; empty means the index is public).
+ * Deployments that set it (e.g. a private instance) require the
+ * password on every query call; the search page shows a lock
+ * screen until unlocked. The password lives only in tab-scoped
+ * `sessionStorage` — never in code, URLs, or logs.
+ */
+
+/** Request header carrying the site password. */
+export const SITE_AUTH_HEADER = 'X-Site-Password';
+
+const SITE_TOKEN_KEY = 'openlens.site_token';
+
+/** `unauthorized` envelope code the backend returns without a valid password. */
+export const SITE_UNAUTHORIZED_CODE = 'unauthorized';
+
+/** Browser event fired when any query call hits the password gate. */
+export const SITE_UNAUTHORIZED_EVENT = 'openlens:site-unauthorized';
+
+/** Stored site password for this tab (`''` when locked or public). */
+export function getSiteToken(): string {
+  try {
+    return window.sessionStorage.getItem(SITE_TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** Persist the site password for this tab; empty clears it. */
+export function setSiteToken(token: string): void {
+  try {
+    if (token) window.sessionStorage.setItem(SITE_TOKEN_KEY, token);
+    else window.sessionStorage.removeItem(SITE_TOKEN_KEY);
+  } catch {
+    /* storage-unavailable browsers keep whatever is already stored */
+  }
+}
+
+/** Forget the site password for this tab. */
+export function clearSiteToken(): void {
+  setSiteToken('');
+}
+
+/** Auth header for query calls; empty when locked or public. */
+export function siteAuthHeaders(): Record<string, string> {
+  const token = getSiteToken();
+  return token ? { [SITE_AUTH_HEADER]: token } : {};
+}
+
+/** Notify the app shell that a query call hit the password gate. */
+export function notifySiteUnauthorized(): void {
+  try {
+    window.dispatchEvent(new CustomEvent(SITE_UNAUTHORIZED_EVENT));
+  } catch {
+    /* listeners are best-effort; the thrown envelope still carries the code */
+  }
+}
+
+/** `GET /api/v1/site/status` shape. */
+export interface SiteStatus {
+  auth_required: boolean;
+  authorized: boolean;
+}
+
+function isSiteStatus(value: unknown): value is SiteStatus {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.auth_required === 'boolean' && typeof record.authorized === 'boolean';
+}
+
+/**
+ * Issue `GET {API_URL}/api/v1/site/status` and return the gate state.
+ * Fail-open: unreachable backends, legacy servers without the
+ * endpoint, and malformed payloads resolve to public+authorized so
+ * old deployments keep working with no login screen.
+ */
+export async function fetchSiteStatus(fetchImpl: FetchImpl = fetch): Promise<SiteStatus> {
+  try {
+    const response = await fetchImpl(`${API_BASE_URL}/api/v1/site/status`, {
+      headers: { ...siteAuthHeaders() },
+    });
+    if (!response.ok) return { auth_required: false, authorized: true };
+    const payload: unknown = await response.json();
+    if (isSiteStatus(payload)) return payload;
+  } catch {
+    /* fall through to the public default below */
+  }
+  return { auth_required: false, authorized: true };
+}
+
+/**
  * Issue `POST {API_URL}/api/v1/search` and return the parsed
  * `SearchResponse`. Throws {@link SearchApiError} for error
  * envelopes, malformed payloads, and transport failures.
@@ -128,7 +219,7 @@ export async function searchLens(
   try {
     response = await fetchImpl(`${API_BASE_URL}/api/v1/search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...siteAuthHeaders() },
       body: JSON.stringify(body),
     });
   } catch (error) {
@@ -147,6 +238,7 @@ export async function searchLens(
 
   if (isSearchResponse(payload)) return payload;
   if (isErrorEnvelope(payload)) {
+    if (payload.error.code === SITE_UNAUTHORIZED_CODE) notifySiteUnauthorized();
     throw new SearchApiError(payload.error.code, payload.error.message);
   }
   throw new SearchApiError('invalid_response', 'Unexpected response shape.');
@@ -283,6 +375,7 @@ export async function fetchSuggestions(
   try {
     response = await fetchImpl(`${API_BASE_URL}/api/v1/suggest?${params.toString()}`, {
       signal: options.signal,
+      headers: { ...siteAuthHeaders() },
     });
   } catch {
     return [];

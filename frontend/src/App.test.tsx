@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.tsx';
 
 afterEach(() => {
@@ -257,5 +257,63 @@ describe('App wiring', () => {
     } finally {
       Reflect.deleteProperty(window as unknown as Record<string, unknown>, 'requestIdleCallback');
     }
+  });
+});
+
+describe('site lock', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+  });
+
+  /**
+   * Route-aware stub for a password-locked backend: `/api/v1/site/status`
+   * authorizes only the `s3cret` header, everything else answers with
+   * the search envelope.
+   */
+  function mockLockedSite() {
+    const stub = vi.fn(async (input: unknown, init?: RequestInit) => {
+      if (String(input).includes('/api/v1/site/status')) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        const authorized = headers['X-Site-Password'] === 's3cret';
+        return {
+          ok: true,
+          json: () => Promise.resolve({ auth_required: true, authorized }),
+        };
+      }
+      return { ok: true, json: () => Promise.resolve(SHOPPING_ENVELOPE) };
+    });
+    vi.stubGlobal('fetch', stub);
+    return stub;
+  }
+
+  it('replaces the search UI with the lock screen when locked', async () => {
+    mockLockedSite();
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('site-lock-title')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('search-hero')).not.toBeInTheDocument();
+  });
+
+  it('unlocks with the right password and locks again from the nav', async () => {
+    mockLockedSite();
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('site-password')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('site-password'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByTestId('site-unlock'));
+    await waitFor(() => {
+      expect(screen.getByTestId('site-password-error')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('site-password'), { target: { value: 's3cret' } });
+    fireEvent.click(screen.getByTestId('site-unlock'));
+    await waitFor(() => {
+      expect(screen.getByTestId('search-hero')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('nav-lock'));
+    await waitFor(() => {
+      expect(screen.getByTestId('site-lock-title')).toBeInTheDocument();
+    });
   });
 });

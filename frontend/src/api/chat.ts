@@ -6,7 +6,14 @@
  * No hardcoded hosts, no secrets or API keys anywhere in this module.
  */
 
-import { API_BASE_URL, MAX_QUERY_LENGTH, sanitizeInput } from './client.ts';
+import {
+  API_BASE_URL,
+  MAX_QUERY_LENGTH,
+  SITE_UNAUTHORIZED_CODE,
+  notifySiteUnauthorized,
+  sanitizeInput,
+  siteAuthHeaders,
+} from './client.ts';
 import { isChatResponse, isErrorEnvelope } from './guard.ts';
 import type { ChatHistoryTurn, ChatRequest, ChatResponse } from './types.ts';
 
@@ -102,7 +109,7 @@ export async function sendChat(
   try {
     response = await fetchImpl(`${API_BASE_URL}/api/v1/agent/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...siteAuthHeaders() },
       body: JSON.stringify(body),
     });
   } catch (error) {
@@ -121,6 +128,7 @@ export async function sendChat(
 
   if (isChatResponse(payload)) return payload;
   if (isErrorEnvelope(payload)) {
+    if (payload.error.code === SITE_UNAUTHORIZED_CODE) notifySiteUnauthorized();
     throw new ChatApiError(payload.error.code, payload.error.message);
   }
   throw new ChatApiError('invalid_response', 'Unexpected response shape.');

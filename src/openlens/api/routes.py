@@ -87,7 +87,7 @@ from openlens.api.schemas import (
 )
 from openlens.api.schemas import SearchRequestSchema, SearchResponseSchema
 from openlens.api.schemas import SearchResultSchema
-from openlens.api.schemas import SuggestResponseSchema
+from openlens.api.schemas import SiteStatusSchema, SuggestResponseSchema
 from openlens.core.interfaces import (
     ConfigError,
     Engine,
@@ -290,6 +290,40 @@ def _frontier_admin_response(request: Request) -> JSONResponse | None:
     return None
 
 
+SITE_PASSWORD_ENV = "OPENLENS_SITE_PASSWORD"  # noqa: S105 (env var name, not a credential)
+SITE_AUTH_HEADER = "X-Site-Password"
+SITE_UNAUTHORIZED_CODE = "unauthorized"
+
+
+def _site_password() -> str:
+    """Shared site password; empty means the query surface is public."""
+    return os.environ.get(SITE_PASSWORD_ENV, "").strip()
+
+
+def site_auth_required() -> bool:
+    """Whether query endpoints currently require the site password."""
+    return bool(_site_password())
+
+
+def _site_authorized(provided: str) -> bool:
+    """True when the site is public or `provided` matches the password."""
+    expected = _site_password()
+    if not expected:
+        return True
+    return bool(provided) and secrets.compare_digest(provided.strip(), expected)
+
+
+def _site_auth_response(request: Request) -> JSONResponse | None:
+    """Return a 401 envelope unless the request carries site rights."""
+    provided = request.headers.get(SITE_AUTH_HEADER) or ""
+    if _site_authorized(provided):
+        return None
+    return JSONResponse(
+        status_code=401,
+        content=error_body(SITE_UNAUTHORIZED_CODE, "site login required"),
+    )
+
+
 def _ws_admin_denied(websocket: WebSocket) -> bool:
     """Whether a live-socket handshake fails the admin gate.
 
@@ -449,12 +483,32 @@ def get_engine(request: Request) -> Engine:
     return engine
 
 
+@router.get("/site/status", response_model=SiteStatusSchema)
+def site_status(request: Request) -> SiteStatusSchema:
+    """Whether the query surface currently needs the site password.
+
+    Always public (the login screen must reach it to decide whether
+    to show): ``authorized`` reflects the presented
+    ``X-Site-Password`` header, so a password can be verified without
+    burning a query.
+    """
+    provided = request.headers.get(SITE_AUTH_HEADER) or ""
+    required = site_auth_required()
+    return SiteStatusSchema(
+        auth_required=required,
+        authorized=(not required) or _site_authorized(provided),
+    )
+
+
 @router.post("/search", response_model=SearchResponseSchema)
 def search(
     body: SearchRequestSchema,
     request: Request,
     engine: Engine = Depends(get_engine),
-) -> SearchResponseSchema:
+) -> SearchResponseSchema | JSONResponse:
+    denied = _site_auth_response(request)
+    if denied is not None:
+        return denied
     prefs = (
         ProviderPrefs(
             include=tuple(body.provider_prefs.include),
@@ -498,7 +552,7 @@ def agent_chat(
     body: ChatRequestSchema,
     request: Request,
     engine: Engine = Depends(get_engine),
-) -> ChatResponseSchema:
+) -> ChatResponseSchema | JSONResponse:
     """One grounded chat turn over the search index.
 
     Rewrites the turn with the transcript, searches via the engine as
@@ -506,6 +560,9 @@ def agent_chat(
     missing/disabled model backend (or a model error) returns an empty
     answer with a ``notice`` plus plain-search hits — never a 500.
     """
+    denied = _site_auth_response(request)
+    if denied is not None:
+        return denied
     history = [(turn.role, turn.content) for turn in body.history]
     outcome = run_agent_chat(
         message=body.message.strip(),
@@ -568,12 +625,15 @@ def suggest(
     request: Request,
     q: str = Query(default=""),
     limit: int = Query(default=DEFAULT_SUGGEST_LIMIT, ge=1, le=MAX_SUGGEST_LIMIT),
-) -> SuggestResponseSchema:
+) -> SuggestResponseSchema | JSONResponse:
     """Prefix completions for `q` from index terms (static fallback).
 
     Blank `q` returns `[]` with 200. Never 500s: helper failures
     degrade to `[]`.
     """
+    denied = _site_auth_response(request)
+    if denied is not None:
+        return denied
     if not q.strip():
         return SuggestResponseSchema(q=q, suggestions=[])
     try:

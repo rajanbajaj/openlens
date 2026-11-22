@@ -203,6 +203,20 @@ class SuggestResponseSchema(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+class SiteStatusSchema(BaseModel):
+    """GET /api/v1/site/status response body (always public).
+
+    ``auth_required`` mirrors ``OPENLENS_SITE_PASSWORD`` (empty means
+    the query surface is public); ``authorized`` tells a password
+    holder whether the presented ``X-Site-Password`` header (if any)
+    already unlocks search, so the login screen can verify without
+    burning a query.
+    """
+
+    auth_required: bool = False
+    authorized: bool = True
+
+
 class PerspectiveStanceSchema(BaseModel):
     """One member's stance toward the story claim (keyword heuristic)."""
 

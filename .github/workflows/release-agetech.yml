@@ -17,8 +17,10 @@ name: release-agetech
 #
 # Privacy posture (enforced by agetech.env, not this file):
 # OPENLENS_FRONTIER_ADMIN_TOKEN set, OPENLENS_ALLOW_OPEN_ADMIN empty
-# (fail-closed admin gate), no public tunnel hostname except the
-# Cloudflare-Access-gated agetech domain, admin console LAN/SSH only.
+# (fail-closed admin gate), OPENLENS_SITE_PASSWORD set (search behind
+# login; the main stack leaves it empty and stays public), no public
+# tunnel hostname except the Cloudflare-Access-gated agetech domain,
+# admin console LAN/SSH only.
 
 on:
   workflow_dispatch:
@@ -29,6 +31,11 @@ on:
         default: "main"
       admin_profile:
         description: "Also start admin-frontend (:3003, LAN/SSH only)."
+        required: false
+        type: boolean
+        default: false
+      reset_data:
+        description: "Wipe the agetech volumes first (fresh DB + index). Irreversible."
         required: false
         type: boolean
         default: false
@@ -74,10 +81,22 @@ jobs:
             echo "profile=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Reset agetech data (opt-in only)
+        # `reset_data: true` wipes the agetech volumes (fresh DB +
+        # empty index) before the rebuild below. Scoped to the
+        # `-p openlens-agetech` project: main-stack volumes are never
+        # touched. Plain deploys keep `up -d` semantics — volumes ARE
+        # the index — so this step must stay behind the input flag.
+        if: ${{ inputs.reset_data == true }}
+        run: |
+          docker compose -p openlens-agetech \
+            -f docker-compose-lightweight.yml down -v
+
       - name: Build and start agetech stack
         # Distinct project name: fresh `openlens-agetech-*` volumes
         # (fresh corpus) and zero contact with the main stack.
-        # Plain `up -d`, never `down -v`: the volumes ARE the index.
+        # Plain `up -d`, never `down -v`: the volumes ARE the index
+        # (wipes happen only in the reset step above, when asked).
         run: |
           # shellcheck disable=SC2086
           docker compose ${{ steps.opts.outputs.profile }} -p openlens-agetech \
@@ -95,9 +114,21 @@ jobs:
           curl -fsS http://localhost:8001/healthz
 
       - name: Health gates (search)
+        # The agetech instance may sit behind OPENLENS_SITE_PASSWORD:
+        # reuse it from the deployed env file when set (masked, never
+        # echoed) so the gate probes the real locked path. Public
+        # instances (empty password) probe exactly as before.
         run: |
+          SITE_PW="$(grep -E '^OPENLENS_SITE_PASSWORD=' ./.env 2>/dev/null | cut -d= -f2- || true)"
+          if [ -n "$SITE_PW" ]; then
+            echo "::add-mask::$SITE_PW"
+            AUTH_HEADER=(-H "X-Site-Password: $SITE_PW")
+          else
+            AUTH_HEADER=()
+          fi
           curl -fsS -X POST http://localhost:8001/api/v1/search \
             -H 'Content-Type: application/json' \
+            "${AUTH_HEADER[@]}" \
             -d '{"query": "release health check", "limit": 1}'
 
       - name: Health gates (frontends)

@@ -24,6 +24,7 @@ export function EmptyResults() {
  * never raw JSON.
  */
 export const ERROR_TITLES: Record<string, string> = {
+  unauthorized: 'Site login required',
   network_error: 'Could not reach OpenLens',
   invalid_response: 'OpenLens answered unexpectedly',
   validation_error: 'That search needs a tweak',

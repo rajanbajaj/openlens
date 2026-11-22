@@ -394,6 +394,24 @@ describe('accessibility', () => {
     await expectZeroCriticalViolations(screen.getByTestId('sidebar-mount'));
   });
 
+  it('locked site reports zero critical axe violations', async () => {
+    const stub = vi.fn(async () => ({
+      ok: true,
+      json: () => Promise.resolve({ auth_required: true, authorized: false }),
+    }));
+    vi.stubGlobal('fetch', stub);
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('site-lock-title')).toBeInTheDocument();
+    });
+    // Labelled password input plus an enabled-by-input submit keeps the
+    // gate keyboard-operable with visible focus states.
+    const password = screen.getByLabelText('Site password');
+    password.focus();
+    expect(document.activeElement).toBe(password);
+    await expectZeroCriticalViolations(screen.getByTestId('site-lock'));
+  });
+
   it('needs no matchMedia at all: state changes are synchronous either way', async () => {
     // Motion lives in CSS (read-only wave0 territory) behind
     // `prefers-reduced-motion: no-preference`; the React tree applies every

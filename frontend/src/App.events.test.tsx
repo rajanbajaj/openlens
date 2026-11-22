@@ -67,7 +67,9 @@ describe('App events mode', () => {
 
     // The mode travels in the existing request body field; changing the
     // selector re-uses the same page-1 re-search path as other modes.
-    const [, init] = fetchStub.mock.calls[0] as [string, RequestInit];
+    // The boot-time site-status check also hits fetch: find the search POST by URL.
+    const searchCall = fetchStub.mock.calls.find(([url]) => String(url).includes('/api/v1/search'));
+    const [, init] = searchCall as [string, RequestInit];
     expect((JSON.parse(init.body as string) as Record<string, unknown>).mode).toBe('events');
 
     const vertical = screen.getByTestId('result-vertical-events');

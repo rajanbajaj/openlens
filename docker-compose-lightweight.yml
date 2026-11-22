@@ -80,6 +80,10 @@ services:
       OPENLENS_RATE_LIMIT_WS: ${OPENLENS_RATE_LIMIT_WS:-}
       OPENLENS_FRONTIER_ADMIN_TOKEN: ${OPENLENS_FRONTIER_ADMIN_TOKEN:-}
       OPENLENS_ALLOW_OPEN_ADMIN: ${OPENLENS_ALLOW_OPEN_ADMIN:-}
+      # Optional shared site password: when set, the query surface
+      # (search/suggest/agent chat) requires it via X-Site-Password and
+      # the frontend shows a lock screen. Empty keeps search public.
+      OPENLENS_SITE_PASSWORD: ${OPENLENS_SITE_PASSWORD:-}
     volumes:
       - openlens-data:/app/data
     depends_on:

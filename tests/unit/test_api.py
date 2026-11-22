@@ -514,3 +514,52 @@ def test_feedback_summary_gated_when_token_set(monkeypatch: pytest.MonkeyPatch) 
         "/api/v1/admin/feedback/summary", headers={FRONTIER_ADMIN_HEADER: "s3cret"}
     )
     assert allowed.status_code == 200
+
+
+# --- site password gate ----------------------------------------------------
+
+
+def test_site_status_public_by_default() -> None:
+    client = make_client()
+    body = client.get("/api/v1/site/status").json()
+    assert body == {"auth_required": False, "authorized": True}
+    assert client.post("/api/v1/search", json={"query": "q"}).status_code == 200
+    assert client.get("/api/v1/suggest", params={"q": "q"}).status_code == 200
+
+
+def test_site_gate_locks_query_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openlens.api.routes import SITE_AUTH_HEADER, SITE_PASSWORD_ENV
+
+    client = make_client()
+    monkeypatch.setenv(SITE_PASSWORD_ENV, "s3cret")
+    status = client.get("/api/v1/site/status")
+    assert status.status_code == 200
+    assert status.json() == {"auth_required": True, "authorized": False}
+    denied = client.post("/api/v1/search", json={"query": "q"})
+    assert denied.status_code == 401
+    assert_envelope(denied, "unauthorized")
+    denied = client.get("/api/v1/suggest", params={"q": "q"})
+    assert denied.status_code == 401
+    assert_envelope(denied, "unauthorized")
+    denied = client.post("/api/v1/agent/chat", json={"message": "hi"})
+    assert denied.status_code == 401
+    assert_envelope(denied, "unauthorized")
+    # Right password unlocks every gated endpoint plus the status check.
+    headers = {SITE_AUTH_HEADER: "s3cret"}
+    assert client.get("/api/v1/site/status", headers=headers).json() == {
+        "auth_required": True,
+        "authorized": True,
+    }
+    assert (
+        client.post("/api/v1/search", json={"query": "q"}, headers=headers).status_code
+        == 200
+    )
+    assert (
+        client.get("/api/v1/suggest", params={"q": "q"}, headers=headers).status_code
+        == 200
+    )
+    wrong = client.post(
+        "/api/v1/search", json={"query": "q"}, headers={SITE_AUTH_HEADER: "nope"}
+    )
+    assert wrong.status_code == 401
+    assert_envelope(wrong, "unauthorized")
