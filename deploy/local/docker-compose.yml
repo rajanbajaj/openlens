@@ -521,7 +521,9 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "1536mb", "--maxmemory-policy", "noeviction"]
     ports:
-      - "127.0.0.1:${REDIS_FRONTIER_PORT:-6380}:6379"
+      # Host :6380 belongs to the agetech stack's redis (separate
+      # project, same host): keep this off it so both stacks run.
+      - "127.0.0.1:${REDIS_FRONTIER_PORT:-6381}:6379"
     volumes:
       - redis-frontier-data:/data
     healthcheck:
