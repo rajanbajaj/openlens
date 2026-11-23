@@ -2826,6 +2826,13 @@ def _enqueue_seeds_to_store(
                 with suppress(Exception):
                     if store.enqueue(seed, depth, priority=priority):
                         accepted += 1
+                # Insert-only enqueue keeps stale depths on re-pastes:
+                # force the explicit seed depth so a deep admin seed is
+                # not depth-capped on drain (and a re-seed at 0 resets).
+                with suppress(Exception):
+                    updater = getattr(store, "update_depth", None)
+                    if callable(updater):
+                        updater(seed, depth)
         finally:
             with suppress(Exception):
                 store.close()
@@ -3026,10 +3033,17 @@ def frontier_resume(
     _publish_seeds(app_config, seeds, priority=body.priority)
     # Explicit seeds must refetch even when they already finished once:
     # plain enqueue is insert-only and would no-op on the terminal row.
+    # Resume seeds are depth 0: force it so a stale discovered depth
+    # cannot depth-cap the re-seed on drain.
     if seeds:
         try:
             store = _frontier_read_store(request)
             if store is not None:
+                updater = getattr(store, "update_depth", None)
+                if callable(updater):
+                    for seed in seeds:
+                        with suppress(Exception):
+                            updater(seed, 0)
                 bulk = getattr(store, "reseed_many", None)
                 if callable(bulk):
                     with suppress(Exception):
@@ -3120,6 +3134,7 @@ def frontier_enqueue_seeds(
             store = _frontier_read_store(request)
             if store is not None:
                 known = getattr(store, "is_known", None)
+                updater = getattr(store, "update_depth", None)
                 for index, seed in enumerate(seeds):
                     # A re-pasted seed refreshes instead of no-op-ing:
                     # terminal rows (done/failed/skipped) revive to
@@ -3127,7 +3142,13 @@ def frontier_enqueue_seeds(
                     # by id, so refresh never duplicates documents).
                     # Still-queued/active rows are left alone and count
                     # as accepted (idempotent re-paste).
+                    # The explicit seed depth always wins over the
+                    # stale stored depth so deep seeds are not
+                    # depth-capped on drain.
                     with suppress(Exception):
+                        if callable(updater):
+                            with suppress(Exception):
+                                updater(seed, depth)
                         if callable(known) and known(seed):
                             reseed = getattr(store, "reseed", None)
                             if callable(reseed):
@@ -3135,6 +3156,11 @@ def frontier_enqueue_seeds(
                                     reseed(seed)
                             settled.add(index)
                         elif store.enqueue(seed, depth, priority=body.priority):
+                            settled.add(index)
+                        elif callable(updater):
+                            # Enqueue no-op on a row created by the
+                            # durable publish above: depth already
+                            # forced, so count the idempotent paste.
                             settled.add(index)
                 pending = [
                     seed for index, seed in enumerate(seeds) if index not in settled

@@ -84,6 +84,21 @@ def test_enqueue_dedups_normalized_urls() -> None:
         store.close()
 
 
+def test_update_depth_overwrites_stored_depth() -> None:
+    store = SqliteFrontierStore(":memory:")
+    try:
+        assert store.enqueue("https://example.com/a", 3) is True
+        # Insert-only enqueue keeps the stale depth on re-paste...
+        assert store.enqueue("https://example.com/a", 10) is False
+        assert store.pending(limit=10)[0].depth == 3
+        # ...while an explicit admin seed depth always wins.
+        assert store.update_depth("https://example.com/a", 10) is True
+        assert store.pending(limit=10)[0].depth == 10
+        assert store.update_depth("https://example.com/missing", 1) is False
+    finally:
+        store.close()
+
+
 def test_dequeue_depth_order_and_mark_done() -> None:
     store = SqliteFrontierStore(":memory:")
     try:

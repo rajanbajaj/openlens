@@ -505,6 +505,44 @@ def test_rows_only_drain_keeps_absolute_depths(
     assert crawler.last_stats.skipped_depth >= 1
 
 
+def test_over_cap_rows_only_drain_self_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rows-only drain still honors a deep explicit seed (bug report).
+
+    Regression (fossbytes report): an admin seed stored at depth 10
+    with ``default_max_depth=2`` failed with "depth cap exceeded"
+    when no seed context reached the drain (backlog/idle
+    ``_drain_once`` with empty ``seed_urls``). Over-cap preloaded
+    rows can only be explicit seeds — discovered links are
+    push-gated — so the drain self-roots them: the seed fetches and
+    its children get the full cap in hops.
+    """
+    chain = {
+        "http://d.test/seed": ["http://d.test/a"],
+        "http://d.test/a": ["http://d.test/b"],
+        "http://d.test/b": ["http://d.test/c"],
+        "http://d.test/c": [],
+    }
+
+    def fake_fetch(url: str) -> _FetchedPage | None:
+        return _html_page(url, *chain.get(url, []))
+
+    crawler = _crawler(respect_robots=False, default_max_depth=2)
+    monkeypatch.setattr(crawler, "_do_fetch", fake_fetch)
+    store = _seed_store([("http://d.test/seed", 10)])
+    try:
+        docs = crawler.crawl([], frontier_store=store)
+    finally:
+        store.close()
+    assert sorted(doc.url or "" for doc in docs) == [
+        "http://d.test/a",
+        "http://d.test/b",
+        "http://d.test/seed",
+    ]
+    assert crawler.last_stats.skipped_depth >= 1
+
+
 def test_hub_page_fans_out_to_every_article_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

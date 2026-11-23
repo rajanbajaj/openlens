@@ -1384,6 +1384,54 @@ class RedisFrontierStore(FrontierStore):
                 revived += 1
         return revived
 
+    def update_depth(self, url: str, depth: int) -> bool:
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return False
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            return False
+        with self._lock:
+            meta = self._read_meta(norm)
+            if not meta:
+                return False
+            try:
+                current = int(meta.get("depth") or 0)
+            except (TypeError, ValueError):
+                current = 0
+            if current == depth:
+                return False
+            try:
+                prio = int(meta.get("priority") or 0)
+            except (TypeError, ValueError):
+                prio = 0
+            try:
+                seq = int(meta.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            status = str(meta.get("status") or "")
+            score = _score(prio, depth, seq)
+            pipe = self._client.pipeline()
+            pipe.hset(self._meta(norm), mapping={"depth": depth})
+            if status == STATUS_QUEUED:
+                pipe.zadd(self._ready, {norm: score})
+            elif status == STATUS_ACTIVE:
+                pipe.zadd(self._active, {norm: score})
+            try:
+                pipe.execute()
+            except Exception as exc:
+                raise self._fail("update frontier URL depth", exc) from exc
+            self._pending.append(
+                FlushRecord(
+                    kind="enqueued",
+                    url=norm,
+                    depth=depth,
+                    priority=prio,
+                    ts=_utcnow(),
+                )
+            )
+            return True
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         capped = max(0, limit)
         skipped = max(0, offset)

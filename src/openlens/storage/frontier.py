@@ -392,6 +392,18 @@ class FrontierStore(ABC):
                 revived += 1
         return revived
 
+    def update_depth(self, url: str, depth: int) -> bool:
+        """Force-set the stored depth for ``url`` (explicit admin seeds).
+
+        Plain :meth:`enqueue` is insert-only and :meth:`reseed` revives
+        without touching depth, so re-pasting a known URL at a new
+        explicit depth would otherwise keep the stale depth (and a
+        deep explicit seed would then fail the depth cap on drain).
+        Returns True when a row changed. Concrete default (False) so
+        older/test doubles keep working.
+        """
+        return False
+
     # -- user-requested crawl URLs (concrete defaults) -------------------
     # Shipped stores persist these in ``crawl_requests``; the concrete
     # defaults below keep older/test doubles instantiable. ``submit``
@@ -2298,6 +2310,27 @@ class SqliteFrontierStore(FrontierStore):
                 code=ProviderError.UNAVAILABLE,
             ) from exc
 
+    def update_depth(self, url: str, depth: int) -> bool:
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return False
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            return False
+        try:
+            with self._lock, self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE frontier_queue SET depth = ? WHERE url = ?",
+                    (depth, norm),
+                )
+                return (cursor.rowcount or 0) > 0
+        except sqlite3.Error as exc:
+            raise ProviderError(
+                f"failed to update frontier URL depth: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
     def pending(self, limit: int = 500, offset: int = 0) -> list[FrontierEntry]:
         capped = max(0, limit)
         skipped = max(0, offset)
@@ -4002,6 +4035,31 @@ class PostgresFrontierStore(FrontierStore):
         except Exception as exc:
             raise ProviderError(
                 f"failed to reseed frontier URLs: {exc}",
+                provider_name=_PROVIDER_NAME,
+                code=ProviderError.UNAVAILABLE,
+            ) from exc
+
+    def update_depth(self, url: str, depth: int) -> bool:
+        try:
+            norm = normalize_frontier_url(url)
+        except (AttributeError, ValueError):
+            return False
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            return False
+        table = self._qualified("frontier_queue")
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {table} SET depth = %s WHERE url = %s",  # noqa: S608
+                        (depth, norm),
+                    )
+                    changed = (cur.rowcount or 0) > 0
+                conn.commit()
+                return changed
+        except Exception as exc:
+            raise ProviderError(
+                f"failed to update frontier URL depth: {exc}",
                 provider_name=_PROVIDER_NAME,
                 code=ProviderError.UNAVAILABLE,
             ) from exc

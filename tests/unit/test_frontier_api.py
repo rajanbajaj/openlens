@@ -1551,6 +1551,36 @@ def test_enqueue_seeds_refreshes_finished_url(
         probe.close()
 
 
+def test_enqueue_seeds_repaste_updates_depth(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Re-pasting a known seed at a new depth updates the stored depth.
+
+    Regression (fossbytes report): ``enqueue`` is insert-only, so an
+    admin re-seed at depth 10 kept the stale depth and the drain
+    failed it with "depth cap exceeded". The explicit seed depth must
+    win so the drain honors it instead of capping it.
+    """
+    db_path = _file_store(monkeypatch, tmp_path)
+    first = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a"], "depth": 0},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/v1/frontier/seeds",
+        json={"seeds": ["https://example.com/a"], "depth": 10},
+    )
+    assert second.status_code == 200
+    assert second.json() == {"enqueued": 1, "skipped_over_cap": 0}
+    probe = SqliteFrontierStore(db_path)
+    try:
+        entry = probe.entry_of("https://example.com/a")
+        assert entry is not None and entry.depth == 10
+    finally:
+        probe.close()
+
+
 def test_publish_seeds_threads_depth_to_kafka(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

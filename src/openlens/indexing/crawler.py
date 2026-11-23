@@ -2279,7 +2279,20 @@ class PoliteCrawler:
                 key = normalize_url(queued_entry.url)
                 depths.setdefault(key, queued_entry.depth)
                 scopes.setdefault(key, {_scope_base(_host_of(queued_entry.url))})
-                bases.setdefault(key, 0)
+                if key not in bases:
+                    # Over-cap preloaded rows must be explicit admin
+                    # seeds: discovered links are push-gated, so they
+                    # can never exceed the cap at enqueue time.
+                    # Self-root them so a deep explicit seed fetches
+                    # (and its children get the full cap in hops)
+                    # instead of failing "depth cap exceeded" on
+                    # drain; under-cap rows keep absolute semantics.
+                    host = _host_of(queued_entry.url)
+                    entry_depth = queued_entry.depth
+                    if not self._depth_allowed(host, entry_depth, base=0):
+                        bases[key] = entry_depth
+                    else:
+                        bases[key] = 0
             for seed in seed_urls:
                 if isinstance(seed, str) and seed.strip():
                     key = normalize_url(seed.strip())

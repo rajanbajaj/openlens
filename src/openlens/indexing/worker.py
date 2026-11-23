@@ -1572,6 +1572,14 @@ def run_kafka_worker(
                     message.depth,
                     priority=getattr(message, "priority", None),
                 )
+            if getattr(message, "seed", False) is True:
+                # Insert-only enqueue keeps stale depths: force the
+                # explicit seed depth so a re-pasted seed at a new
+                # depth is not depth-capped on drain.
+                with contextlib.suppress(Exception):
+                    updater = getattr(frontier_store, "update_depth", None)
+                    if callable(updater):
+                        updater(message.url, message.depth)
             worker.refresh_limits()
             # Bound the drain per message: one poll must never trigger a
             # max_pages-sized crawl, or slow pages push the gap between
